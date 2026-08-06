@@ -7,12 +7,16 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-OPENAI_API_KEY: str | None = os.getenv("OPENAI_API_KEY") or None
-OPENAI_MODEL: str = os.getenv("OPENAI_MODEL", "gpt-5-mini")
-OPENAI_EMBEDDING_MODEL: str = os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
+GEMINI_API_KEY: str | None = (
+    os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or None
+)
+GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+GEMINI_EMBEDDING_MODEL: str = os.getenv(
+    "GEMINI_EMBEDDING_MODEL", "models/gemini-embedding-001"
+)
 
 # API 키가 없으면 목업 모드: LLM/임베딩 호출 없이 전체 플로우를 검증할 수 있다.
-MOCK_MODE: bool = OPENAI_API_KEY is None
+MOCK_MODE: bool = GEMINI_API_KEY is None
 
 DATA_DIR = Path(os.getenv("DATA_DIR", Path(__file__).resolve().parent.parent / "data"))
 UPLOAD_DIR = DATA_DIR / "uploads"

@@ -26,7 +26,7 @@ from app.agents.schemas import (
     RiskLevel,
     RouteDecision,
 )
-from app.config import MOCK_MODE, OPENAI_API_KEY, OPENAI_MODEL
+from app.config import GEMINI_API_KEY, GEMINI_MODEL, MOCK_MODE
 from app.rag import store
 
 RETRIEVAL_K = 5
@@ -48,10 +48,27 @@ _llm = None
 def _get_llm():
     global _llm
     if _llm is None:
-        from langchain_openai import ChatOpenAI
+        from langchain_google_genai import ChatGoogleGenerativeAI
 
-        _llm = ChatOpenAI(model=OPENAI_MODEL, api_key=OPENAI_API_KEY)
+        _llm = ChatGoogleGenerativeAI(
+            model=GEMINI_MODEL, google_api_key=GEMINI_API_KEY, temperature=0.1
+        )
     return _llm
+
+
+def content_to_text(content) -> str:
+    """LLM 응답 content 정규화. Gemini는 문자열 대신 블록 리스트를 반환할 수 있다."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for part in content:
+            if isinstance(part, str):
+                parts.append(part)
+            elif isinstance(part, dict) and part.get("type") == "text":
+                parts.append(part.get("text", ""))
+        return "".join(parts)
+    return str(content)
 
 
 def _format_hits(hits: list[dict]) -> str:
@@ -153,7 +170,7 @@ async def coordinator_node(state: AgentState) -> AgentState:
             "### 핵심 요약\n(목업 응답) 규정 검토와 감사 분석 모두 위반 가능성이 높다고 판단했습니다.\n\n"
             "### 의견 조정\n두 에이전트의 판단이 일치합니다.\n\n"
             "### 최종 권고\n회식비 대신 공식 활동비 항목으로 집행하고, 사전에 감사위원회 서면 확인을 받으십시오.\n\n"
-            "> ⚠️ OPENAI_API_KEY가 설정되지 않아 목업 모드로 동작 중입니다."
+            "> ⚠️ GEMINI_API_KEY가 설정되지 않아 목업 모드로 동작 중입니다."
         )
         return {"final_markdown": markdown}
 
@@ -171,7 +188,7 @@ async def coordinator_node(state: AgentState) -> AgentState:
     response = await _get_llm().ainvoke(
         [("system", prompts.COORDINATOR_SYSTEM), ("user", user_prompt)]
     )
-    return {"final_markdown": response.content}
+    return {"final_markdown": content_to_text(response.content)}
 
 
 async def general_node(state: AgentState) -> AgentState:
@@ -186,7 +203,7 @@ async def general_node(state: AgentState) -> AgentState:
     response = await _get_llm().ainvoke(
         [("system", prompts.GENERAL_SYSTEM), ("user", state["query"])]
     )
-    return {"final_markdown": response.content}
+    return {"final_markdown": content_to_text(response.content)}
 
 
 # ---------------------------------------------------------------- 그래프 구성

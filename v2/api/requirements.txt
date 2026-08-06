@@ -6,7 +6,7 @@ python-dotenv>=1.0
 
 # --- Agent orchestration (LangGraph 1.0) ---
 langgraph>=1.0
-langchain-openai>=1.0
+langchain-google-genai>=2.0
 langchain-core>=1.0
 langchain-text-splitters>=1.0
 

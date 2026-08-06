@@ -1,6 +1,14 @@
 import type { Metadata } from "next";
+import { Plus_Jakarta_Sans } from "next/font/google";
+import Image from "next/image";
 import Link from "next/link";
 import "./globals.css";
+
+const jakarta = Plus_Jakarta_Sans({
+  variable: "--font-jakarta",
+  subsets: ["latin"],
+  weight: ["400", "500", "700", "800"],
+});
 
 export const metadata: Metadata = {
   title: "학생회 규정 AI 어시스턴트",
@@ -10,21 +18,32 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
-    <html lang="ko" className="h-full antialiased">
-      <body className="min-h-full flex flex-col bg-zinc-50 text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100">
-        <header className="sticky top-0 z-10 border-b border-zinc-200 bg-white/80 backdrop-blur dark:border-zinc-800 dark:bg-zinc-950/80">
-          <div className="mx-auto flex h-14 max-w-3xl items-center justify-between px-4">
-            <Link href="/" className="flex items-center gap-2 font-semibold">
-              <span aria-hidden>🎓</span>
-              <span>학생회 규정 AI 어시스턴트</span>
+    <html lang="ko" className={`${jakarta.variable} h-full antialiased`}>
+      <body className="min-h-full flex flex-col bg-slate-50 text-slate-800">
+        <header className="sticky top-0 z-10 border-b border-slate-200 bg-white/90 backdrop-blur">
+          <div className="mx-auto flex h-16 max-w-3xl items-center justify-between px-4">
+            <Link href="/" className="flex items-center gap-2.5">
+              <Image
+                src="/emblem.png"
+                alt="인하대학교 마크"
+                width={36}
+                height={36}
+                priority
+              />
+              <span className="text-lg font-extrabold tracking-tight text-slate-800">
+                학생회 규정 AI
+              </span>
             </Link>
-            <nav className="flex items-center gap-4 text-sm text-zinc-500">
-              <Link href="/" className="hover:text-zinc-900 dark:hover:text-zinc-100">
+            <nav className="flex items-center gap-1.5 text-sm font-medium">
+              <Link
+                href="/"
+                className="rounded-full px-4 py-2 text-slate-500 transition hover:bg-indigo-50 hover:text-indigo-600"
+              >
                 채팅
               </Link>
               <Link
                 href="/admin"
-                className="hover:text-zinc-900 dark:hover:text-zinc-100"
+                className="rounded-full px-4 py-2 text-slate-500 transition hover:bg-indigo-50 hover:text-indigo-600"
               >
                 문서 관리
               </Link>

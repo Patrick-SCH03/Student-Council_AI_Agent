@@ -1,6 +1,6 @@
 """ChromaDB 벡터 스토어 래퍼.
 
-- OpenAI text-embedding-3-small 임베딩 (목업 모드에서는 결정적 해시 임베딩)
+- Gemini 임베딩(gemini-embedding-001) (목업 모드에서는 결정적 해시 임베딩)
 - 문서 삭제/재색인을 위해 모든 청크에 doc_id 메타데이터를 부여
 - v1의 메타데이터 키 불일치 버그(source_file vs source)를 없애기 위해
   메타데이터 키는 이 모듈에서만 정의한다: source_file, doc_id, chunk_index
@@ -12,9 +12,10 @@ import threading
 
 import chromadb
 
-from app.config import CHROMA_DIR, MOCK_MODE, OPENAI_API_KEY, OPENAI_EMBEDDING_MODEL
+from app.config import CHROMA_DIR, GEMINI_API_KEY, GEMINI_EMBEDDING_MODEL, MOCK_MODE
 
-COLLECTION_NAME = "regulations"
+# 목업(256차원)과 실제 Gemini 임베딩(3072차원)은 호환되지 않으므로 컬렉션을 분리한다.
+COLLECTION_NAME = "regulations_mock" if MOCK_MODE else "regulations"
 _EMBED_DIM = 256  # 목업 임베딩 차원
 
 _lock = threading.Lock()
@@ -54,9 +55,11 @@ def _embed(texts: list[str]) -> list[list[float]]:
         return _mock_embed(texts)
     global _embedder
     if _embedder is None:
-        from langchain_openai import OpenAIEmbeddings
+        from langchain_google_genai import GoogleGenerativeAIEmbeddings
 
-        _embedder = OpenAIEmbeddings(model=OPENAI_EMBEDDING_MODEL, api_key=OPENAI_API_KEY)
+        _embedder = GoogleGenerativeAIEmbeddings(
+            model=GEMINI_EMBEDDING_MODEL, google_api_key=GEMINI_API_KEY
+        )
     return _embedder.embed_documents(texts)
 
 

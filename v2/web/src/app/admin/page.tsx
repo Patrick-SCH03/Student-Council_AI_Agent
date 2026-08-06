@@ -11,6 +11,9 @@ import {
   uploadDocument,
 } from "@/lib/api";
 
+const CARD_SHADOW =
+  "shadow-[0px_12px_16px_-4px_rgba(16,24,40,0.08),0px_4px_6px_-2px_rgba(16,24,40,0.03)]";
+
 export default function AdminPage() {
   const [documents, setDocuments] = useState<DocumentInfo[]>([]);
   const [health, setHealth] = useState<HealthInfo | null>(null);
@@ -60,32 +63,36 @@ export default function AdminPage() {
   };
 
   return (
-    <div className="py-8">
-      <h1 className="text-xl font-bold">규정 문서 관리</h1>
-      <p className="mt-1 text-sm text-zinc-500">
+    <div className="py-10">
+      <h1 className="text-[30px] font-extrabold tracking-tight text-slate-800">
+        규정 문서 관리
+      </h1>
+      <p className="mt-1.5 text-[15px] font-medium text-slate-500">
         업로드한 PDF는 즉시 청킹·임베딩되어 AI 분석의 근거 문서로 사용됩니다.
       </p>
 
       {health && (
-        <div className="mt-4 flex flex-wrap gap-3 text-xs text-zinc-500">
-          <span className="rounded-md bg-zinc-100 px-2 py-1 dark:bg-zinc-900">
-            모델: {health.mock_mode ? "목업 모드" : health.model}
+        <div className="mt-5 flex flex-wrap gap-2 text-xs font-bold">
+          <span className="rounded-full bg-indigo-50 px-3 py-1.5 text-indigo-600">
+            {health.mock_mode ? "목업 모드" : health.model}
           </span>
-          <span className="rounded-md bg-zinc-100 px-2 py-1 dark:bg-zinc-900">
-            색인된 청크: {chunks}개
+          <span className="rounded-full bg-slate-100 px-3 py-1.5 text-slate-600">
+            색인된 청크 {chunks}개
           </span>
         </div>
       )}
 
       <label
-        className={`mt-6 flex cursor-pointer flex-col items-center justify-center gap-2 rounded-2xl border-2 border-dashed border-zinc-300 bg-white py-10 text-sm text-zinc-500 transition hover:border-blue-400 dark:border-zinc-700 dark:bg-zinc-900 ${
+        className={`mt-6 flex cursor-pointer flex-col items-center justify-center gap-2.5 rounded-[24px] border-2 border-dashed border-slate-300 bg-white py-12 text-sm font-medium text-slate-500 transition hover:border-indigo-400 hover:text-indigo-600 ${CARD_SHADOW} ${
           busy ? "pointer-events-none opacity-50" : ""
         }`}
       >
-        <span className="text-2xl" aria-hidden>
+        <span className="flex h-12 w-12 items-center justify-center rounded-full bg-indigo-50 text-xl" aria-hidden>
           📄
         </span>
-        {busy ? "색인 중... (문서 크기에 따라 수십 초 걸릴 수 있습니다)" : "클릭하여 규정 PDF 업로드 (최대 20MB)"}
+        {busy
+          ? "색인 중... (문서 크기에 따라 수십 초 걸릴 수 있습니다)"
+          : "클릭하여 규정 PDF 업로드 (최대 20MB)"}
         <input
           ref={fileRef}
           type="file"
@@ -100,34 +107,38 @@ export default function AdminPage() {
       </label>
 
       {message && (
-        <p className="mt-3 text-sm text-zinc-600 dark:text-zinc-400">{message}</p>
+        <p className="mt-3 text-sm font-medium text-slate-600">{message}</p>
       )}
 
-      <div className="mt-8">
-        <h2 className="mb-3 text-sm font-semibold text-zinc-500">
+      <div className="mt-10">
+        <h2 className="mb-3 text-sm font-bold text-slate-500">
           색인된 문서 ({documents.length})
         </h2>
         {documents.length === 0 ? (
-          <p className="text-sm text-zinc-400">
+          <p className="text-sm font-medium text-slate-400">
             아직 색인된 문서가 없습니다. 규정·세칙·감사보고서 PDF를 업로드하세요.
           </p>
         ) : (
-          <ul className="divide-y divide-zinc-200 rounded-xl border border-zinc-200 bg-white dark:divide-zinc-800 dark:border-zinc-800 dark:bg-zinc-900">
+          <ul
+            className={`divide-y divide-slate-100 rounded-2xl border border-slate-200 bg-white ${CARD_SHADOW}`}
+          >
             {documents.map((doc) => (
               <li
                 key={doc.doc_id}
-                className="flex items-center justify-between gap-3 px-4 py-3"
+                className="flex items-center justify-between gap-3 px-5 py-4"
               >
                 <div className="min-w-0">
-                  <p className="truncate text-sm font-medium">{doc.filename}</p>
-                  <p className="text-xs text-zinc-400">
+                  <p className="truncate text-sm font-bold text-slate-700">
+                    {doc.filename}
+                  </p>
+                  <p className="mt-0.5 text-xs font-medium text-slate-400">
                     {doc.chunks}개 청크 ·{" "}
                     {new Date(doc.created_at).toLocaleString("ko-KR")}
                   </p>
                 </div>
                 <button
                   onClick={() => onDelete(doc)}
-                  className="shrink-0 rounded-lg border border-zinc-200 px-3 py-1.5 text-xs text-zinc-500 transition hover:border-red-300 hover:text-red-600 dark:border-zinc-700"
+                  className="shrink-0 rounded-full border border-slate-200 px-4 py-1.5 text-xs font-bold text-slate-500 transition hover:border-rose-200 hover:bg-rose-50 hover:text-rose-600"
                 >
                   삭제
                 </button>

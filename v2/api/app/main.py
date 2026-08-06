@@ -9,9 +9,9 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app import db
-from app.agents.graph import graph
+from app.agents.graph import content_to_text, graph
 from app.agents.schemas import overall_risk
-from app.config import CORS_ORIGINS, MOCK_MODE, OPENAI_MODEL
+from app.config import CORS_ORIGINS, GEMINI_MODEL, MOCK_MODE
 from app.rag import store
 from app.rag.ingest import IngestError, ingest_pdf
 
@@ -42,7 +42,7 @@ def health():
     return {
         "status": "ok",
         "mock_mode": MOCK_MODE,
-        "model": OPENAI_MODEL,
+        "model": GEMINI_MODEL,
         "indexed_chunks": store.chunk_count(),
     }
 
@@ -72,8 +72,8 @@ async def chat(request: ChatRequest):
                 if mode == "messages":
                     chunk, meta = payload
                     node = meta.get("langgraph_node", "")
-                    content = getattr(chunk, "content", "")
-                    if node in ("coordinator", "general") and isinstance(content, str) and content:
+                    content = content_to_text(getattr(chunk, "content", ""))
+                    if node in ("coordinator", "general") and content:
                         yield _sse({"type": "token", "content": content})
                     continue
 
