@@ -102,7 +102,7 @@ python smoke_test.py           # 벡터 스토어 + 그래프 병렬 실행 + �
 
 - [ ] Supabase Auth (학교 이메일 도메인 제한) + 사용자별 일일 질의 제한
 - [ ] 배포: 프론트 Vercel, 백엔드 Google Cloud Run(scale-to-zero) — 목표 운영비 월 1~3만원
-- [ ] 스캔본 PDF 대응 (Gemini 멀티모달 파싱 또는 OCR)
+- [x] 스캔본 PDF 대응 — Gemini 멀티모달 폴백으로 자동 텍스트 추출
 - [ ] 실제 규정 문서 기반 평가셋(20~30문항) 구축 및 프롬프트 튜닝
 - [ ] 감사 기록 문서를 별도 컬렉션으로 분리
 
