@@ -1,5 +1,26 @@
 # 배포 가이드
 
+두 가지 배포 경로가 있습니다.
+
+- **A. 내 PC + Cloudflare Tunnel** — 비용 0원, 시험 운영·베타용. PC가 켜져 있을 때만 서비스됨
+- **B. VPS + Docker Compose** — 24시간 정식 운영용 (아래 상세)
+
+## A. 내 PC를 서버로 (Cloudflare Tunnel)
+
+요구사항: cloudflared 설치 (`winget install Cloudflare.cloudflared`)
+
+```powershell
+.\start-server.ps1        # API + 웹(프로덕션) + 터널 실행, 공개 URL 출력
+.\start-server.ps1 -Stop  # 전체 종료
+```
+
+- 발급되는 `https://xxx.trycloudflare.com` 주소를 공유하면 외부에서 바로 접속 가능
+- 임시 터널이라 재시작 시 주소가 바뀜 — 고정 주소가 필요하면 Cloudflare 계정에 도메인을 연결해
+  [Named Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/)로 전환
+- Windows 전원 설정에서 절전 모드를 꺼두어야 함 (설정 → 시스템 → 전원 → 절전 안 함)
+
+## B. VPS + Docker Compose (정식 운영)
+
 단일 서버(VPS) 하나에 Docker Compose로 전체 스택(API + 웹 + HTTPS 프록시)을 올리는 구성입니다.
 예상 비용: 서버 월 6,000~10,000원 + Gemini API 사용량(일 수십 건 기준 월 1~2만원 이내).
 

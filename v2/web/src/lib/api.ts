@@ -1,7 +1,10 @@
 // FastAPI 백엔드 클라이언트: 타입 정의 + SSE 스트리밍 파서
 
+// 미설정 → 로컬 개발(백엔드 직접 호출), "/" 또는 "" → same-origin 상대 경로
+// (프로덕션에서 Next rewrites 또는 Caddy가 /api를 백엔드로 프록시)
+const _raw = process.env.NEXT_PUBLIC_API_URL;
 export const API_BASE =
-  process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+  _raw === undefined ? "http://localhost:8000" : _raw.replace(/\/+$/, "");
 
 export type Citation = { source_file: string; snippet: string };
 
