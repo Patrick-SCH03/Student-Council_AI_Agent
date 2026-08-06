@@ -13,7 +13,14 @@ from pydantic import BaseModel, Field
 from app import db
 from app.agents.graph import content_to_text, graph
 from app.agents.schemas import overall_risk
-from app.config import CORS_ORIGINS, GEMINI_MODEL, MOCK_MODE
+from app.config import (
+    CORS_ORIGINS,
+    GEMINI_MODEL,
+    MOCK_MODE,
+    PRICE_INPUT_PER_1M,
+    PRICE_OUTPUT_PER_1M,
+    USD_KRW,
+)
 from app.rag import store
 from app.rag.ingest import IngestError, ingest_pdf
 
@@ -240,6 +247,23 @@ def get_history(limit: int = 20):
     return {"analyses": db.list_analyses(min(limit, 100))}
 
 
+def _cost_usd(input_tokens: int, output_tokens: int) -> float:
+    return (
+        input_tokens / 1_000_000 * PRICE_INPUT_PER_1M
+        + output_tokens / 1_000_000 * PRICE_OUTPUT_PER_1M
+    )
+
+
 @app.get("/api/stats")
 def get_stats(days: int = 14):
-    return db.get_stats(min(max(days, 1), 90))
+    stats = db.get_stats(min(max(days, 1), 90))
+    total_usd = _cost_usd(stats["totals"]["input_tokens"], stats["totals"]["output_tokens"])
+    today_usd = _cost_usd(stats["today"]["input_tokens"], stats["today"]["output_tokens"])
+    stats["cost"] = {
+        "total_usd": round(total_usd, 4),
+        "today_usd": round(today_usd, 4),
+        "total_krw": round(total_usd * USD_KRW),
+        "today_krw": round(today_usd * USD_KRW),
+        "usd_krw": USD_KRW,
+    }
+    return stats

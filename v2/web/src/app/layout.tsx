@@ -34,9 +34,30 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
                 학생회 규정 AI
               </span>
             </Link>
-            <span className="rounded-full bg-indigo-50 px-3 py-1.5 text-xs font-bold text-indigo-600">
-              INHA 학생회
-            </span>
+            <div className="flex items-center gap-2">
+              <a
+                href="mailto:wwoo5241@inha.edu?subject=%5B%ED%95%99%EC%83%9D%ED%9A%8C%20%EA%B7%9C%EC%A0%95%20AI%5D%20%EC%98%A4%EB%A5%98%20%EC%8B%A0%EA%B3%A0%20%2F%20%EB%AC%B8%EC%9D%98"
+                className="flex items-center gap-1.5 rounded-full border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-500 transition hover:border-indigo-300 hover:text-indigo-600"
+              >
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth={1.6}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  className="h-3.5 w-3.5"
+                  aria-hidden
+                >
+                  <rect x="3" y="5" width="18" height="14" rx="2" />
+                  <path d="m3 7 9 6 9-6" />
+                </svg>
+                오류 신고·문의
+              </a>
+              <span className="rounded-full bg-indigo-50 px-3 py-1.5 text-xs font-bold text-indigo-600">
+                INHA 학생회
+              </span>
+            </div>
           </div>
         </header>
         <main className="mx-auto w-full max-w-3xl flex-1 px-4">{children}</main>

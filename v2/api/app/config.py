@@ -23,6 +23,11 @@ UPLOAD_DIR = DATA_DIR / "uploads"
 CHROMA_DIR = DATA_DIR / "chroma"
 SQLITE_PATH = DATA_DIR / "app.sqlite3"
 
+# API 비용 추정용 단가 (USD / 1M 토큰, 2026-08 gemini-3.5-flash 기준. env로 조정 가능)
+PRICE_INPUT_PER_1M: float = float(os.getenv("PRICE_INPUT_PER_1M", "1.50"))
+PRICE_OUTPUT_PER_1M: float = float(os.getenv("PRICE_OUTPUT_PER_1M", "9.00"))
+USD_KRW: float = float(os.getenv("USD_KRW", "1400"))
+
 CORS_ORIGINS: list[str] = [
     o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",") if o.strip()
 ]

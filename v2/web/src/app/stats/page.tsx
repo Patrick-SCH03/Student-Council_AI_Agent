@@ -35,6 +35,13 @@ type Stats = {
     tokens: number;
     query_preview: string;
   }[];
+  cost: {
+    total_usd: number;
+    today_usd: number;
+    total_krw: number;
+    today_krw: number;
+    usd_krw: number;
+  };
 };
 
 const RISK_STYLE: Record<string, { dot: string; chip: string }> = {
@@ -165,13 +172,14 @@ export default function StatsPage() {
           sub={stats.totals.errors ? `오류 ${stats.totals.errors}건` : "오류 0건"}
         />
         <StatTile
-          label="평균 응답 시간"
-          value={`${stats.totals.avg_elapsed.toFixed(1)}초`}
+          label="예상 API 비용"
+          value={`₩${fmt(stats.cost.total_krw)}`}
+          sub={`오늘 ₩${fmt(stats.cost.today_krw)} · $${stats.cost.total_usd.toFixed(2)}`}
         />
         <StatTile
           label="토큰 사용량"
           value={fmt(totalTokens)}
-          sub={`오늘 ${fmt(todayTokens)}`}
+          sub={`오늘 ${fmt(todayTokens)} · 평균 응답 ${stats.totals.avg_elapsed.toFixed(1)}초`}
         />
       </div>
 
