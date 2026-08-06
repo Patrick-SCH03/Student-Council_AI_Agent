@@ -25,10 +25,84 @@ const EXAMPLES = [
 const CARD_SHADOW =
   "shadow-[0px_12px_16px_-4px_rgba(16,24,40,0.08),0px_4px_6px_-2px_rgba(16,24,40,0.03)]";
 
+/* ---------------------------------------------------------------- 아이콘
+   이모지 대신 일관된 1.6px 스트로크 아이콘 세트 (Phosphor 스타일) */
+
+function Icon({
+  path,
+  className = "h-4 w-4",
+}: {
+  path: React.ReactNode;
+  className?: string;
+}) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.6}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={`shrink-0 ${className}`}
+      aria-hidden
+    >
+      {path}
+    </svg>
+  );
+}
+
+const paths = {
+  doc: (
+    <>
+      <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8l-5-5Z" />
+      <path d="M14 3v5h5" />
+      <path d="M9 13h6M9 16.5h4" />
+    </>
+  ),
+  search: (
+    <>
+      <circle cx="11" cy="11" r="7" />
+      <path d="m21 21-4.3-4.3" />
+    </>
+  ),
+  copy: (
+    <>
+      <rect x="9" y="9" width="11" height="11" rx="2" />
+      <path d="M5 15V5a2 2 0 0 1 2-2h10" />
+    </>
+  ),
+  check: <path d="m5 12.5 4.5 4.5L19 7" />,
+  plus: <path d="M12 5v14M5 12h14" />,
+  clock: (
+    <>
+      <circle cx="12" cy="12" r="8.5" />
+      <path d="M12 7.5V12l3 2" />
+    </>
+  ),
+  chevron: <path d="m9 6 6 6-6 6" />,
+  alert: (
+    <>
+      <circle cx="12" cy="12" r="8.5" />
+      <path d="M12 8v4.5" />
+      <path d="M12 15.8v.2" />
+    </>
+  ),
+  send: (
+    <path
+      d="M4.4 11.05 19.2 4.3c.9-.4 1.8.5 1.4 1.4l-6.75 14.8c-.44.96-1.85.85-2.13-.17l-1.5-5.46a1.2 1.2 0 0 0-.84-.84l-5.46-1.5c-1.02-.28-1.13-1.69-.17-2.13Z"
+      fill="currentColor"
+      stroke="none"
+    />
+  ),
+  reply: <path d="M9 10 4 15l5 5M4 15h11a5 5 0 0 0 5-5V7" />,
+};
+
+/* ---------------------------------------------------------------- 컴포넌트 */
+
 type AssistantState = {
   stage: string | null;
   tokens: string;
-  reviewer: ReviewerResult | null; // agent_done으로 먼저 도착하는 부분 결과
+  reviewer: ReviewerResult | null;
   auditor: AuditorResult | null;
   result: ChatResult | null;
   error: string | null;
@@ -49,17 +123,6 @@ const emptyAssistant = (): AssistantState => ({
   route: null,
 });
 
-function SendIcon() {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" className="h-5 w-5" aria-hidden>
-      <path
-        d="M4.4 11.05 19.2 4.3c.9-.4 1.8.5 1.4 1.4l-6.75 14.8c-.44.96-1.85.85-2.13-.17l-1.5-5.46a1.2 1.2 0 0 0-.84-.84l-5.46-1.5c-1.02-.28-1.13-1.69-.17-2.13Z"
-        fill="currentColor"
-      />
-    </svg>
-  );
-}
-
 function RiskBadge({ level }: { level: string | null }) {
   if (!level) return null;
   const styles: Record<string, string> = {
@@ -69,10 +132,11 @@ function RiskBadge({ level }: { level: string | null }) {
   };
   return (
     <span
-      className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-bold ring-1 ${
+      className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-bold ring-1 ${
         styles[level] ?? "bg-slate-100 text-slate-600 ring-slate-200"
       }`}
     >
+      <span className="h-1.5 w-1.5 rounded-full bg-current" aria-hidden />
       위험도 {level}
     </span>
   );
@@ -80,7 +144,7 @@ function RiskBadge({ level }: { level: string | null }) {
 
 function Markdown({ text }: { text: string }) {
   return (
-    <div className="max-w-none text-[15px] leading-[1.65] text-slate-700 [&_h3]:mt-4 [&_h3]:mb-1 [&_h3]:text-[15px] [&_h3]:font-bold [&_h3]:text-slate-800 [&_p]:my-1.5 [&_ul]:my-1.5 [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:my-1.5 [&_ol]:list-decimal [&_ol]:pl-5 [&_blockquote]:border-l-2 [&_blockquote]:border-indigo-200 [&_blockquote]:pl-3 [&_blockquote]:text-slate-500 [&_strong]:text-slate-800">
+    <div className="max-w-none text-[15px] leading-[1.7] text-slate-700 [&_h3]:mt-5 [&_h3]:mb-1.5 [&_h3]:text-[15px] [&_h3]:font-bold [&_h3]:text-slate-900 [&_p]:my-1.5 [&_ul]:my-1.5 [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:my-1.5 [&_ol]:list-decimal [&_ol]:pl-5 [&_blockquote]:border-l-2 [&_blockquote]:border-indigo-200 [&_blockquote]:pl-3 [&_blockquote]:text-slate-500 [&_strong]:font-bold [&_strong]:text-slate-900">
       <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
     </div>
   );
@@ -93,7 +157,10 @@ function CitationChips({ citations }: { citations: Citation[] }) {
   ];
   if (unique.length === 0) return null;
   return (
-    <div className="mt-4">
+    <div className="mt-5">
+      <p className="mb-2 text-[11px] font-bold uppercase tracking-wide text-slate-400">
+        근거 문서
+      </p>
       <div className="flex flex-wrap gap-1.5">
         {unique.map((c, i) => (
           <button
@@ -106,24 +173,13 @@ function CitationChips({ citations }: { citations: Citation[] }) {
                 : "bg-indigo-50 text-indigo-600 hover:bg-indigo-100"
             }`}
           >
-            <svg viewBox="0 0 16 16" fill="none" className="h-3.5 w-3.5 shrink-0" aria-hidden>
-              <path
-                d="M9.5 1.5H4.75c-.69 0-1.25.56-1.25 1.25v10.5c0 .69.56 1.25 1.25 1.25h6.5c.69 0 1.25-.56 1.25-1.25V4.5l-3-3Z"
-                stroke="currentColor"
-                strokeWidth="1.3"
-                strokeLinejoin="round"
-              />
-              <path d="M9.5 1.5v3h3" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
-            </svg>
+            <Icon path={paths.doc} className="h-3.5 w-3.5" />
             {c.source_file}
           </button>
         ))}
       </div>
       {openIdx !== null && unique[openIdx] && (
-        <div className="mt-2 rounded-xl border border-indigo-100 bg-indigo-50/50 px-3.5 py-2.5 text-[13px] leading-relaxed text-slate-600">
-          <p className="mb-1 text-xs font-bold text-indigo-600">
-            📄 {unique[openIdx].source_file}
-          </p>
+        <div className="mt-2 rounded-xl border border-indigo-100 bg-indigo-50/50 px-4 py-3 text-[13px] leading-relaxed text-slate-600">
           {unique[openIdx].snippet}
         </div>
       )}
@@ -132,16 +188,32 @@ function CitationChips({ citations }: { citations: Citation[] }) {
 }
 
 function AgentDetail({
-  title,
+  icon,
+  name,
+  verdict,
   children,
 }: {
-  title: string;
+  icon: React.ReactNode;
+  name: string;
+  verdict: string;
   children: React.ReactNode;
 }) {
   return (
-    <details className="rounded-2xl border border-slate-200 bg-slate-50/60">
-      <summary className="cursor-pointer select-none px-4 py-2.5 text-sm font-bold text-slate-700">
-        {title}
+    <details className="group rounded-2xl border border-slate-200 bg-slate-50/60 transition hover:border-slate-300">
+      <summary className="flex cursor-pointer select-none items-center gap-2.5 px-4 py-3 [&::-webkit-details-marker]:hidden">
+        <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-white text-slate-500 ring-1 ring-slate-200">
+          {icon}
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block text-[13px] font-bold text-slate-800">{name}</span>
+          <span className="block truncate text-xs font-medium text-slate-500">
+            {verdict}
+          </span>
+        </span>
+        <Icon
+          path={paths.chevron}
+          className="h-4 w-4 text-slate-400 transition-transform group-open:rotate-90"
+        />
       </summary>
       <div className="border-t border-slate-200 px-4 py-3 text-sm">{children}</div>
     </details>
@@ -159,7 +231,6 @@ function AssistantBubble({
 }) {
   const { stage, tokens, result, error, route } = state;
   const [copied, setCopied] = useState(false);
-  // 최종 결과가 오기 전에는 agent_done으로 받은 부분 결과를 사용
   const reviewer = result?.reviewer ?? state.reviewer;
   const auditor = result?.auditor ?? state.auditor;
   // 스트리밍 중 후속 질문 블록(<followups>)은 표시에서 제외
@@ -182,27 +253,30 @@ function AssistantBubble({
     <div className="flex items-start gap-2.5">
       <span
         aria-hidden
-        className="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-indigo-600 text-xs font-extrabold text-white"
+        className="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-indigo-600 text-[11px] font-extrabold text-white"
       >
         AI
       </span>
       <div
-        className={`min-w-0 flex-1 rounded-2xl border border-slate-200 bg-white p-4 ${CARD_SHADOW}`}
+        className={`min-w-0 flex-1 rounded-2xl border border-slate-200 bg-white p-5 ${CARD_SHADOW}`}
       >
         {error ? (
-          <p className="text-sm text-rose-600">❌ {error}</p>
+          <p className="flex items-center gap-2 text-sm text-rose-600">
+            <Icon path={paths.alert} className="h-4 w-4" />
+            {error}
+          </p>
         ) : (
           <>
             {!result && stage && (
               <div className="mb-2 flex items-center gap-2 text-sm font-medium text-slate-500">
                 <span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-indigo-200 border-t-indigo-600" />
                 {stage}
-                <span className="text-xs text-slate-400">(보통 30~40초)</span>
+                <span className="text-xs text-slate-400">보통 30–40초</span>
               </div>
             )}
 
             {route === "regulation" && !result && (
-              <div className="mb-3 flex flex-wrap gap-1.5 text-xs font-medium">
+              <div className="mb-4 flex flex-wrap gap-1.5 text-xs font-medium">
                 {[
                   { label: "규정 검토", done: !!reviewer },
                   { label: "감사 분석", done: !!auditor },
@@ -210,7 +284,7 @@ function AssistantBubble({
                 ].map((step) => (
                   <span
                     key={step.label}
-                    className={`rounded-full px-3 py-1 ring-1 ${
+                    className={`inline-flex items-center gap-1 rounded-full px-3 py-1 ring-1 ${
                       step.done
                         ? "bg-green-50 text-green-600 ring-green-200"
                         : "active" in step && step.active
@@ -218,7 +292,7 @@ function AssistantBubble({
                           : "bg-slate-50 text-slate-400 ring-slate-200"
                     }`}
                   >
-                    {step.done ? "✓ " : ""}
+                    {step.done && <Icon path={paths.check} className="h-3 w-3" />}
                     {step.label}
                   </span>
                 ))}
@@ -234,24 +308,28 @@ function AssistantBubble({
             {streamingText && <Markdown text={streamingText} />}
 
             {(reviewer || auditor) && route !== "general" && (
-              <div className="mt-4 flex flex-col gap-2">
+              <div className="mt-5 flex flex-col gap-2">
                 {reviewer && (
                   <AgentDetail
-                    title={`📋 규정 검토 — ${reviewer.violation} · 위험도 ${reviewer.risk_level}`}
+                    icon={<Icon path={paths.doc} className="h-4 w-4" />}
+                    name="규정 검토"
+                    verdict={`${reviewer.violation} · 위험도 ${reviewer.risk_level}`}
                   >
                     <Markdown text={reviewer.reasoning} />
                     <p className="mt-2 text-slate-500">
-                      <b>권고:</b> {reviewer.recommendation}
+                      <b className="text-slate-700">권고</b> · {reviewer.recommendation}
                     </p>
                   </AgentDetail>
                 )}
                 {auditor && (
                   <AgentDetail
-                    title={`🔍 감사 분석 — ${auditor.compliance} · 처분 가능성 ${auditor.sanction_likelihood}`}
+                    icon={<Icon path={paths.search} className="h-4 w-4" />}
+                    name="감사 분석"
+                    verdict={`${auditor.compliance} · 처분 가능성 ${auditor.sanction_likelihood}`}
                   >
                     <Markdown text={auditor.reasoning} />
                     <p className="mt-2 text-slate-500">
-                      <b>권고:</b> {auditor.recommendation}
+                      <b className="text-slate-700">권고</b> · {auditor.recommendation}
                     </p>
                   </AgentDetail>
                 )}
@@ -261,15 +339,18 @@ function AssistantBubble({
             {result && <CitationChips citations={result.citations} />}
 
             {result && isLast && (result.followups?.length ?? 0) > 0 && (
-              <div className="mt-4 flex flex-col items-start gap-1.5">
-                <p className="text-xs font-bold text-slate-400">이어서 물어보기</p>
+              <div className="mt-5 flex flex-col items-start gap-1.5">
+                <p className="text-[11px] font-bold uppercase tracking-wide text-slate-400">
+                  이어서 물어보기
+                </p>
                 {result.followups.map((q) => (
                   <button
                     key={q}
                     type="button"
                     onClick={() => onFollowup(q)}
-                    className="rounded-xl border border-indigo-100 bg-indigo-50/60 px-3.5 py-2 text-left text-[13px] font-medium text-indigo-700 transition hover:border-indigo-300 hover:bg-indigo-50"
+                    className="inline-flex items-start gap-2 rounded-xl border border-indigo-100 bg-indigo-50/60 px-3.5 py-2 text-left text-[13px] font-medium text-indigo-700 transition hover:border-indigo-300 hover:bg-indigo-50"
                   >
+                    <Icon path={paths.reply} className="mt-0.5 h-3.5 w-3.5 -scale-y-100" />
                     {q}
                   </button>
                 ))}
@@ -277,17 +358,22 @@ function AssistantBubble({
             )}
 
             {result && (
-              <div className="mt-3 flex items-center justify-between">
+              <div className="mt-4 flex items-center justify-between border-t border-slate-100 pt-3">
                 <button
                   type="button"
                   onClick={copyAnswer}
-                  className="rounded-full border border-slate-200 px-3 py-1 text-xs font-medium text-slate-500 transition hover:border-indigo-300 hover:text-indigo-600"
+                  className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-500 transition hover:border-indigo-300 hover:text-indigo-600"
                 >
-                  {copied ? "✓ 복사됨" : "📋 답변 복사"}
+                  <Icon
+                    path={copied ? paths.check : paths.copy}
+                    className="h-3.5 w-3.5"
+                  />
+                  {copied ? "복사됨" : "답변 복사"}
                 </button>
-                <p className="text-xs font-medium text-slate-400">
-                  ⏱️ {result.elapsed.toFixed(1)}초
-                </p>
+                <span className="inline-flex items-center gap-1 text-xs font-medium text-slate-400">
+                  <Icon path={paths.clock} className="h-3.5 w-3.5" />
+                  {result.elapsed.toFixed(1)}초
+                </span>
               </div>
             )}
           </>
@@ -432,9 +518,11 @@ export default function ChatPage() {
   return (
     <div className="flex min-h-[calc(100vh-4rem)] flex-col py-6">
       {mockMode && (
-        <div className="mb-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-2.5 text-sm font-medium text-amber-700">
-          ⚠️ GEMINI_API_KEY가 설정되지 않아 <b>목업 모드</b>로 동작 중입니다.
-          실제 분석을 사용하려면 api/.env에 키를 설정하세요.
+        <div className="mb-4 flex items-center gap-2 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-2.5 text-sm font-medium text-amber-700">
+          <Icon path={paths.alert} className="h-4 w-4" />
+          <span>
+            GEMINI_API_KEY가 설정되지 않아 <b>목업 모드</b>로 동작 중입니다.
+          </span>
         </div>
       )}
 
@@ -443,30 +531,38 @@ export default function ChatPage() {
           <button
             type="button"
             onClick={clearChat}
-            className="rounded-full border border-slate-200 bg-white px-3.5 py-1.5 text-xs font-medium text-slate-500 transition hover:border-rose-200 hover:text-rose-600"
+            className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-3.5 py-1.5 text-xs font-medium text-slate-500 transition hover:border-indigo-300 hover:text-indigo-600"
           >
-            🗑 새 대화
+            <Icon path={paths.plus} className="h-3.5 w-3.5" />
+            새 대화
           </button>
         </div>
       )}
 
       <div className="flex-1 space-y-5">
         {messages.length === 0 && (
-          <div className="mt-14 text-center">
-            <p className="text-[30px] font-extrabold tracking-tight text-slate-800">
-              무엇을 도와드릴까요? <span aria-hidden>👋</span>
+          <div className="mt-16 text-center">
+            <p className="text-[13px] font-bold uppercase tracking-[0.2em] text-indigo-500">
+              INHA Student Council
             </p>
+            <h1 className="mt-2 text-[32px] font-extrabold tracking-tight text-slate-900">
+              무엇을 도와드릴까요?
+            </h1>
             <p className="mt-2 text-[15px] font-medium text-slate-500">
               규정 검토 · 감사 분석 · 종합 권고를 AI 에이전트가 병렬로 수행합니다
             </p>
-            <div className="mx-auto mt-8 grid max-w-xl gap-2.5 sm:grid-cols-2">
+            <div className="mx-auto mt-9 grid max-w-xl gap-2.5 sm:grid-cols-2">
               {EXAMPLES.map((ex) => (
                 <button
                   key={ex}
                   onClick={() => send(ex)}
-                  className={`rounded-2xl border border-slate-200 bg-white px-4 py-3.5 text-left text-sm font-medium text-slate-600 transition hover:border-indigo-300 hover:text-indigo-600 ${CARD_SHADOW}`}
+                  className={`group flex items-center justify-between gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3.5 text-left text-sm font-medium text-slate-600 transition hover:border-indigo-300 hover:text-indigo-600 ${CARD_SHADOW}`}
                 >
                   {ex}
+                  <Icon
+                    path={paths.chevron}
+                    className="h-4 w-4 text-slate-300 transition group-hover:translate-x-0.5 group-hover:text-indigo-400"
+                  />
                 </button>
               ))}
             </div>
@@ -499,7 +595,7 @@ export default function ChatPage() {
             e.preventDefault();
             send(input);
           }}
-          className={`flex items-center gap-2 rounded-[24px] border border-slate-200 bg-white p-2 pl-5 ${CARD_SHADOW}`}
+          className={`flex items-center gap-2 rounded-[24px] border border-slate-200 bg-white p-2 pl-5 transition focus-within:border-indigo-300 ${CARD_SHADOW}`}
         >
           <input
             value={input}
@@ -517,7 +613,7 @@ export default function ChatPage() {
             {busy ? (
               <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-indigo-300 border-t-white" />
             ) : (
-              <SendIcon />
+              <Icon path={paths.send} className="h-5 w-5" />
             )}
           </button>
         </form>
