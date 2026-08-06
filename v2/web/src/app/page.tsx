@@ -148,12 +148,35 @@ function AgentDetail({
   );
 }
 
-function AssistantBubble({ state }: { state: AssistantState }) {
+function AssistantBubble({
+  state,
+  isLast,
+  onFollowup,
+}: {
+  state: AssistantState;
+  isLast: boolean;
+  onFollowup: (q: string) => void;
+}) {
   const { stage, tokens, result, error, route } = state;
+  const [copied, setCopied] = useState(false);
   // 최종 결과가 오기 전에는 agent_done으로 받은 부분 결과를 사용
   const reviewer = result?.reviewer ?? state.reviewer;
   const auditor = result?.auditor ?? state.auditor;
-  const streamingText = result?.final_markdown || tokens;
+  // 스트리밍 중 후속 질문 블록(<followups>)은 표시에서 제외
+  const streamingText = (result?.final_markdown || tokens).split("<followups>")[0];
+
+  const copyAnswer = async () => {
+    if (!result) return;
+    try {
+      await navigator.clipboard.writeText(
+        `${result.risk_level ? `[위험도 ${result.risk_level}]\n\n` : ""}${result.final_markdown}`,
+      );
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // 클립보드 권한 거부 시 무시
+    }
+  };
 
   return (
     <div className="flex items-start gap-2.5">
@@ -237,10 +260,35 @@ function AssistantBubble({ state }: { state: AssistantState }) {
 
             {result && <CitationChips citations={result.citations} />}
 
+            {result && isLast && (result.followups?.length ?? 0) > 0 && (
+              <div className="mt-4 flex flex-col items-start gap-1.5">
+                <p className="text-xs font-bold text-slate-400">이어서 물어보기</p>
+                {result.followups.map((q) => (
+                  <button
+                    key={q}
+                    type="button"
+                    onClick={() => onFollowup(q)}
+                    className="rounded-xl border border-indigo-100 bg-indigo-50/60 px-3.5 py-2 text-left text-[13px] font-medium text-indigo-700 transition hover:border-indigo-300 hover:bg-indigo-50"
+                  >
+                    {q}
+                  </button>
+                ))}
+              </div>
+            )}
+
             {result && (
-              <p className="mt-3 text-right text-xs font-medium text-slate-400">
-                ⏱️ {result.elapsed.toFixed(1)}초
-              </p>
+              <div className="mt-3 flex items-center justify-between">
+                <button
+                  type="button"
+                  onClick={copyAnswer}
+                  className="rounded-full border border-slate-200 px-3 py-1 text-xs font-medium text-slate-500 transition hover:border-indigo-300 hover:text-indigo-600"
+                >
+                  {copied ? "✓ 복사됨" : "📋 답변 복사"}
+                </button>
+                <p className="text-xs font-medium text-slate-400">
+                  ⏱️ {result.elapsed.toFixed(1)}초
+                </p>
+              </div>
             )}
           </>
         )}
@@ -248,6 +296,8 @@ function AssistantBubble({ state }: { state: AssistantState }) {
     </div>
   );
 }
+
+const STORAGE_KEY = "regulation-chat-v1";
 
 export default function ChatPage() {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -262,6 +312,40 @@ export default function ChatPage() {
       .then((h) => setMockMode(h.mock_mode))
       .catch(() => {});
   }, []);
+
+  // 새로고침해도 대화가 유지되도록 localStorage에서 복원
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (!saved) return;
+      const parsed = JSON.parse(saved) as Message[];
+      if (!Array.isArray(parsed) || parsed.length === 0) return;
+      setMessages(parsed);
+      idRef.current = Math.max(...parsed.map((m) => m.id), 0);
+    } catch {
+      localStorage.removeItem(STORAGE_KEY);
+    }
+  }, []);
+
+  // 완료된 대화만 저장 (진행 중 스트리밍 상태는 제외)
+  useEffect(() => {
+    if (busy) return;
+    try {
+      const done = messages.filter(
+        (m) => m.role === "user" || m.state.result || m.state.error,
+      );
+      if (done.length > 0) {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(done.slice(-20)));
+      }
+    } catch {
+      // 저장 실패(용량 초과 등)는 무시
+    }
+  }, [messages, busy]);
+
+  const clearChat = () => {
+    setMessages([]);
+    localStorage.removeItem(STORAGE_KEY);
+  };
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -354,6 +438,18 @@ export default function ChatPage() {
         </div>
       )}
 
+      {messages.length > 0 && (
+        <div className="mb-3 flex justify-end">
+          <button
+            type="button"
+            onClick={clearChat}
+            className="rounded-full border border-slate-200 bg-white px-3.5 py-1.5 text-xs font-medium text-slate-500 transition hover:border-rose-200 hover:text-rose-600"
+          >
+            🗑 새 대화
+          </button>
+        </div>
+      )}
+
       <div className="flex-1 space-y-5">
         {messages.length === 0 && (
           <div className="mt-14 text-center">
@@ -386,7 +482,11 @@ export default function ChatPage() {
             </div>
           ) : (
             <div key={m.id} className="max-w-full">
-              <AssistantBubble state={m.state} />
+              <AssistantBubble
+                state={m.state}
+                isLast={m.id === messages[messages.length - 1]?.id}
+                onFollowup={send}
+              />
             </div>
           ),
         )}

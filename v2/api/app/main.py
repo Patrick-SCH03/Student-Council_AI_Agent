@@ -1,6 +1,7 @@
 """FastAPI 서버: SSE 스트리밍 채팅 + 문서 관리 API."""
 
 import json
+import re
 import time
 
 from fastapi import FastAPI, HTTPException, UploadFile
@@ -55,6 +56,23 @@ def health():
 
 
 # ---------------------------------------------------------------- chat (SSE)
+
+_FOLLOWUPS_RE = re.compile(r"<followups>(.*?)</followups>", re.DOTALL)
+
+
+def _extract_followups(markdown: str) -> tuple[str, list[str]]:
+    """조정 에이전트 출력에서 후속 질문 블록을 분리한다."""
+    match = _FOLLOWUPS_RE.search(markdown)
+    if not match:
+        return markdown, []
+    followups = [
+        line.strip().lstrip("-").strip()
+        for line in match.group(1).splitlines()
+        if line.strip().startswith("-")
+    ]
+    cleaned = _FOLLOWUPS_RE.sub("", markdown).rstrip()
+    return cleaned, followups[:3]
+
 
 _STAGE_LABELS = {
     "regulation": "규정 검토·감사 에이전트 병렬 분석 중...",
@@ -125,11 +143,14 @@ async def chat(request: ChatRequest):
                     seen.add(key)
                     citations.append({"source_file": c.source_file, "snippet": c.snippet})
 
+            final_markdown, followups = _extract_followups(merged.get("final_markdown", ""))
+
             result = {
                 "query": query,
                 "route": merged.get("route", ""),
                 "risk_level": risk,
-                "final_markdown": merged.get("final_markdown", ""),
+                "final_markdown": final_markdown,
+                "followups": followups,
                 "reviewer": reviewer.model_dump() if reviewer else None,
                 "auditor": auditor.model_dump() if auditor else None,
                 "citations": citations,

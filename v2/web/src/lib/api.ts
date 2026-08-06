@@ -26,6 +26,7 @@ export type ChatResult = {
   route: string;
   risk_level: string | null;
   final_markdown: string;
+  followups: string[];
   reviewer: ReviewerResult | null;
   auditor: AuditorResult | null;
   citations: Citation[];

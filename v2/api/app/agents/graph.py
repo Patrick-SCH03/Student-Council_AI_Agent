@@ -195,9 +195,9 @@ async def coordinator_node(state: AgentState) -> AgentState:
         await asyncio.sleep(0.5)
         markdown = (
             "### 핵심 요약\n(목업 응답) 규정 검토와 감사 분석 모두 위반 가능성이 높다고 판단했습니다.\n\n"
-            "### 의견 조정\n두 에이전트의 판단이 일치합니다.\n\n"
             "### 최종 권고\n회식비 대신 공식 활동비 항목으로 집행하고, 사전에 감사위원회 서면 확인을 받으십시오.\n\n"
-            "> ⚠️ GEMINI_API_KEY가 설정되지 않아 목업 모드로 동작 중입니다."
+            "> ⚠️ GEMINI_API_KEY가 설정되지 않아 목업 모드로 동작 중입니다.\n\n"
+            "<followups>\n- 공식 활동비 항목은 어떻게 인준받나요?\n- 예산 초과 시 처분 수위는 어떻게 되나요?\n- 증빙서류는 무엇을 준비해야 하나요?\n</followups>"
         )
         return {"final_markdown": markdown}
 
