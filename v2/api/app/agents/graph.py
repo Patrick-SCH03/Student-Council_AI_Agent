@@ -191,19 +191,22 @@ async def coordinator_node(state: AgentState) -> AgentState:
     return {"final_markdown": content_to_text(response.content)}
 
 
+OUT_OF_SCOPE_MESSAGE = """\
+안녕하세요! 저는 **인하대학교 학생회 규정·재정·감사 전용 AI 어시스턴트**입니다.
+
+질문해주신 내용은 학생회 업무 범위를 벗어나 답변드리기 어렵습니다. 아래와 같은 질문을 도와드릴 수 있어요:
+
+- 학생회비·예산 집행이 규정에 맞는지 (예: "학생회비로 회식비 사용이 가능한가요?")
+- 감사 기준과 처분 가능성 (예: "예산 초과 집행 시 어떤 처분을 받나요?")
+- 회칙·세칙의 절차 확인 (예: "예산 변경 시 승인 절차는 무엇인가요?")"""
+
+
 async def general_node(state: AgentState) -> AgentState:
+    # 도메인 전용 챗봇이므로 범위 밖 질문은 LLM 호출 없이 고정 안내문으로 응답한다.
+    # (오프토픽 답변 원천 차단 + 비용 절감)
     if MOCK_MODE:
         await asyncio.sleep(0.3)
-        return {
-            "final_markdown": (
-                "(목업 응답) 일반 질문으로 분류되었습니다. "
-                "학생회 규정·재정·감사 관련 질문을 하시면 문서 기반 정밀 분석을 제공합니다."
-            )
-        }
-    response = await _get_llm().ainvoke(
-        [("system", prompts.GENERAL_SYSTEM), ("user", state["query"])]
-    )
-    return {"final_markdown": content_to_text(response.content)}
+    return {"final_markdown": OUT_OF_SCOPE_MESSAGE}
 
 
 # ---------------------------------------------------------------- 그래프 구성
