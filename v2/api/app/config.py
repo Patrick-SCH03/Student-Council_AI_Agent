@@ -12,7 +12,7 @@ GEMINI_API_KEY: str | None = (
 )
 GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 GEMINI_EMBEDDING_MODEL: str = os.getenv(
-    "GEMINI_EMBEDDING_MODEL", "models/gemini-embedding-001"
+    "GEMINI_EMBEDDING_MODEL", "models/gemini-embedding-2"
 )
 
 # API 키가 없으면 목업 모드: LLM/임베딩 호출 없이 전체 플로우를 검증할 수 있다.

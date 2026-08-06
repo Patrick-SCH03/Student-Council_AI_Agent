@@ -9,6 +9,7 @@
 import hashlib
 import math
 import threading
+import time
 
 import chromadb
 
@@ -50,6 +51,12 @@ def _mock_embed(texts: list[str]) -> list[list[float]]:
     return vectors
 
 
+# 무료 티어 쿼터(429) 대응: 작은 배치 + 지수 백오프 재시도
+_EMBED_BATCH = 20
+_EMBED_MAX_RETRIES = 5
+_EMBED_BACKOFF_BASE = 30  # 초
+
+
 def _embed(texts: list[str]) -> list[list[float]]:
     if MOCK_MODE:
         return _mock_embed(texts)
@@ -60,7 +67,22 @@ def _embed(texts: list[str]) -> list[list[float]]:
         _embedder = GoogleGenerativeAIEmbeddings(
             model=GEMINI_EMBEDDING_MODEL, google_api_key=GEMINI_API_KEY
         )
-    return _embedder.embed_documents(texts)
+
+    vectors: list[list[float]] = []
+    for start in range(0, len(texts), _EMBED_BATCH):
+        batch = texts[start : start + _EMBED_BATCH]
+        for attempt in range(_EMBED_MAX_RETRIES):
+            try:
+                vectors.extend(_embedder.embed_documents(batch))
+                break
+            except Exception as e:
+                is_rate_limit = "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e)
+                if not is_rate_limit or attempt == _EMBED_MAX_RETRIES - 1:
+                    raise
+                wait = _EMBED_BACKOFF_BASE * (2**attempt)
+                print(f"임베딩 쿼터 제한(429). {wait}초 대기 후 재시도 ({attempt + 1}/{_EMBED_MAX_RETRIES})...")
+                time.sleep(wait)
+    return vectors
 
 
 def add_chunks(doc_id: str, source_file: str, chunks: list[str]) -> int:

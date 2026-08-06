@@ -47,6 +47,9 @@ def main() -> None:
         except IngestError as e:
             print(f"[실패]   {pdf.name} — {e}")
             failed += 1
+        except Exception as e:  # noqa: BLE001 - 한 문서 실패가 전체를 중단시키지 않도록
+            print(f"[오류]   {pdf.name} — {type(e).__name__}: {e}")
+            failed += 1
 
     print(f"\n색인 {ok}건, 건너뜀 {skipped}건, 실패 {failed}건")
 
