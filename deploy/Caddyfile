@@ -1,0 +1,12 @@
+# SITE_ADDRESS에 도메인을 넣으면 HTTPS 인증서를 자동 발급한다.
+# 예: SITE_ADDRESS=rules.inha-council.kr  /  도메인 없이 테스트: SITE_ADDRESS=:80
+{$SITE_ADDRESS}
+
+# API는 백엔드로, 나머지는 Next.js로
+handle /api/* {
+	reverse_proxy api:8000
+}
+
+handle {
+	reverse_proxy web:3000
+}

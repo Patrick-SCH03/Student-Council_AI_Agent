@@ -1,7 +1,8 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  /* config options here */
+  // Docker 배포용 self-contained 빌드 (.next/standalone)
+  output: "standalone",
 };
 
 export default nextConfig;

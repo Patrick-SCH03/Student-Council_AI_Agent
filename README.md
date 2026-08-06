@@ -1,68 +1,70 @@
-# 🎓 학생회 규정 AI 어시스턴트 (v2)
+# 학생회 규정 AI 어시스턴트
 
-학생회 규정·재정·감사 질문을 **AI 멀티에이전트**가 문서 기반(RAG)으로 분석해
-위반 여부·감사 처분 가능성·최종 권고안을 제시하는 웹 서비스입니다.
+인하대학교 학생회 규정·재정·감사 질문에 대해 **AI 멀티에이전트**가 실제 회칙·세칙·감사보고서를 근거로
+위반 여부, 감사 처분 가능성, 최종 권고안을 분석해주는 챗봇 서비스입니다.
 
-> v1(Gradio + Gemini 단일 앱)은 `legacy/`에 보관되어 있으며, v2는 전면 재구축 버전입니다.
+> "학생회비로 회식비 사용이 가능한가요?" → 규정 검토 + 감사 분석 + 종합 권고를 출처와 함께 제공
+
+## 주요 기능
+
+- **멀티에이전트 분석** — 규정 검토 에이전트와 감사 에이전트가 병렬로 분석하고, 조정 에이전트가 종합 권고안을 도출
+- **문서 기반 답변 (RAG)** — 실제 학생회칙·세칙·감사보고서를 검색해 조항 단위로 인용, 근거 문단 확인 가능
+- **위험도 판정** — 에이전트의 구조화 출력(enum)을 기반으로 높음/보통/낮음을 결정론적으로 계산
+- **실시간 스트리밍** — 분석 단계 표시, 에이전트별 완료 즉시 부분 결과 렌더링, 답변 토큰 스트리밍
+- **대화 맥락 유지** — 후속 질문("그럼 처분은 얼마나 돼?")을 이전 대화 기준으로 이해
+- **후속 질문 제안 · 답변 복사 · 대화 이력 유지(localStorage)**
+- **스캔본 PDF 자동 파싱** — 텍스트 레이어가 없는 문서는 Gemini 멀티모달로 원문 추출
+- **도메인 가드** — 학생회 업무와 무관한 질문은 LLM 호출 없이 안내 메시지로 응답
 
 ## 아키텍처
 
 ```
 Next.js 16 (web/)  ──SSE──▶  FastAPI (api/)
-  채팅 UI · 문서 관리          │
-                              ▼
-                    LangGraph 1.0 파이프라인
-                    router ─┬▶ reviewer(규정 검토) ─┐
-                            │▶ auditor(감사 분석)  ─┴▶ coordinator(종합 권고)
-                            └▶ general(일반 답변)      * reviewer/auditor 병렬 실행
-                              │
-              ┌───────────────┼────────────────┐
-              ▼               ▼                ▼
-        Gemini API      ChromaDB(RAG)      SQLite(이력)
+  채팅 UI                      │
+                               ▼
+                     LangGraph 파이프라인
+                     router ─┬▶ reviewer(규정 검토) ─┐
+                             │▶ auditor(감사 분석)  ─┴▶ coordinator(종합 권고)
+                             └▶ out-of-scope 안내      * reviewer/auditor 병렬
+                               │
+               ┌───────────────┼────────────────┐
+               ▼               ▼                ▼
+         Gemini API      ChromaDB(RAG)      SQLite(이력)
 ```
-
-### v1 대비 핵심 개선
-
-| 항목 | v1 | v2 |
-|---|---|---|
-| 에이전트 실행 | 이름만 병렬(순차) | LangGraph fan-out 실제 병렬 |
-| 위험도 판정 | 키워드 카운팅(중복 매칭 버그) | 구조화 출력 enum → 코드에서 결정론적 계산 |
-| 출처 인용 | 메타데이터 키 불일치로 항상 실패 | 청크 메타데이터 일원화, UI 인용 칩 |
-| 문서 색인 | 첫 질문 시점(느림) | 업로드 시점 백그라운드 색인 |
-| 결과 기록 | Notion(필수 의존) | 자체 SQLite + 이력 API |
-| UI | Gradio | Next.js 16 + Tailwind v4 (Figma AI Chatbot UI Kit 기반) |
-| 응답 | 완료 후 일괄 | SSE 스트리밍(진행 단계 + 토큰) |
 
 ## 기술 스택
 
-- **LLM**: Google Gemini (`gemini-2.5-flash`, 환경변수로 교체 가능)
-- **임베딩**: `gemini-embedding-001`
-- **오케스트레이션**: LangGraph 1.0
-- **백엔드**: FastAPI + ChromaDB + SQLite
-- **프론트**: Next.js 16 (App Router) + Tailwind CSS v4 + Plus Jakarta Sans
+| 영역 | 기술 |
+|---|---|
+| LLM | Google Gemini (`gemini-3.5-flash`) |
+| 임베딩 | `gemini-embedding-2` |
+| 오케스트레이션 | LangGraph 1.0 |
+| 백엔드 | FastAPI · ChromaDB · SQLite |
+| 프론트엔드 | Next.js 16 (App Router) · Tailwind CSS v4 |
+| 배포 | Docker Compose + Caddy (단일 서버) |
 
-## 실행 방법
+## 시작하기
 
-### 1. 백엔드 (api/)
+### 1. 백엔드
 
 ```bash
 cd v2/api
 python -m venv .venv
-.venv\Scripts\activate        # Windows
+.venv\Scripts\activate          # Windows (Linux/Mac: source .venv/bin/activate)
 pip install -r requirements.txt
-copy .env.example .env         # GEMINI_API_KEY 입력
+copy .env.example .env           # GEMINI_API_KEY 입력
 uvicorn app.main:app --port 8000
 ```
 
-> `GEMINI_API_KEY`가 없으면 **목업 모드**로 동작합니다(LLM 호출 없이 전체 플로우 검증 가능).
+> `GEMINI_API_KEY`가 없으면 목업 모드로 동작합니다 (LLM 호출 없이 플로우 확인용).
 > 키 발급: https://aistudio.google.com/apikey
 
-### 2. 프론트엔드 (web/)
+### 2. 프론트엔드
 
 ```bash
 cd v2/web
 npm install
-npm run dev                    # http://localhost:3000
+npm run dev                      # http://localhost:3000
 ```
 
 ### 3. 규정 문서 색인
@@ -74,37 +76,36 @@ cd v2/api
 .venv\Scripts\python.exe ingest_folder.py
 ```
 
-이미 색인된 파일명은 자동으로 건너뛰므로 문서 추가 시 다시 실행하면 됩니다.
+- 이미 색인된 파일명은 자동으로 건너뜁니다 (문서 추가 시 재실행)
+- 스캔본 PDF는 Gemini 멀티모달로 자동 추출됩니다
+- 무료 티어 쿼터(429) 초과 시 자동 백오프 재시도
 
-### 4. 사용
-
-채팅 화면에서 질문 → 규정 검토·감사 분석 병렬 진행 → 위험도 배지 + 종합 권고 + 출처 인용 확인
-
-## API 요약
+## API
 
 | 메서드 | 경로 | 설명 |
 |---|---|---|
-| POST | `/api/chat` | SSE 스트리밍 분석 (stage/token/agent_done/result 이벤트) |
-| POST | `/api/documents` | PDF 업로드 및 색인 (운영용, UI 없음) |
-| GET | `/api/documents` | 색인 문서 목록 |
-| DELETE | `/api/documents/{doc_id}` | 문서 및 색인 삭제 |
+| POST | `/api/chat` | SSE 스트리밍 분석 (`stage` / `agent_done` / `token` / `result` 이벤트) |
+| GET | `/api/health` | 상태 확인 (모드, 모델, 색인 청크 수) |
 | GET | `/api/history` | 분석 이력 |
-| GET | `/api/health` | 상태(목업 여부, 모델, 청크 수) |
+| POST | `/api/documents` | PDF 업로드·색인 (운영용) |
+| DELETE | `/api/documents/{doc_id}` | 문서 색인 삭제 |
+
+## 배포
+
+단일 서버(VPS)에 Docker Compose로 배포합니다. 자세한 절차는 [DEPLOYMENT.md](DEPLOYMENT.md) 참고.
+
+```bash
+cp deploy/.env.example deploy/.env   # 키·도메인 입력
+cd deploy
+docker compose up -d --build
+```
 
 ## 테스트
 
 ```bash
 cd v2/api
-python smoke_test.py           # 벡터 스토어 + 그래프 병렬 실행 + 라우팅 검증 (목업 모드)
+python smoke_test.py    # 벡터 스토어 + 파이프라인 + 라우팅 검증 (목업 모드)
 ```
-
-## 배포 로드맵 (다음 단계)
-
-- [ ] Supabase Auth (학교 이메일 도메인 제한) + 사용자별 일일 질의 제한
-- [ ] 배포: 프론트 Vercel, 백엔드 Google Cloud Run(scale-to-zero) — 목표 운영비 월 1~3만원
-- [x] 스캔본 PDF 대응 — Gemini 멀티모달 폴백으로 자동 텍스트 추출
-- [ ] 실제 규정 문서 기반 평가셋(20~30문항) 구축 및 프롬프트 튜닝
-- [ ] 감사 기록 문서를 별도 컬렉션으로 분리
 
 ## 주의
 

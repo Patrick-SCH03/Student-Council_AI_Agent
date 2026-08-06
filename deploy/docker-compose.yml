@@ -1,0 +1,41 @@
+# 단일 서버(VPS) 배포용 컴포즈
+# 사용법: deploy/.env 작성 후  docker compose up -d --build
+services:
+  api:
+    build: ../v2/api
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - DATA_DIR=/data
+      # Caddy가 same-origin으로 프록시하므로 CORS는 사실상 불필요하지만 안전하게 유지
+      - CORS_ORIGINS=${SITE_ORIGIN:-http://localhost}
+    volumes:
+      - api-data:/data
+      # 규정 문서 폴더 (서버에서 색인 실행용)
+      - ../documents:/documents:ro
+
+  web:
+    build:
+      context: ../v2/web
+      args:
+        # 빈 값 → same-origin 상대 경로(/api/...) 호출
+        NEXT_PUBLIC_API_URL: ""
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - SITE_ADDRESS=${SITE_ADDRESS:-:80}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  api-data:
+  caddy-data:
+  caddy-config:
