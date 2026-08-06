@@ -15,7 +15,7 @@ import {
 } from "@/lib/api";
 
 const EXAMPLES = [
-  "학생회비로 회식비 사용이 가능한가요?",
+  "행사 물품 구매 시 증빙서류는 무엇을 준비해야 하나요?",
   "동아리 지원금 사용 내역을 공개해야 하나요?",
   "예산 변경 시 필요한 승인 절차는 무엇인가요?",
   "감사에서 어떤 처분을 받을 수 있나요?",
@@ -600,7 +600,7 @@ export default function ChatPage() {
           <input
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            placeholder="예: 학생회비로 회식비 사용이 가능한가요?"
+            placeholder="학생회 규정·재정·감사에 대해 물어보세요"
             maxLength={1000}
             className="min-w-0 flex-1 bg-transparent py-2.5 text-[15px] font-medium text-slate-700 placeholder-slate-400 outline-none"
           />
