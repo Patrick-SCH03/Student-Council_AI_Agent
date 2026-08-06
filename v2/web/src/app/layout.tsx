@@ -37,12 +37,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
                 학생회 규정 AI
               </span>
             </Link>
-            <div className="flex items-center gap-2">
-              <ContactButton />
-              <span className="rounded-full bg-indigo-50 px-3 py-1.5 text-xs font-bold text-indigo-600">
-                INHA 학생회
-              </span>
-            </div>
+            <ContactButton />
           </div>
         </header>
         <main className="mx-auto w-full max-w-3xl flex-1 px-4">{children}</main>

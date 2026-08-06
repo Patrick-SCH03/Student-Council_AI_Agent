@@ -6,7 +6,6 @@
 import { useEffect, useRef, useState } from "react";
 
 const EMAIL = "wwoo5241@inha.edu";
-const MAILTO = `mailto:${EMAIL}?subject=${encodeURIComponent("[학생회 규정 AI] 오류 신고 / 문의")}`;
 
 export default function ContactButton() {
   const [open, setOpen] = useState(false);
@@ -63,21 +62,13 @@ export default function ContactButton() {
           <p className="mt-2 select-all rounded-lg bg-slate-50 px-3 py-2 text-center text-sm font-bold text-indigo-600">
             {EMAIL}
           </p>
-          <div className="mt-2.5 flex gap-1.5">
-            <button
-              type="button"
-              onClick={copy}
-              className="flex-1 rounded-full bg-indigo-600 px-3 py-1.5 text-xs font-bold text-white transition hover:bg-indigo-700"
-            >
-              {copied ? "✓ 복사됨" : "주소 복사"}
-            </button>
-            <a
-              href={MAILTO}
-              className="flex-1 rounded-full border border-slate-200 px-3 py-1.5 text-center text-xs font-medium text-slate-500 transition hover:border-indigo-300 hover:text-indigo-600"
-            >
-              메일 앱으로
-            </a>
-          </div>
+          <button
+            type="button"
+            onClick={copy}
+            className="mt-2.5 w-full rounded-full bg-indigo-600 px-3 py-1.5 text-xs font-bold text-white transition hover:bg-indigo-700"
+          >
+            {copied ? "✓ 복사됨" : "주소 복사"}
+          </button>
         </div>
       )}
     </div>
