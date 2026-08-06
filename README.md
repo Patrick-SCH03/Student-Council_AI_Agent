@@ -36,7 +36,7 @@ Next.js 16 (web/)  ──SSE──▶  FastAPI (api/)
 
 | 영역 | 기술 |
 |---|---|
-| LLM | Google Gemini (`gemini-3.5-flash`) |
+| LLM | Google Gemini (`gemini-3.6-flash`) |
 | 임베딩 | `gemini-embedding-2` |
 | 오케스트레이션 | LangGraph 1.0 |
 | 백엔드 | FastAPI · ChromaDB · SQLite |
