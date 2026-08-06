@@ -65,17 +65,27 @@ npm install
 npm run dev                    # http://localhost:3000
 ```
 
-### 3. 사용
+### 3. 규정 문서 색인
 
-1. `문서 관리`에서 규정·세칙·감사보고서 PDF 업로드 (업로드 즉시 청킹·임베딩)
-2. `채팅`에서 질문 → 규정 검토·감사 분석 병렬 진행 → 위험도 배지 + 종합 권고 + 출처 인용 확인
+`documents/` 폴더에 규정·세칙·감사보고서 PDF를 넣고:
+
+```bash
+cd v2/api
+.venv\Scripts\python.exe ingest_folder.py
+```
+
+이미 색인된 파일명은 자동으로 건너뛰므로 문서 추가 시 다시 실행하면 됩니다.
+
+### 4. 사용
+
+채팅 화면에서 질문 → 규정 검토·감사 분석 병렬 진행 → 위험도 배지 + 종합 권고 + 출처 인용 확인
 
 ## API 요약
 
 | 메서드 | 경로 | 설명 |
 |---|---|---|
 | POST | `/api/chat` | SSE 스트리밍 분석 (stage/token/agent_done/result 이벤트) |
-| POST | `/api/documents` | PDF 업로드 및 색인 |
+| POST | `/api/documents` | PDF 업로드 및 색인 (운영용, UI 없음) |
 | GET | `/api/documents` | 색인 문서 목록 |
 | DELETE | `/api/documents/{doc_id}` | 문서 및 색인 삭제 |
 | GET | `/api/history` | 분석 이력 |

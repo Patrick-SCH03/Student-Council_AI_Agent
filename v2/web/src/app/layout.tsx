@@ -34,20 +34,9 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
                 학생회 규정 AI
               </span>
             </Link>
-            <nav className="flex items-center gap-1.5 text-sm font-medium">
-              <Link
-                href="/"
-                className="rounded-full px-4 py-2 text-slate-500 transition hover:bg-indigo-50 hover:text-indigo-600"
-              >
-                채팅
-              </Link>
-              <Link
-                href="/admin"
-                className="rounded-full px-4 py-2 text-slate-500 transition hover:bg-indigo-50 hover:text-indigo-600"
-              >
-                문서 관리
-              </Link>
-            </nav>
+            <span className="rounded-full bg-indigo-50 px-3 py-1.5 text-xs font-bold text-indigo-600">
+              INHA 학생회
+            </span>
           </div>
         </header>
         <main className="mx-auto w-full max-w-3xl flex-1 px-4">{children}</main>
