@@ -1,0 +1,15 @@
+# --- Web framework ---
+fastapi>=0.115
+uvicorn[standard]>=0.30
+python-multipart>=0.0.9
+python-dotenv>=1.0
+
+# --- Agent orchestration (LangGraph 1.0) ---
+langgraph>=1.0
+langchain-openai>=1.0
+langchain-core>=1.0
+langchain-text-splitters>=1.0
+
+# --- RAG ---
+chromadb>=1.0
+pypdf>=5.0

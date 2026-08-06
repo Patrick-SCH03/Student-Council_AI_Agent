@@ -1,0 +1,25 @@
+# v1 레거시 (참고용 보관, 새 히스토리에서 제외)
+legacy/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Env / secrets
+.env
+*.env.local
+
+# Data
+api/data/
+*.sqlite3
+
+# Node
+node_modules/
+.next/
+out/
+
+# Misc
+.DS_Store
+*.log
