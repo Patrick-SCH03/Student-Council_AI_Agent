@@ -35,6 +35,11 @@ CREATE TABLE IF NOT EXISTS metrics (
     output_tokens  INTEGER DEFAULT 0,
     query_preview  TEXT
 );
+CREATE TABLE IF NOT EXISTS visits (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts         TEXT NOT NULL,
+    visitor_id TEXT NOT NULL
+);
 """
 
 
@@ -42,6 +47,11 @@ def _connect() -> sqlite3.Connection:
     conn = sqlite3.connect(SQLITE_PATH)
     conn.row_factory = sqlite3.Row
     conn.executescript(_SCHEMA)
+    # 스키마 확장 마이그레이션 (기존 DB 호환)
+    try:
+        conn.execute("ALTER TABLE metrics ADD COLUMN analysis_id INTEGER")
+    except sqlite3.OperationalError:
+        pass  # 이미 존재
     return conn
 
 
@@ -92,13 +102,38 @@ def record_metric(
     input_tokens: int,
     output_tokens: int,
     query_preview: str,
+    analysis_id: int | None = None,
 ) -> None:
     with _connect() as conn:
         conn.execute(
-            "INSERT INTO metrics (ts, route, risk_level, status, elapsed, input_tokens, output_tokens, query_preview) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (_now(), route, risk_level, status, elapsed, input_tokens, output_tokens, query_preview[:80]),
+            "INSERT INTO metrics (ts, route, risk_level, status, elapsed, input_tokens, output_tokens, query_preview, analysis_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (_now(), route, risk_level, status, elapsed, input_tokens, output_tokens, query_preview[:500], analysis_id),
         )
+
+
+def add_visit(visitor_id: str) -> None:
+    with _connect() as conn:
+        conn.execute(
+            "INSERT INTO visits (ts, visitor_id) VALUES (?, ?)", (_now(), visitor_id)
+        )
+
+
+def export_metrics_csv() -> str:
+    """포트폴리오/분석용 전체 지표 CSV 덤프."""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT ts, route, risk_level, status, elapsed, input_tokens, output_tokens, query_preview "
+            "FROM metrics ORDER BY id"
+        ).fetchall()
+    lines = ["ts,route,risk_level,status,elapsed,input_tokens,output_tokens,query"]
+    for r in rows:
+        query = (r["query_preview"] or "").replace('"', '""')
+        lines.append(
+            f'{r["ts"]},{r["route"] or ""},{r["risk_level"] or ""},{r["status"]},'
+            f'{r["elapsed"] or 0},{r["input_tokens"]},{r["output_tokens"]},"{query}"'
+        )
+    return "\n".join(lines)
 
 
 def get_stats(days: int = 14) -> dict:
@@ -138,9 +173,25 @@ def get_stats(days: int = 14) -> dict:
         ).fetchall()}
 
         recent = [dict(r) for r in conn.execute(
-            "SELECT ts, route, risk_level, status, elapsed, "
+            "SELECT id, analysis_id, ts, route, risk_level, status, elapsed, "
             "input_tokens + output_tokens AS tokens, query_preview "
             "FROM metrics ORDER BY id DESC LIMIT 20"
+        ).fetchall()]
+
+        visits = {
+            "today_visitors": conn.execute(
+                "SELECT COUNT(DISTINCT visitor_id) AS n FROM visits WHERE date(ts) = date('now')"
+            ).fetchone()["n"],
+            "total_visitors": conn.execute(
+                "SELECT COUNT(DISTINCT visitor_id) AS n FROM visits"
+            ).fetchone()["n"],
+            "total_visits": conn.execute("SELECT COUNT(*) AS n FROM visits").fetchone()["n"],
+        }
+
+        daily_visits = [dict(r) for r in conn.execute(
+            "SELECT date(ts) AS date, COUNT(DISTINCT visitor_id) AS visitors "
+            "FROM visits WHERE ts >= datetime('now', ?) GROUP BY date(ts) ORDER BY date",
+            (f"-{days} days",),
         ).fetchall()]
 
     return {
@@ -150,7 +201,22 @@ def get_stats(days: int = 14) -> dict:
         "risk": risk,
         "routes": routes,
         "recent": recent,
+        "visits": visits,
+        "daily_visits": daily_visits,
     }
+
+
+def get_analysis(analysis_id: int) -> dict | None:
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT id, query, risk_level, result, created_at FROM analyses WHERE id = ?",
+            (analysis_id,),
+        ).fetchone()
+    if not row:
+        return None
+    item = dict(row)
+    item["result"] = json.loads(item["result"])
+    return item
 
 
 def list_analyses(limit: int = 20) -> list[dict]:

@@ -6,7 +6,7 @@ import time
 
 from fastapi import FastAPI, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import PlainTextResponse, StreamingResponse
 from langchain_core.callbacks import UsageMetadataCallbackHandler
 from pydantic import BaseModel, Field
 
@@ -174,7 +174,7 @@ async def chat(request: ChatRequest):
                 "citations": citations,
                 "elapsed": round(time.time() - start, 2),
             }
-            db.add_analysis(query, risk, result)
+            analysis_id = db.add_analysis(query, risk, result)
             in_tok, out_tok = _token_totals()
             db.record_metric(
                 route=merged.get("route"),
@@ -184,6 +184,7 @@ async def chat(request: ChatRequest):
                 input_tokens=in_tok,
                 output_tokens=out_tok,
                 query_preview=query,
+                analysis_id=analysis_id,
             )
             yield _sse({"type": "result", **result})
 
@@ -245,6 +246,34 @@ def delete_document(doc_id: str):
 @app.get("/api/history")
 def get_history(limit: int = 20):
     return {"analyses": db.list_analyses(min(limit, 100))}
+
+
+@app.get("/api/analyses/{analysis_id}")
+def get_analysis(analysis_id: int):
+    item = db.get_analysis(analysis_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="분석 기록을 찾을 수 없습니다.")
+    return item
+
+
+class TrackRequest(BaseModel):
+    visitor_id: str = Field(min_length=8, max_length=64)
+
+
+@app.post("/api/track")
+def track_visit(request: TrackRequest):
+    db.add_visit(request.visitor_id)
+    return {"ok": True}
+
+
+@app.get("/api/stats/export")
+def export_stats():
+    csv = db.export_metrics_csv()
+    return PlainTextResponse(
+        csv,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": "attachment; filename=metrics.csv"},
+    )
 
 
 def _cost_usd(input_tokens: int, output_tokens: int) -> float:

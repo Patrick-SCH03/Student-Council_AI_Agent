@@ -2,12 +2,26 @@
 
 // 운영 관측 대시보드 (숨김 URL: /stats — 네비게이션에 노출하지 않음)
 
-import { useCallback, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 import { API_BASE } from "@/lib/api";
 
 const CARD_SHADOW =
   "shadow-[0px_12px_16px_-4px_rgba(16,24,40,0.08),0px_4px_6px_-2px_rgba(16,24,40,0.03)]";
+
+type RecentRow = {
+  id: number;
+  analysis_id: number | null;
+  ts: string;
+  route: string | null;
+  risk_level: string | null;
+  status: string;
+  elapsed: number | null;
+  tokens: number;
+  query_preview: string;
+};
 
 type Stats = {
   totals: {
@@ -26,15 +40,9 @@ type Stats = {
   daily: { date: string; count: number; avg_elapsed: number; tokens: number }[];
   risk: Record<string, number>;
   routes: Record<string, number>;
-  recent: {
-    ts: string;
-    route: string | null;
-    risk_level: string | null;
-    status: string;
-    elapsed: number | null;
-    tokens: number;
-    query_preview: string;
-  }[];
+  recent: RecentRow[];
+  visits: { today_visitors: number; total_visitors: number; total_visits: number };
+  daily_visits: { date: string; visitors: number }[];
   cost: {
     total_usd: number;
     today_usd: number;
@@ -42,6 +50,13 @@ type Stats = {
     today_krw: number;
     usd_krw: number;
   };
+};
+
+type Analysis = {
+  id: number;
+  query: string;
+  risk_level: string | null;
+  result: { final_markdown: string };
 };
 
 const RISK_STYLE: Record<string, { dot: string; chip: string }> = {
@@ -58,7 +73,7 @@ function StatTile({ label, value, sub }: { label: string; value: string; sub?: s
   return (
     <div className={`rounded-2xl border border-slate-200 bg-white p-4 ${CARD_SHADOW}`}>
       <p className="text-xs font-bold uppercase tracking-wide text-slate-400">{label}</p>
-      <p className="mt-1.5 text-[26px] font-extrabold tracking-tight text-slate-900">
+      <p className="mt-1.5 text-[24px] font-extrabold tracking-tight text-slate-900">
         {value}
       </p>
       {sub && <p className="mt-0.5 text-xs font-medium text-slate-400">{sub}</p>}
@@ -66,38 +81,45 @@ function StatTile({ label, value, sub }: { label: string; value: string; sub?: s
   );
 }
 
-function DailyBars({ daily }: { daily: Stats["daily"] }) {
-  // 최근 14일을 빈 날짜 포함해 채운다
-  const byDate = new Map(daily.map((d) => [d.date, d]));
-  const days: { date: string; count: number; avg: number }[] = [];
+function DailyBars({
+  title,
+  data,
+  unit,
+}: {
+  title: string;
+  data: { date: string; value: number; tooltip?: string }[];
+  unit: string;
+}) {
+  const byDate = new Map(data.map((d) => [d.date, d]));
+  const days: { date: string; value: number; tooltip?: string }[] = [];
   for (let i = 13; i >= 0; i--) {
     const d = new Date();
     d.setDate(d.getDate() - i);
     const key = d.toISOString().slice(0, 10);
     const row = byDate.get(key);
-    days.push({ date: key, count: row?.count ?? 0, avg: row?.avg_elapsed ?? 0 });
+    days.push({ date: key, value: row?.value ?? 0, tooltip: row?.tooltip });
   }
-  const max = Math.max(...days.map((d) => d.count), 1);
-  const maxIdx = days.reduce((mi, d, i) => (d.count > days[mi].count ? i : mi), 0);
+  const max = Math.max(...days.map((d) => d.value), 1);
+  const maxIdx = days.reduce((mi, d, i) => (d.value > days[mi].value ? i : mi), 0);
 
   return (
     <div className={`rounded-2xl border border-slate-200 bg-white p-5 ${CARD_SHADOW}`}>
-      <p className="text-sm font-bold text-slate-800">일별 질의 수 (최근 14일)</p>
-      <div className="mt-4 flex h-32 items-end gap-[2px]">
+      <p className="text-sm font-bold text-slate-800">{title}</p>
+      <div className="mt-4 flex h-28 items-end gap-[2px]">
         {days.map((d, i) => {
-          const h = d.count === 0 ? 2 : Math.max((d.count / max) * 100, 8);
+          const h = d.value === 0 ? 2 : Math.max((d.value / max) * 100, 8);
           return (
             <div
               key={d.date}
               className="group relative flex h-full flex-1 flex-col items-center justify-end"
-              title={`${d.date} · ${d.count}건${d.count ? ` · 평균 ${d.avg.toFixed(1)}초` : ""}`}
+              title={d.tooltip ?? `${d.date} · ${d.value}${unit}`}
             >
-              {i === maxIdx && d.count > 0 && (
-                <span className="mb-1 text-[10px] font-bold text-slate-500">{d.count}</span>
+              {i === maxIdx && d.value > 0 && (
+                <span className="mb-1 text-[10px] font-bold text-slate-500">{d.value}</span>
               )}
               <div
                 className={`w-full max-w-[26px] rounded-t-[4px] transition ${
-                  d.count === 0 ? "bg-slate-100" : "bg-indigo-600 group-hover:bg-indigo-700"
+                  d.value === 0 ? "bg-slate-100" : "bg-indigo-600 group-hover:bg-indigo-700"
                 }`}
                 style={{ height: `${h}%` }}
               />
@@ -116,6 +138,8 @@ function DailyBars({ daily }: { daily: Stats["daily"] }) {
 export default function StatsPage() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [expandedId, setExpandedId] = useState<number | null>(null);
+  const [answers, setAnswers] = useState<Record<number, Analysis | "loading" | "error">>({});
 
   const load = useCallback(async () => {
     try {
@@ -134,6 +158,19 @@ export default function StatsPage() {
     return () => clearInterval(t);
   }, [load]);
 
+  const toggleRow = (row: RecentRow) => {
+    const next = expandedId === row.id ? null : row.id;
+    setExpandedId(next);
+    if (next !== null && row.analysis_id && !answers[row.analysis_id]) {
+      const aid = row.analysis_id;
+      setAnswers((prev) => ({ ...prev, [aid]: "loading" }));
+      fetch(`${API_BASE}/api/analyses/${aid}`)
+        .then((r) => (r.ok ? r.json() : Promise.reject()))
+        .then((data: Analysis) => setAnswers((prev) => ({ ...prev, [aid]: data })))
+        .catch(() => setAnswers((prev) => ({ ...prev, [aid]: "error" })));
+    }
+  };
+
   if (error) {
     return <p className="py-16 text-center text-sm font-medium text-rose-600">{error}</p>;
   }
@@ -149,7 +186,7 @@ export default function StatsPage() {
 
   return (
     <div className="py-8">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-extrabold tracking-tight text-slate-900">
             운영 대시보드
@@ -158,9 +195,15 @@ export default function StatsPage() {
             30초마다 자동 갱신 · 관리용 페이지
           </p>
         </div>
+        <a
+          href={`${API_BASE}/api/stats/export`}
+          className="rounded-full border border-slate-200 bg-white px-4 py-2 text-xs font-bold text-slate-500 transition hover:border-indigo-300 hover:text-indigo-600"
+        >
+          ⇩ 지표 CSV 내보내기
+        </a>
       </div>
 
-      <div className="mt-6 grid grid-cols-2 gap-3 lg:grid-cols-4">
+      <div className="mt-6 grid grid-cols-2 gap-3 lg:grid-cols-3">
         <StatTile
           label="오늘 질의"
           value={`${fmt(stats.today.count)}건`}
@@ -172,6 +215,11 @@ export default function StatsPage() {
           sub={stats.totals.errors ? `오류 ${stats.totals.errors}건` : "오류 0건"}
         />
         <StatTile
+          label="방문자"
+          value={`오늘 ${fmt(stats.visits.today_visitors)}명`}
+          sub={`누적 ${fmt(stats.visits.total_visitors)}명 · 총 방문 ${fmt(stats.visits.total_visits)}회`}
+        />
+        <StatTile
           label="예상 API 비용"
           value={`₩${fmt(stats.cost.total_krw)}`}
           sub={`오늘 ₩${fmt(stats.cost.today_krw)} · $${stats.cost.total_usd.toFixed(2)}`}
@@ -179,13 +227,30 @@ export default function StatsPage() {
         <StatTile
           label="토큰 사용량"
           value={fmt(totalTokens)}
-          sub={`오늘 ${fmt(todayTokens)} · 평균 응답 ${stats.totals.avg_elapsed.toFixed(1)}초`}
+          sub={`오늘 ${fmt(todayTokens)}`}
+        />
+        <StatTile
+          label="평균 응답 시간"
+          value={`${stats.totals.avg_elapsed.toFixed(1)}초`}
         />
       </div>
 
       <div className="mt-4 grid gap-4 lg:grid-cols-3">
-        <div className="lg:col-span-2">
-          <DailyBars daily={stats.daily} />
+        <div className="flex flex-col gap-4 lg:col-span-2">
+          <DailyBars
+            title="일별 질의 수 (최근 14일)"
+            unit="건"
+            data={stats.daily.map((d) => ({
+              date: d.date,
+              value: d.count,
+              tooltip: `${d.date} · ${d.count}건 · 평균 ${d.avg_elapsed.toFixed(1)}초`,
+            }))}
+          />
+          <DailyBars
+            title="일별 방문자 수 (최근 14일)"
+            unit="명"
+            data={stats.daily_visits.map((d) => ({ date: d.date, value: d.visitors }))}
+          />
         </div>
 
         <div className={`rounded-2xl border border-slate-200 bg-white p-5 ${CARD_SHADOW}`}>
@@ -236,7 +301,9 @@ export default function StatsPage() {
       </div>
 
       <div className={`mt-4 overflow-x-auto rounded-2xl border border-slate-200 bg-white ${CARD_SHADOW}`}>
-        <p className="px-5 pt-4 text-sm font-bold text-slate-800">최근 질의 20건</p>
+        <p className="px-5 pt-4 text-sm font-bold text-slate-800">
+          최근 질의 20건 <span className="font-medium text-slate-400">— 클릭하면 전체 내용을 볼 수 있습니다</span>
+        </p>
         <table className="mt-2 w-full min-w-[640px] text-left text-sm">
           <thead>
             <tr className="border-b border-slate-100 text-[11px] font-bold uppercase tracking-wide text-slate-400">
@@ -248,41 +315,86 @@ export default function StatsPage() {
             </tr>
           </thead>
           <tbody>
-            {stats.recent.map((r, i) => (
-              <tr key={i} className="border-b border-slate-50 last:border-0">
-                <td className="whitespace-nowrap px-5 py-2.5 text-xs font-medium text-slate-400">
-                  {new Date(r.ts).toLocaleString("ko-KR", {
-                    month: "numeric",
-                    day: "numeric",
-                    hour: "2-digit",
-                    minute: "2-digit",
-                  })}
-                </td>
-                <td className="max-w-[280px] truncate px-2 py-2.5 font-medium text-slate-700">
-                  {r.query_preview}
-                </td>
-                <td className="whitespace-nowrap px-2 py-2.5">
-                  {r.status !== "ok" ? (
-                    <span className="text-xs font-bold text-rose-600">오류</span>
-                  ) : r.risk_level ? (
-                    <span
-                      className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-bold ring-1 ${
-                        RISK_STYLE[r.risk_level]?.chip ?? "bg-slate-50 text-slate-500 ring-slate-200"
-                      }`}
-                    >
-                      {r.risk_level}
-                    </span>
-                  ) : (
-                    <span className="text-xs font-medium text-slate-400">—</span>
-                  )}
-                </td>
-                <td className="whitespace-nowrap px-2 py-2.5 text-xs font-medium text-slate-500">
-                  {r.elapsed != null ? `${r.elapsed.toFixed(1)}초` : "—"}
-                </td>
-                <td className="whitespace-nowrap px-5 py-2.5 text-right text-xs font-medium text-slate-500">
-                  {fmt(r.tokens)}
-                </td>
-              </tr>
+            {stats.recent.map((r) => (
+              <Fragment key={r.id}>
+                <tr
+                  onClick={() => toggleRow(r)}
+                  className={`cursor-pointer border-b border-slate-50 transition last:border-0 hover:bg-slate-50/60 ${
+                    expandedId === r.id ? "bg-indigo-50/40" : ""
+                  }`}
+                >
+                  <td className="whitespace-nowrap px-5 py-2.5 text-xs font-medium text-slate-400">
+                    {new Date(r.ts).toLocaleString("ko-KR", {
+                      month: "numeric",
+                      day: "numeric",
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    })}
+                  </td>
+                  <td className="max-w-[280px] truncate px-2 py-2.5 font-medium text-slate-700">
+                    {r.query_preview}
+                  </td>
+                  <td className="whitespace-nowrap px-2 py-2.5">
+                    {r.status !== "ok" ? (
+                      <span className="text-xs font-bold text-rose-600">오류</span>
+                    ) : r.risk_level ? (
+                      <span
+                        className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-bold ring-1 ${
+                          RISK_STYLE[r.risk_level]?.chip ?? "bg-slate-50 text-slate-500 ring-slate-200"
+                        }`}
+                      >
+                        {r.risk_level}
+                      </span>
+                    ) : (
+                      <span className="text-xs font-medium text-slate-400">—</span>
+                    )}
+                  </td>
+                  <td className="whitespace-nowrap px-2 py-2.5 text-xs font-medium text-slate-500">
+                    {r.elapsed != null ? `${r.elapsed.toFixed(1)}초` : "—"}
+                  </td>
+                  <td className="whitespace-nowrap px-5 py-2.5 text-right text-xs font-medium text-slate-500">
+                    {fmt(r.tokens)}
+                  </td>
+                </tr>
+                {expandedId === r.id && (
+                  <tr className="border-b border-slate-100">
+                    <td colSpan={5} className="bg-slate-50/60 px-5 py-4">
+                      <p className="text-[11px] font-bold uppercase tracking-wide text-slate-400">
+                        전체 질문
+                      </p>
+                      <p className="mt-1 text-sm font-medium text-slate-800">
+                        {r.query_preview}
+                      </p>
+                      {r.analysis_id ? (
+                        <div className="mt-3">
+                          <p className="text-[11px] font-bold uppercase tracking-wide text-slate-400">
+                            최종 답변
+                          </p>
+                          {answers[r.analysis_id] === "loading" && (
+                            <p className="mt-1 text-sm text-slate-400">불러오는 중...</p>
+                          )}
+                          {answers[r.analysis_id] === "error" && (
+                            <p className="mt-1 text-sm text-rose-600">
+                              답변을 불러오지 못했습니다.
+                            </p>
+                          )}
+                          {typeof answers[r.analysis_id] === "object" && (
+                            <div className="mt-1 max-h-72 overflow-y-auto rounded-xl border border-slate-200 bg-white p-4 text-sm leading-relaxed text-slate-700 [&_h3]:mt-3 [&_h3]:mb-1 [&_h3]:font-bold [&_h3]:text-slate-900 [&_ol]:list-decimal [&_ol]:pl-5 [&_ul]:list-disc [&_ul]:pl-5">
+                              <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                                {(answers[r.analysis_id] as Analysis).result.final_markdown}
+                              </ReactMarkdown>
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <p className="mt-2 text-xs text-slate-400">
+                          저장된 답변이 없는 기록입니다 (범위 밖 질문 또는 오류).
+                        </p>
+                      )}
+                    </td>
+                  </tr>
+                )}
+              </Fragment>
             ))}
             {stats.recent.length === 0 && (
               <tr>

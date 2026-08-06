@@ -4,6 +4,7 @@ import Image from "next/image";
 import Link from "next/link";
 
 import ContactButton from "@/components/ContactButton";
+import VisitTracker from "@/components/VisitTracker";
 
 import "./globals.css";
 
@@ -41,6 +42,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
           </div>
         </header>
         <main className="mx-auto w-full max-w-3xl flex-1 px-4">{children}</main>
+        <VisitTracker />
       </body>
     </html>
   );
