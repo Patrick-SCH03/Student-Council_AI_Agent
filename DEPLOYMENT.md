@@ -5,19 +5,24 @@
 - **A. 내 PC + Cloudflare Tunnel** — 비용 0원, 시험 운영·베타용. PC가 켜져 있을 때만 서비스됨
 - **B. VPS + Docker Compose** — 24시간 정식 운영용 (아래 상세)
 
-## A. 내 PC를 서버로 (Cloudflare Tunnel)
+## A. 내 PC를 서버로 (Tailscale Funnel — 무료 고정 주소)
 
-요구사항: cloudflared 설치 (`winget install Cloudflare.cloudflared`)
+최초 1회 설정:
+
+1. `winget install Tailscale.Tailscale` 설치 후 로그인 (`tailscale login`)
+2. `tailscale funnel --bg 3000` 실행 → 안내 링크에서 Funnel 활성화 승인
+
+이후 운영:
 
 ```powershell
-.\start-server.ps1        # API + 웹(프로덕션) + 터널 실행, 공개 URL 출력
-.\start-server.ps1 -Stop  # 전체 종료
+.\start-server.ps1        # API + 웹(프로덕션) 실행, 고정 공개 URL 출력
+.\start-server.ps1 -Stop  # 서버 종료 (Funnel 설정은 유지)
 ```
 
-- 발급되는 `https://xxx.trycloudflare.com` 주소를 공유하면 외부에서 바로 접속 가능
-- 임시 터널이라 재시작 시 주소가 바뀜 — 고정 주소가 필요하면 Cloudflare 계정에 도메인을 연결해
-  [Named Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/)로 전환
+- 공개 주소는 `https://<PC이름>.<테일넷>.ts.net` 형태의 **고정 주소** (재시작해도 동일)
+- Funnel 설정은 Tailscale 서비스에 저장되어 재부팅 후에도 유지됨
 - Windows 전원 설정에서 절전 모드를 꺼두어야 함 (설정 → 시스템 → 전원 → 절전 안 함)
+- 운영 현황은 `/stats` 페이지에서 확인 (질의 수·응답 시간·토큰 사용량·위험도 분포)
 
 ## B. VPS + Docker Compose (정식 운영)
 

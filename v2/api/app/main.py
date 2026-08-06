@@ -7,6 +7,7 @@ import time
 from fastapi import FastAPI, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from langchain_core.callbacks import UsageMetadataCallbackHandler
 from pydantic import BaseModel, Field
 
 from app import db
@@ -88,11 +89,21 @@ async def chat(request: ChatRequest):
     async def event_stream():
         start = time.time()
         merged: dict = {"citations": []}
+        usage_handler = UsageMetadataCallbackHandler()
+
+        def _token_totals() -> tuple[int, int]:
+            usage = usage_handler.usage_metadata or {}
+            return (
+                sum(u.get("input_tokens", 0) for u in usage.values()),
+                sum(u.get("output_tokens", 0) for u in usage.values()),
+            )
+
         try:
             yield _sse({"type": "stage", "label": "질문 분석 중..."})
 
             async for mode, payload in graph.astream(
                 {"query": query, "history": history, "citations": []},
+                config={"callbacks": [usage_handler]},
                 stream_mode=["updates", "messages"],
             ):
                 if mode == "messages":
@@ -157,9 +168,29 @@ async def chat(request: ChatRequest):
                 "elapsed": round(time.time() - start, 2),
             }
             db.add_analysis(query, risk, result)
+            in_tok, out_tok = _token_totals()
+            db.record_metric(
+                route=merged.get("route"),
+                risk_level=risk,
+                status="ok",
+                elapsed=result["elapsed"],
+                input_tokens=in_tok,
+                output_tokens=out_tok,
+                query_preview=query,
+            )
             yield _sse({"type": "result", **result})
 
         except Exception as e:  # noqa: BLE001 - 스트림 내 오류는 이벤트로 전달
+            in_tok, out_tok = _token_totals()
+            db.record_metric(
+                route=merged.get("route"),
+                risk_level=None,
+                status="error",
+                elapsed=round(time.time() - start, 2),
+                input_tokens=in_tok,
+                output_tokens=out_tok,
+                query_preview=query,
+            )
             yield _sse({"type": "error", "message": f"분석 중 오류가 발생했습니다: {e}"})
 
     return StreamingResponse(
@@ -202,8 +233,13 @@ def delete_document(doc_id: str):
     return {"deleted": doc_id}
 
 
-# ---------------------------------------------------------------- history
+# ---------------------------------------------------------------- history / stats
 
 @app.get("/api/history")
 def get_history(limit: int = 20):
     return {"analyses": db.list_analyses(min(limit, 100))}
+
+
+@app.get("/api/stats")
+def get_stats(days: int = 14):
+    return db.get_stats(min(max(days, 1), 90))
