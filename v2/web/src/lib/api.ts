@@ -35,9 +35,20 @@ export type ChatResult = {
 export type ChatEvent =
   | { type: "stage"; label: string; route?: string }
   | { type: "token"; content: string }
-  | { type: "agent_done"; agent: "reviewer" | "auditor" }
+  | {
+      type: "agent_done";
+      agent: "reviewer";
+      data: ReviewerResult | null;
+    }
+  | {
+      type: "agent_done";
+      agent: "auditor";
+      data: AuditorResult | null;
+    }
   | ({ type: "result" } & ChatResult)
   | { type: "error"; message: string };
+
+export type HistoryItem = { question: string; answer: string };
 
 export type HealthInfo = {
   status: string;
@@ -49,12 +60,13 @@ export type HealthInfo = {
 /** POST /api/chat 의 SSE 응답을 이벤트 단위로 yield */
 export async function* streamChat(
   query: string,
+  history: HistoryItem[] = [],
   signal?: AbortSignal,
 ): AsyncGenerator<ChatEvent> {
   const res = await fetch(`${API_BASE}/api/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ query }),
+    body: JSON.stringify({ query, history }),
     signal,
   });
   if (!res.ok || !res.body) {

@@ -5,8 +5,11 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import {
+  type AuditorResult,
   type ChatResult,
   type Citation,
+  type HistoryItem,
+  type ReviewerResult,
   fetchHealth,
   streamChat,
 } from "@/lib/api";
@@ -24,8 +27,9 @@ const CARD_SHADOW =
 
 type AssistantState = {
   stage: string | null;
-  agentsDone: { reviewer: boolean; auditor: boolean };
   tokens: string;
+  reviewer: ReviewerResult | null; // agent_done으로 먼저 도착하는 부분 결과
+  auditor: AuditorResult | null;
   result: ChatResult | null;
   error: string | null;
   route: string | null;
@@ -37,8 +41,9 @@ type Message =
 
 const emptyAssistant = (): AssistantState => ({
   stage: "질문 분석 중...",
-  agentsDone: { reviewer: false, auditor: false },
   tokens: "",
+  reviewer: null,
+  auditor: null,
   result: null,
   error: null,
   route: null,
@@ -75,37 +80,53 @@ function RiskBadge({ level }: { level: string | null }) {
 
 function Markdown({ text }: { text: string }) {
   return (
-    <div className="max-w-none text-[15px] leading-[1.65] text-slate-700 [&_h3]:mt-4 [&_h3]:mb-1 [&_h3]:text-[15px] [&_h3]:font-bold [&_h3]:text-slate-800 [&_p]:my-1.5 [&_ul]:my-1.5 [&_ul]:list-disc [&_ul]:pl-5 [&_blockquote]:border-l-2 [&_blockquote]:border-indigo-200 [&_blockquote]:pl-3 [&_blockquote]:text-slate-500 [&_strong]:text-slate-800">
+    <div className="max-w-none text-[15px] leading-[1.65] text-slate-700 [&_h3]:mt-4 [&_h3]:mb-1 [&_h3]:text-[15px] [&_h3]:font-bold [&_h3]:text-slate-800 [&_p]:my-1.5 [&_ul]:my-1.5 [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:my-1.5 [&_ol]:list-decimal [&_ol]:pl-5 [&_blockquote]:border-l-2 [&_blockquote]:border-indigo-200 [&_blockquote]:pl-3 [&_blockquote]:text-slate-500 [&_strong]:text-slate-800">
       <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
     </div>
   );
 }
 
 function CitationChips({ citations }: { citations: Citation[] }) {
+  const [openIdx, setOpenIdx] = useState<number | null>(null);
   const unique = [
     ...new Map(citations.map((c) => [c.source_file, c])).values(),
   ];
   if (unique.length === 0) return null;
   return (
-    <div className="mt-4 flex flex-wrap gap-1.5">
-      {unique.map((c, i) => (
-        <span
-          key={i}
-          title={c.snippet}
-          className="inline-flex max-w-full cursor-help items-center gap-1.5 truncate rounded-full bg-indigo-50 px-3 py-1.5 text-xs font-medium text-indigo-600"
-        >
-          <svg viewBox="0 0 16 16" fill="none" className="h-3.5 w-3.5 shrink-0" aria-hidden>
-            <path
-              d="M9.5 1.5H4.75c-.69 0-1.25.56-1.25 1.25v10.5c0 .69.56 1.25 1.25 1.25h6.5c.69 0 1.25-.56 1.25-1.25V4.5l-3-3Z"
-              stroke="currentColor"
-              strokeWidth="1.3"
-              strokeLinejoin="round"
-            />
-            <path d="M9.5 1.5v3h3" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
-          </svg>
-          {c.source_file}
-        </span>
-      ))}
+    <div className="mt-4">
+      <div className="flex flex-wrap gap-1.5">
+        {unique.map((c, i) => (
+          <button
+            key={i}
+            type="button"
+            onClick={() => setOpenIdx(openIdx === i ? null : i)}
+            className={`inline-flex max-w-full items-center gap-1.5 truncate rounded-full px-3 py-1.5 text-xs font-medium transition ${
+              openIdx === i
+                ? "bg-indigo-600 text-white"
+                : "bg-indigo-50 text-indigo-600 hover:bg-indigo-100"
+            }`}
+          >
+            <svg viewBox="0 0 16 16" fill="none" className="h-3.5 w-3.5 shrink-0" aria-hidden>
+              <path
+                d="M9.5 1.5H4.75c-.69 0-1.25.56-1.25 1.25v10.5c0 .69.56 1.25 1.25 1.25h6.5c.69 0 1.25-.56 1.25-1.25V4.5l-3-3Z"
+                stroke="currentColor"
+                strokeWidth="1.3"
+                strokeLinejoin="round"
+              />
+              <path d="M9.5 1.5v3h3" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
+            </svg>
+            {c.source_file}
+          </button>
+        ))}
+      </div>
+      {openIdx !== null && unique[openIdx] && (
+        <div className="mt-2 rounded-xl border border-indigo-100 bg-indigo-50/50 px-3.5 py-2.5 text-[13px] leading-relaxed text-slate-600">
+          <p className="mb-1 text-xs font-bold text-indigo-600">
+            📄 {unique[openIdx].source_file}
+          </p>
+          {unique[openIdx].snippet}
+        </div>
+      )}
     </div>
   );
 }
@@ -128,7 +149,10 @@ function AgentDetail({
 }
 
 function AssistantBubble({ state }: { state: AssistantState }) {
-  const { stage, agentsDone, tokens, result, error, route } = state;
+  const { stage, tokens, result, error, route } = state;
+  // 최종 결과가 오기 전에는 agent_done으로 받은 부분 결과를 사용
+  const reviewer = result?.reviewer ?? state.reviewer;
+  const auditor = result?.auditor ?? state.auditor;
   const streamingText = result?.final_markdown || tokens;
 
   return (
@@ -150,19 +174,16 @@ function AssistantBubble({ state }: { state: AssistantState }) {
               <div className="mb-2 flex items-center gap-2 text-sm font-medium text-slate-500">
                 <span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-indigo-200 border-t-indigo-600" />
                 {stage}
+                <span className="text-xs text-slate-400">(보통 30~40초)</span>
               </div>
             )}
 
             {route === "regulation" && !result && (
               <div className="mb-3 flex flex-wrap gap-1.5 text-xs font-medium">
                 {[
-                  { label: "규정 검토", done: agentsDone.reviewer },
-                  { label: "감사 분석", done: agentsDone.auditor },
-                  {
-                    label: "종합 조정",
-                    done: false,
-                    active: agentsDone.reviewer && agentsDone.auditor,
-                  },
+                  { label: "규정 검토", done: !!reviewer },
+                  { label: "감사 분석", done: !!auditor },
+                  { label: "종합 조정", done: false, active: !!reviewer && !!auditor },
                 ].map((step) => (
                   <span
                     key={step.label}
@@ -189,28 +210,28 @@ function AssistantBubble({ state }: { state: AssistantState }) {
 
             {streamingText && <Markdown text={streamingText} />}
 
-            {result?.reviewer && result?.auditor && (
+            {(reviewer || auditor) && route !== "general" && (
               <div className="mt-4 flex flex-col gap-2">
-                <AgentDetail title="📋 규정 검토 에이전트 상세">
-                  <p className="mb-1 text-slate-700">
-                    <b>판단:</b> {result.reviewer.violation} · 위험도{" "}
-                    {result.reviewer.risk_level}
-                  </p>
-                  <Markdown text={result.reviewer.reasoning} />
-                  <p className="mt-2 text-slate-500">
-                    <b>권고:</b> {result.reviewer.recommendation}
-                  </p>
-                </AgentDetail>
-                <AgentDetail title="🔍 감사 에이전트 상세">
-                  <p className="mb-1 text-slate-700">
-                    <b>판단:</b> {result.auditor.compliance} · 처분 가능성{" "}
-                    {result.auditor.sanction_likelihood}
-                  </p>
-                  <Markdown text={result.auditor.reasoning} />
-                  <p className="mt-2 text-slate-500">
-                    <b>권고:</b> {result.auditor.recommendation}
-                  </p>
-                </AgentDetail>
+                {reviewer && (
+                  <AgentDetail
+                    title={`📋 규정 검토 — ${reviewer.violation} · 위험도 ${reviewer.risk_level}`}
+                  >
+                    <Markdown text={reviewer.reasoning} />
+                    <p className="mt-2 text-slate-500">
+                      <b>권고:</b> {reviewer.recommendation}
+                    </p>
+                  </AgentDetail>
+                )}
+                {auditor && (
+                  <AgentDetail
+                    title={`🔍 감사 분석 — ${auditor.compliance} · 처분 가능성 ${auditor.sanction_likelihood}`}
+                  >
+                    <Markdown text={auditor.reasoning} />
+                    <p className="mt-2 text-slate-500">
+                      <b>권고:</b> {auditor.recommendation}
+                    </p>
+                  </AgentDetail>
+                )}
               </div>
             )}
 
@@ -256,12 +277,33 @@ export default function ChatPage() {
     );
   };
 
+  /** 완료된 Q&A 쌍에서 후속 질문 컨텍스트를 구성 (최근 3개) */
+  const buildHistory = (msgs: Message[]): HistoryItem[] => {
+    const pairs: HistoryItem[] = [];
+    for (let i = 0; i < msgs.length - 1; i++) {
+      const q = msgs[i];
+      const a = msgs[i + 1];
+      if (
+        q.role === "user" &&
+        a.role === "assistant" &&
+        a.state.result?.final_markdown
+      ) {
+        pairs.push({
+          question: q.text,
+          answer: a.state.result.final_markdown.slice(0, 1200),
+        });
+      }
+    }
+    return pairs.slice(-3);
+  };
+
   const send = async (text: string) => {
     const query = text.trim();
     if (!query || busy) return;
     setBusy(true);
     setInput("");
 
+    const history = buildHistory(messages);
     const userId = ++idRef.current;
     const assistantId = ++idRef.current;
     setMessages((prev) => [
@@ -271,17 +313,19 @@ export default function ChatPage() {
     ]);
 
     try {
-      let agentsDone = { reviewer: false, auditor: false };
       let tokens = "";
-      for await (const event of streamChat(query)) {
+      for await (const event of streamChat(query, history)) {
         if (event.type === "stage") {
           updateAssistant(assistantId, {
             stage: event.label,
             ...(event.route ? { route: event.route } : {}),
           });
         } else if (event.type === "agent_done") {
-          agentsDone = { ...agentsDone, [event.agent]: true };
-          updateAssistant(assistantId, { agentsDone });
+          if (event.agent === "reviewer") {
+            updateAssistant(assistantId, { reviewer: event.data });
+          } else {
+            updateAssistant(assistantId, { auditor: event.data });
+          }
         } else if (event.type === "token") {
           tokens += event.content;
           updateAssistant(assistantId, { tokens });

@@ -29,8 +29,15 @@ app.add_middleware(
 )
 
 
+class HistoryItem(BaseModel):
+    question: str = Field(max_length=MAX_QUERY_LENGTH)
+    answer: str = Field(max_length=4000)
+
+
 class ChatRequest(BaseModel):
     query: str = Field(min_length=1, max_length=MAX_QUERY_LENGTH)
+    # 후속 질문 맥락 유지용 이전 대화 (최근 것부터 최대 3개 사용)
+    history: list[HistoryItem] = Field(default_factory=list, max_length=10)
 
 
 def _sse(payload: dict) -> str:
@@ -58,6 +65,7 @@ _STAGE_LABELS = {
 @app.post("/api/chat")
 async def chat(request: ChatRequest):
     query = request.query.strip()
+    history = [h.model_dump() for h in request.history[-3:]]
 
     async def event_stream():
         start = time.time()
@@ -66,7 +74,7 @@ async def chat(request: ChatRequest):
             yield _sse({"type": "stage", "label": "질문 분석 중..."})
 
             async for mode, payload in graph.astream(
-                {"query": query, "citations": []},
+                {"query": query, "history": history, "citations": []},
                 stream_mode=["updates", "messages"],
             ):
                 if mode == "messages":
@@ -95,7 +103,13 @@ async def chat(request: ChatRequest):
                             "route": route,
                         })
                     elif node in ("reviewer", "auditor"):
-                        yield _sse({"type": "agent_done", "agent": node})
+                        # 완료된 에이전트의 분석 내용을 즉시 전달해 부분 렌더링 지원
+                        agent_result = delta.get(node)
+                        yield _sse({
+                            "type": "agent_done",
+                            "agent": node,
+                            "data": agent_result.model_dump() if agent_result else None,
+                        })
                         if merged.get("reviewer") is not None and merged.get("auditor") is not None:
                             yield _sse({"type": "stage", "label": "조정 에이전트가 결과를 종합 중..."})
 

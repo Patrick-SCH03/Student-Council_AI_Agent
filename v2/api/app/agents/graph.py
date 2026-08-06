@@ -34,6 +34,10 @@ RETRIEVAL_K = 5
 
 class AgentState(TypedDict, total=False):
     query: str
+    # 이전 대화 [{"question": ..., "answer": ...}] — 후속 질문 맥락 유지용
+    history: list[dict]
+    # 대화 맥락을 반영해 독립적으로 재작성된 질의 (검색·분석에 사용)
+    standalone_query: str
     route: str
     reviewer: ReviewerResult | None
     auditor: AuditorResult | None
@@ -81,22 +85,45 @@ def _format_hits(hits: list[dict]) -> str:
 
 # ---------------------------------------------------------------- 노드 정의
 
+def _format_history(history: list[dict]) -> str:
+    """이전 대화를 프롬프트용 텍스트로 변환. 없으면 빈 문자열."""
+    if not history:
+        return ""
+    lines = ["**이전 대화:**"]
+    for item in history[-3:]:
+        lines.append(f"- 질문: {item.get('question', '')}")
+        answer = (item.get("answer") or "")[:500]
+        lines.append(f"  답변 요약: {answer}")
+    return "\n".join(lines) + "\n\n"
+
+
 async def route_node(state: AgentState) -> AgentState:
+    query = state["query"]
+    history = state.get("history") or []
+
     if MOCK_MODE:
         keywords = ("학생회", "규정", "예산", "감사", "회계", "회비", "지원금", "선거")
-        route = "regulation" if any(k in state["query"] for k in keywords) else "general"
-        return {"route": route}
+        text = query + " ".join(h.get("question", "") for h in history)
+        route = "regulation" if any(k in text for k in keywords) else "general"
+        return {"route": route, "standalone_query": query}
 
     llm = _get_llm().with_structured_output(RouteDecision)
     decision: RouteDecision = await llm.ainvoke(
-        [("system", prompts.ROUTER_SYSTEM), ("user", state["query"])]
+        [
+            ("system", prompts.ROUTER_SYSTEM),
+            ("user", prompts.ROUTER_USER.format(
+                history=_format_history(history), query=query
+            )),
+        ]
     )
     route = decision.route if decision.route in ("regulation", "general") else "regulation"
-    return {"route": route}
+    standalone = (decision.standalone_query or "").strip() or query
+    return {"route": route, "standalone_query": standalone}
 
 
 async def reviewer_node(state: AgentState) -> AgentState:
-    hits = await asyncio.to_thread(store.search, state["query"], RETRIEVAL_K)
+    query = state.get("standalone_query") or state["query"]
+    hits = await asyncio.to_thread(store.search, query, RETRIEVAL_K)
 
     if MOCK_MODE:
         await asyncio.sleep(0.8)
@@ -117,7 +144,7 @@ async def reviewer_node(state: AgentState) -> AgentState:
         [
             ("system", prompts.REVIEWER_SYSTEM),
             ("user", prompts.REVIEWER_USER.format(
-                query=state["query"], regulations=_format_hits(hits)
+                query=query, regulations=_format_hits(hits)
             )),
         ]
     )
@@ -125,7 +152,7 @@ async def reviewer_node(state: AgentState) -> AgentState:
 
 
 async def auditor_node(state: AgentState) -> AgentState:
-    query = state["query"]
+    query = state.get("standalone_query") or state["query"]
     reg_hits, audit_hits = await asyncio.gather(
         asyncio.to_thread(store.search, query, RETRIEVAL_K),
         asyncio.to_thread(store.search, f"{query} 감사 보고서 감사 처분 사례", RETRIEVAL_K),
@@ -175,7 +202,7 @@ async def coordinator_node(state: AgentState) -> AgentState:
         return {"final_markdown": markdown}
 
     user_prompt = prompts.COORDINATOR_USER.format(
-        query=state["query"],
+        query=state.get("standalone_query") or state["query"],
         violation=reviewer.violation if reviewer else "분석 실패",
         reviewer_risk=reviewer.risk_level.value if reviewer else "-",
         reviewer_reasoning=reviewer.reasoning if reviewer else "-",

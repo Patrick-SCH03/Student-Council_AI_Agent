@@ -20,9 +20,13 @@ _RISK_ORDER = {RiskLevel.LOW: 0, RiskLevel.MEDIUM: 1, RiskLevel.HIGH: 2}
 
 
 class RouteDecision(BaseModel):
-    """질문이 학생회 규정/재정/감사 업무와 관련 있는지 판별."""
+    """질문이 학생회 규정/재정/감사 업무와 관련 있는지 판별하고 독립 질의로 재작성."""
 
     route: str = Field(description="'regulation'(학생회 규정·재정·감사 관련) 또는 'general'(그 외)")
+    standalone_query: str = Field(
+        default="",
+        description="대화 맥락 없이도 이해 가능하도록 재작성한 질문. 맥락이 불필요하면 원래 질문 그대로",
+    )
 
 
 class Citation(BaseModel):
