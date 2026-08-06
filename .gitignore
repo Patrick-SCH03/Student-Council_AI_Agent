@@ -11,8 +11,8 @@ venv/
 .env
 *.env.local
 
-# Data
-api/data/
+# Data (런타임 생성물)
+v2/api/data/
 *.sqlite3
 
 # Node
