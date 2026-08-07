@@ -18,8 +18,12 @@ from pypdf import PdfReader
 from app.config import GEMINI_API_KEY, GEMINI_MODEL, MOCK_MODE
 from app.rag import store
 
-# 스캔본 PDF 판별 기준: 추출 텍스트가 이보다 짧으면 OCR이 필요한 문서로 간주
+# 스캔본 PDF 판별 기준
+# 절대 길이만 보면, 목차·표지만 텍스트로 들어있고 본문이 이미지인 문서를 놓친다.
+# (예: 18페이지 감사보고서에서 851자만 추출 → 본문 누락) 따라서 페이지당 평균도 함께 본다.
 MIN_TEXT_LENGTH = 50
+MIN_CHARS_PER_PAGE = 200
+WARN_CHARS_PER_PAGE = 350  # 폴백 임계값은 넘겼지만 확인이 필요한 수준
 
 _OCR_PROMPT = """\
 이 PDF 문서에 있는 모든 텍스트를 원문 그대로 순서대로 추출하라.
@@ -43,7 +47,6 @@ def _extract_with_gemini(file_bytes: bytes) -> str:
     from google import genai
     from google.genai import types
 
-    print("텍스트 레이어 없음 — Gemini 멀티모달로 텍스트 추출 중...")
     client = genai.Client(api_key=GEMINI_API_KEY)
     response = client.models.generate_content(
         model=GEMINI_MODEL,
@@ -84,12 +87,20 @@ def extract_text_from_pdf(file_bytes: bytes) -> str:
 
     text = clean_text("\n".join((page.extract_text() or "") for page in reader.pages))
 
-    if len(text.strip()) < MIN_TEXT_LENGTH:
+    page_count = max(len(reader.pages), 1)
+    chars_per_page = len(text.strip()) / page_count
+    needs_ocr = len(text.strip()) < MIN_TEXT_LENGTH or chars_per_page < MIN_CHARS_PER_PAGE
+
+    if needs_ocr:
         if MOCK_MODE:
             raise IngestError(
                 "텍스트를 추출할 수 없는 스캔본 PDF입니다. "
                 "목업 모드에서는 스캔본 파싱이 불가하니 GEMINI_API_KEY를 설정하세요."
             )
+        print(
+            f"본문 추출 부족 ({page_count}페이지, 페이지당 {chars_per_page:.0f}자) "
+            "— Gemini 멀티모달로 재추출합니다..."
+        )
         try:
             text = clean_text(_extract_with_gemini(file_bytes))
         except Exception as e:
@@ -100,6 +111,12 @@ def extract_text_from_pdf(file_bytes: bytes) -> str:
                 "스캔본에서 유의미한 텍스트를 추출하지 못했습니다. "
                 "원본 문서에서 텍스트 PDF로 재출력을 권장합니다."
             )
+    elif chars_per_page < WARN_CHARS_PER_PAGE:
+        # 임계값은 넘겼지만 본문 일부가 이미지일 수 있어 눈에 띄게 알린다.
+        print(
+            f"  ⚠ 추출량이 적습니다 ({page_count}페이지, 페이지당 {chars_per_page:.0f}자) "
+            "— 본문 일부가 이미지일 수 있으니 답변 품질을 확인하세요."
+        )
     return text
 
 
