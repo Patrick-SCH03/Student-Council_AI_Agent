@@ -1,4 +1,4 @@
-# 내 PC를 서버로 실행: API + 웹(프로덕션) + Tailscale Funnel(고정 주소)
+﻿# 내 PC를 서버로 실행: API + 웹(프로덕션) + Tailscale Funnel(고정 주소)
 # 사용법: PowerShell에서  .\start-server.ps1
 # 종료:   .\start-server.ps1 -Stop
 
