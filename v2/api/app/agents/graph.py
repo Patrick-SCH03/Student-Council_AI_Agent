@@ -29,7 +29,10 @@ from app.agents.schemas import (
 from app.config import GEMINI_API_KEY, GEMINI_MODEL, MOCK_MODE
 from app.rag import store
 
-RETRIEVAL_K = 5
+# 코퍼스가 커지면서 상위 5개로는 규정 조항이 감사보고서에 밀려나므로,
+# 유형별로 나눠 충분히 확보한다.
+K_REGULATION = 6  # 회칙·세칙
+K_AUDIT = 5  # 감사보고서(선례)
 
 
 class AgentState(TypedDict, total=False):
@@ -123,7 +126,13 @@ async def route_node(state: AgentState) -> AgentState:
 
 async def reviewer_node(state: AgentState) -> AgentState:
     query = state.get("standalone_query") or state["query"]
-    hits = await asyncio.to_thread(store.search, query, RETRIEVAL_K)
+    # 규정 검토는 회칙·세칙이 근거이므로 규정 문서를 우선 확보하고,
+    # 감사 선례도 소수 포함해 실제 적용 사례를 참고한다.
+    reg_hits, audit_hits = await asyncio.gather(
+        asyncio.to_thread(store.search, query, K_REGULATION, "regulation"),
+        asyncio.to_thread(store.search, query, 2, "audit"),
+    )
+    hits = reg_hits + audit_hits
 
     if MOCK_MODE:
         await asyncio.sleep(0.8)
@@ -153,9 +162,12 @@ async def reviewer_node(state: AgentState) -> AgentState:
 
 async def auditor_node(state: AgentState) -> AgentState:
     query = state.get("standalone_query") or state["query"]
+    # 감사 분석은 감사보고서(선례)가 핵심이고, 판단 근거로 규정도 함께 본다.
     reg_hits, audit_hits = await asyncio.gather(
-        asyncio.to_thread(store.search, query, RETRIEVAL_K),
-        asyncio.to_thread(store.search, f"{query} 감사 보고서 감사 처분 사례", RETRIEVAL_K),
+        asyncio.to_thread(store.search, query, K_REGULATION, "regulation"),
+        asyncio.to_thread(
+            store.search, f"{query} 감사 처분 사례", K_AUDIT, "audit"
+        ),
     )
 
     if MOCK_MODE:

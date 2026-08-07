@@ -8,6 +8,8 @@
 """
 
 import io
+import re
+import unicodedata
 import uuid
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -53,13 +55,34 @@ def _extract_with_gemini(file_bytes: bytes) -> str:
     return response.text or ""
 
 
+def clean_text(text: str) -> str:
+    """PDF 추출 텍스트 정규화.
+
+    일부 한글 PDF는 공백을 널바이트(\\x00)나 특수 공백으로 추출해 단어 경계가
+    사라지고 임베딩 품질이 크게 저하된다. 이를 일반 공백으로 복원한다.
+    """
+    if not text:
+        return ""
+    # 널바이트 및 특수 공백(비분할 공백, 전각 공백 등) → 일반 공백
+    text = text.replace("\x00", " ").replace("﻿", " ")
+    text = re.sub(r"[  -​ 　]", " ", text)
+    # 유니코드 정규화 (호환 문자 통일)
+    text = unicodedata.normalize("NFKC", text)
+    # 남은 제어문자 제거 (줄바꿈·탭은 보존)
+    text = "".join(c for c in text if c in "\n\t" or unicodedata.category(c) != "Cc")
+    # 과도한 공백/빈 줄 정리
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
 def extract_text_from_pdf(file_bytes: bytes) -> str:
     try:
         reader = PdfReader(io.BytesIO(file_bytes))
     except Exception as e:
         raise IngestError(f"PDF 파일을 읽을 수 없습니다: {e}") from e
 
-    text = "\n".join((page.extract_text() or "") for page in reader.pages)
+    text = clean_text("\n".join((page.extract_text() or "") for page in reader.pages))
 
     if len(text.strip()) < MIN_TEXT_LENGTH:
         if MOCK_MODE:
@@ -68,7 +91,7 @@ def extract_text_from_pdf(file_bytes: bytes) -> str:
                 "목업 모드에서는 스캔본 파싱이 불가하니 GEMINI_API_KEY를 설정하세요."
             )
         try:
-            text = _extract_with_gemini(file_bytes)
+            text = clean_text(_extract_with_gemini(file_bytes))
         except Exception as e:
             raise IngestError(f"스캔본 텍스트 추출 실패 (Gemini): {e}") from e
 
