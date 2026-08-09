@@ -12,7 +12,7 @@ venv/
 *.env.local
 
 # Data (런타임 생성물)
-v2/api/data/
+api/data/
 *.sqlite3
 
 # 실제 규정 문서 (내부 문서 보호 — README만 추적)

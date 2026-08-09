@@ -2,7 +2,7 @@
 # 사용법: deploy/.env 작성 후  docker compose up -d --build
 services:
   api:
-    build: ../v2/api
+    build: ../api
     restart: unless-stopped
     env_file: .env
     environment:
@@ -16,7 +16,7 @@ services:
 
   web:
     build:
-      context: ../v2/web
+      context: ../web
       args:
         # 빈 값 → same-origin 상대 경로(/api/...) 호출
         NEXT_PUBLIC_API_URL: ""

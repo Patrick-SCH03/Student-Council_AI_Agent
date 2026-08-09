@@ -5,8 +5,8 @@
 param([switch]$Stop)
 
 $root = $PSScriptRoot
-$api = Join-Path $root "v2\api"
-$web = Join-Path $root "v2\web"
+$api = Join-Path $root "api"
+$web = Join-Path $root "web"
 $tailscale = "C:\Program Files\Tailscale\tailscale.exe"
 
 function Stop-ByPort($port) {

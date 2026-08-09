@@ -123,31 +123,28 @@ flowchart LR
 ## 프로젝트 구조
 
 ```
-├── documents/              # 규정 PDF 원본 (git 제외, 로컬에서 관리)
-├── v2/
-│   ├── api/                # FastAPI 백엔드
-│   │   ├── app/
-│   │   │   ├── agents/     # graph.py(LangGraph) · prompts.py · schemas.py
-│   │   │   ├── rag/        # ingest.py(추출·정규화) · store.py(벡터 검색)
-│   │   │   ├── main.py     # SSE 채팅 API · 문서/지표 엔드포인트
-│   │   │   ├── db.py       # 분석 이력 · 운영 지표 · 방문자 로그
-│   │   │   └── config.py
-│   │   ├── ingest_folder.py  # 폴더-색인 동기화 CLI
-│   │   └── smoke_test.py
-│   └── web/                # Next.js 프론트엔드
-│       └── src/app/        # page.tsx(채팅) · stats/(운영 대시보드)
-├── deploy/                 # Docker Compose + Caddy 구성
-└── start-server.ps1        # 로컬 서버 기동/종료 스크립트
+├── api/                      # FastAPI 백엔드
+│   ├── app/
+│   │   ├── agents/           # graph.py(LangGraph) · prompts.py · schemas.py
+│   │   ├── rag/              # ingest.py(추출·정규화) · store.py(벡터 검색)
+│   │   ├── main.py           # SSE 채팅 API · 문서/지표 엔드포인트
+│   │   ├── db.py             # 분석 이력 · 운영 지표 · 방문자 로그
+│   │   └── config.py
+│   ├── ingest_folder.py      # 폴더-색인 동기화 CLI
+│   └── smoke_test.py
+├── web/                      # Next.js 프론트엔드
+│   └── src/app/              # page.tsx(채팅) · stats/(운영 대시보드)
+├── documents/                # 규정 PDF 원본 (git 제외, 로컬에서 관리)
+├── deploy/                   # Docker Compose + Caddy 구성
+└── start-server.ps1          # 로컬 서버 기동/종료 스크립트
 ```
-
-> `v2/`는 Gradio 기반 프로토타입(v1)을 전면 재구축한 이력에서 온 이름입니다.
 
 ## 시작하기
 
 ### 1. 백엔드
 
 ```bash
-cd v2/api
+cd api
 python -m venv .venv
 .venv\Scripts\activate           # Linux/Mac: source .venv/bin/activate
 pip install -r requirements.txt
@@ -161,7 +158,7 @@ uvicorn app.main:app --port 8000
 ### 2. 프론트엔드
 
 ```bash
-cd v2/web
+cd web
 npm install
 npm run dev                      # http://localhost:3000
 ```
@@ -171,7 +168,7 @@ npm run dev                      # http://localhost:3000
 `documents/` 폴더에 PDF를 넣고 실행하면 폴더 상태와 색인을 동기화합니다.
 
 ```bash
-cd v2/api
+cd api
 .venv\Scripts\python ingest_folder.py
 ```
 
@@ -182,7 +179,7 @@ cd v2/api
 ### 4. 테스트
 
 ```bash
-cd v2/api
+cd api
 python smoke_test.py             # 벡터 스토어 + 파이프라인 + 라우팅 (목업 모드)
 ```
 

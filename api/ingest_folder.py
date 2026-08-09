@@ -20,7 +20,7 @@ from app.config import MOCK_MODE
 from app.rag import store
 from app.rag.ingest import IngestError, ingest_pdf
 
-DEFAULT_DIR = Path(__file__).resolve().parent.parent.parent / "documents"
+DEFAULT_DIR = Path(__file__).resolve().parent.parent / "documents"
 
 
 def _file_mtime_utc(path: Path) -> datetime:

@@ -7,7 +7,7 @@
 PDF를 넣은 뒤 아래 명령 한 번이면 전부 색인됩니다 (이미 색인된 파일명은 자동으로 건너뜀):
 
 ```bash
-cd v2/api
+cd api
 .venv\Scripts\python.exe ingest_folder.py
 ```
 
