@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Env / secrets
+.env
+*.env.local
+
+# 런타임 생성물 (벡터 DB · SQLite)
+api/data/
+*.sqlite3
+
+# 실제 규정 문서 (내부 문서 보호 — README만 추적)
+documents/*.pdf
+
+# Node
+node_modules/
+.next/
+out/
+
+# 로컬 개발 도구 설정
+.claude/
+web/AGENTS.md
+web/CLAUDE.md
+
+# 배포 런북 (내부 참고용 — 계정·인프라 절차 포함)
+DEPLOYMENT.md
+
+# 이전 버전 보관 (로컬 전용)
+legacy/
+
+# Misc
+.DS_Store
+*.log
