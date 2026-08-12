@@ -399,13 +399,16 @@ export default function ChatPage() {
       .catch(() => {});
   }, []);
 
-  // 새로고침해도 대화가 유지되도록 localStorage에서 복원
+  // 새로고침해도 대화가 유지되도록 localStorage에서 복원.
+  // localStorage는 서버에 없으므로 초기 state로 읽으면 하이드레이션 불일치가 난다.
+  // 마운트 후 복원이 유일한 안전한 방법이라 set-state-in-effect 규칙을 의도적으로 예외 처리한다.
   useEffect(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
       if (!saved) return;
       const parsed = JSON.parse(saved) as Message[];
       if (!Array.isArray(parsed) || parsed.length === 0) return;
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- 하이드레이션 안전을 위한 마운트 후 복원
       setMessages(parsed);
       idRef.current = Math.max(...parsed.map((m) => m.id), 0);
     } catch {

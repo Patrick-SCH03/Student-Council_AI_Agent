@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  api:
+    name: Backend (lint-free import + smoke test)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: api
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: api/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # GEMINI_API_KEY가 없으면 목업 모드로 동작하므로 비밀값 없이 검증 가능
+      - name: Smoke test (mock mode)
+        run: python smoke_test.py
+
+  web:
+    name: Frontend (lint + build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Build
+        run: npm run build
