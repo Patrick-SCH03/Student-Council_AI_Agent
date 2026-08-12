@@ -6,6 +6,38 @@ const _raw = process.env.NEXT_PUBLIC_API_URL;
 export const API_BASE =
   _raw === undefined ? "http://localhost:8000" : _raw.replace(/\/+$/, "");
 
+/* --- 관리자 인증 (운영 대시보드 전용) --------------------------------- */
+
+const ADMIN_TOKEN_KEY = "admin-token";
+
+export function getAdminToken(): string | null {
+  if (typeof window === "undefined") return null;
+  return localStorage.getItem(ADMIN_TOKEN_KEY);
+}
+
+export function setAdminToken(token: string): void {
+  localStorage.setItem(ADMIN_TOKEN_KEY, token);
+}
+
+export function clearAdminToken(): void {
+  localStorage.removeItem(ADMIN_TOKEN_KEY);
+}
+
+export class AuthError extends Error {}
+
+/** 관리자 토큰을 붙여 요청하고, 인증 실패는 AuthError로 구분한다. */
+export async function adminFetch(path: string): Promise<Response> {
+  const token = getAdminToken();
+  const res = await fetch(`${API_BASE}${path}`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (res.status === 401 || res.status === 503) {
+    const body = await res.json().catch(() => null);
+    throw new AuthError(body?.detail ?? "관리자 인증이 필요합니다.");
+  }
+  return res;
+}
+
 export type Citation = { source_file: string; snippet: string };
 
 export type ReviewerResult = {

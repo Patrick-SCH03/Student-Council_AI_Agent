@@ -2,9 +2,10 @@
 
 import json
 import re
+import secrets
 import time
 
-from fastapi import FastAPI, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse, StreamingResponse
 from langchain_core.callbacks import UsageMetadataCallbackHandler
@@ -14,6 +15,7 @@ from app import db
 from app.agents.graph import content_to_text, graph
 from app.agents.schemas import overall_risk
 from app.config import (
+    ADMIN_TOKEN,
     CORS_ORIGINS,
     GEMINI_MODEL,
     MOCK_MODE,
@@ -53,11 +55,31 @@ def _sse(payload: dict) -> str:
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
+def require_admin(authorization: str | None = Header(default=None)) -> None:
+    """관리자 전용 엔드포인트 보호.
+
+    문서 관리와 운영 지표(전체 질의 로그 포함)는 공개되면 안 되므로,
+    ADMIN_TOKEN이 설정되지 않은 경우 열어두지 않고 차단한다.
+    """
+    if not ADMIN_TOKEN:
+        raise HTTPException(
+            status_code=503,
+            detail="ADMIN_TOKEN이 설정되지 않아 관리자 API가 비활성화되었습니다.",
+        )
+    expected = f"Bearer {ADMIN_TOKEN}"
+    if not authorization or not secrets.compare_digest(authorization, expected):
+        raise HTTPException(status_code=401, detail="관리자 인증이 필요합니다.")
+
+
+admin_only = Depends(require_admin)
+
+
 @app.get("/api/health")
 def health():
     return {
         "status": "ok",
         "mock_mode": MOCK_MODE,
+        "admin_protected": bool(ADMIN_TOKEN),
         "model": GEMINI_MODEL,
         "indexed_chunks": store.chunk_count(),
     }
@@ -209,8 +231,9 @@ async def chat(request: ChatRequest):
 
 
 # ---------------------------------------------------------------- documents
+# 아래 엔드포인트는 모두 관리자 전용 (문서 색인 변조·질의 로그 유출 방지)
 
-@app.post("/api/documents")
+@app.post("/api/documents", dependencies=[admin_only])
 async def upload_document(file: UploadFile):
     if not (file.filename or "").lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="PDF 파일만 업로드할 수 있습니다.")
@@ -228,12 +251,12 @@ async def upload_document(file: UploadFile):
     return {"doc_id": doc_id, "filename": file.filename, "chunks": chunks}
 
 
-@app.get("/api/documents")
+@app.get("/api/documents", dependencies=[admin_only])
 def get_documents():
     return {"documents": db.list_documents(), "indexed_chunks": store.chunk_count()}
 
 
-@app.delete("/api/documents/{doc_id}")
+@app.delete("/api/documents/{doc_id}", dependencies=[admin_only])
 def delete_document(doc_id: str):
     if not db.delete_document(doc_id):
         raise HTTPException(status_code=404, detail="문서를 찾을 수 없습니다.")
@@ -243,12 +266,12 @@ def delete_document(doc_id: str):
 
 # ---------------------------------------------------------------- history / stats
 
-@app.get("/api/history")
+@app.get("/api/history", dependencies=[admin_only])
 def get_history(limit: int = 20):
     return {"analyses": db.list_analyses(min(limit, 100))}
 
 
-@app.get("/api/analyses/{analysis_id}")
+@app.get("/api/analyses/{analysis_id}", dependencies=[admin_only])
 def get_analysis(analysis_id: int):
     item = db.get_analysis(analysis_id)
     if not item:
@@ -266,7 +289,7 @@ def track_visit(request: TrackRequest):
     return {"ok": True}
 
 
-@app.get("/api/stats/export")
+@app.get("/api/stats/export", dependencies=[admin_only])
 def export_stats():
     csv = db.export_metrics_csv()
     return PlainTextResponse(
@@ -283,7 +306,7 @@ def _cost_usd(input_tokens: int, output_tokens: int) -> float:
     )
 
 
-@app.get("/api/stats")
+@app.get("/api/stats", dependencies=[admin_only])
 def get_stats(days: int = 14):
     stats = db.get_stats(min(max(days, 1), 90))
     total_usd = _cost_usd(stats["totals"]["input_tokens"], stats["totals"]["output_tokens"])

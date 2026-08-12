@@ -1,9 +1,24 @@
 # 배포 가이드
 
-두 가지 배포 경로가 있습니다.
+세 가지 배포 경로가 있습니다.
 
-- **A. 내 PC + Cloudflare Tunnel** — 비용 0원, 시험 운영·베타용. PC가 켜져 있을 때만 서비스됨
-- **B. VPS + Docker Compose** — 24시간 정식 운영용 (아래 상세)
+- **A. 내 PC + Tailscale Funnel** — 비용 0원, 시험 운영·베타용. PC가 켜져 있을 때만 서비스됨
+- **B. VPS + Docker Compose** — 24시간 정식 운영용
+- **C. Vercel(프론트) + Railway(백엔드)** — 관리형 PaaS, 서버 관리 불필요 (약 $5/월)
+
+## 공통: 관리자 토큰
+
+문서 관리(`/api/documents`)와 운영 지표(`/api/stats`, `/api/history`, `/api/analyses`)는
+**관리자 전용**입니다. `ADMIN_TOKEN` 환경변수를 반드시 설정하세요.
+
+- 미설정 시 해당 API는 `503`으로 차단됩니다 (공개 배포 사고 방지)
+- 설정 여부는 `/api/health`의 `admin_protected` 필드로 확인
+- 웹의 `/stats` 페이지 최초 접속 시 토큰을 입력하면 브라우저에 저장됩니다
+
+```bash
+# 토큰 생성 예시
+python -c "import secrets; print(secrets.token_urlsafe(32))"
+```
 
 ## A. 내 PC를 서버로 (Tailscale Funnel — 무료 고정 주소)
 
@@ -100,8 +115,71 @@ docker compose down               # 전체 중지 (데이터 볼륨은 유지됨
 - [ ] 서버 SSH는 키 인증만 허용 권장
 - [ ] 규정 PDF는 저장소에 포함되지 않음 (`documents/*.pdf` gitignore)
 
+---
+
+# C. Vercel(프론트) + Railway(백엔드)
+
+서버 관리 없이 배포하는 경로입니다. Vercel은 무료, Railway는 Hobby $5/월(사용량 크레딧 포함).
+
+```
+[브라우저] ──정적 페이지──▶ Vercel (web)
+     └────SSE 스트리밍─────▶ Railway (api) ──▶ Gemini API
+                                  └──▶ Volume (/data: ChromaDB + SQLite)
+```
+
+API는 브라우저가 Railway로 **직접** 호출합니다. Vercel 프록시를 거치면 30초 걸리는
+스트리밍 응답이 서버리스 함수 타임아웃·비용에 걸립니다.
+
+## C-1. Railway에 백엔드 배포
+
+1. [railway.com](https://railway.com) → **New Project** → **Deploy from GitHub repo** → 이 저장소 선택
+2. **Settings → Root Directory**를 `api`로 지정 (Dockerfile 자동 감지)
+3. **Variables** 탭에 환경변수 추가
+
+   | 키 | 값 |
+   |---|---|
+   | `GEMINI_API_KEY` | Gemini API 키 |
+   | `GEMINI_MODEL` | `gemini-3.6-flash` |
+   | `ADMIN_TOKEN` | 랜덤 문자열 (위 "공통" 섹션 참고) |
+   | `DATA_DIR` | `/data` |
+
+4. **Volumes** → 볼륨 생성 후 마운트 경로를 **`/data`**로 지정
+   > 빠뜨리면 재배포할 때마다 색인이 사라집니다.
+5. **Settings → Networking → Generate Domain** → `xxx.up.railway.app` 발급
+6. `https://xxx.up.railway.app/api/health` 접속 → `admin_protected: true` 확인
+
+## C-2. 규정 문서 업로드·색인
+
+`documents/`는 git에 포함되지 않으므로 로컬에서 업로드합니다.
+
+```bash
+cd api
+.venv\Scripts\python upload_to_remote.py https://xxx.up.railway.app --token <ADMIN_TOKEN>
+```
+
+- 서버가 추출·청킹·임베딩을 수행하므로 문서 수에 따라 수 분 소요
+- 이미 업로드된 파일명은 건너뜁니다 (재실행 안전)
+- 완료 후 `/api/health`의 `indexed_chunks`로 확인
+
+## C-3. Vercel에 프론트엔드 배포
+
+1. [vercel.com](https://vercel.com) → **Add New → Project** → 같은 저장소 Import
+2. **Root Directory**를 `web`으로 지정 (Framework는 Next.js 자동 인식)
+3. **Environment Variables**에 `NEXT_PUBLIC_API_URL` = `https://xxx.up.railway.app` 추가
+4. **Deploy** → `yyy.vercel.app` 발급
+
+## C-4. 연결 마무리
+
+1. Railway Variables에 `CORS_ORIGINS` = `https://yyy.vercel.app` 추가 → 자동 재배포
+2. `yyy.vercel.app` 접속 → 질문 테스트 (스트리밍·인용 확인)
+3. `yyy.vercel.app/stats` → 관리자 토큰 입력 → 대시보드 확인
+
+> 커스텀 도메인을 붙이면 `CORS_ORIGINS`에 해당 도메인도 추가해야 합니다 (쉼표 구분).
+
+---
+
 ## 다음 단계 (선택)
 
-- **접근 제한**: 학교 구성원만 사용하도록 Caddy `basic_auth` 또는 학교 이메일 인증(Supabase Auth) 추가
+- **사용자 접근 제한**: 학교 이메일 인증(Supabase Auth 등)으로 채팅 자체를 구성원 전용화
 - **사용량 제한**: 사용자/IP별 일일 질의 제한으로 API 비용 방어
 - **관측**: Langfuse 연동으로 에이전트별 비용·품질 추적

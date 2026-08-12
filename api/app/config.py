@@ -23,6 +23,10 @@ UPLOAD_DIR = DATA_DIR / "uploads"
 CHROMA_DIR = DATA_DIR / "chroma"
 SQLITE_PATH = DATA_DIR / "app.sqlite3"
 
+# 관리자 API(문서 관리·운영 지표) 보호용 토큰.
+# 미설정 시 해당 엔드포인트는 503으로 차단된다 (공개 배포 시 사고 방지).
+ADMIN_TOKEN: str | None = os.getenv("ADMIN_TOKEN") or None
+
 # API 비용 추정용 단가 (USD / 1M 토큰, 2026-08 gemini-3.6-flash 기준. env로 조정 가능)
 PRICE_INPUT_PER_1M: float = float(os.getenv("PRICE_INPUT_PER_1M", "1.50"))
 PRICE_OUTPUT_PER_1M: float = float(os.getenv("PRICE_OUTPUT_PER_1M", "7.50"))

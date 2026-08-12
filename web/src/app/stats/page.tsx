@@ -6,7 +6,13 @@ import { Fragment, useCallback, useEffect, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-import { API_BASE } from "@/lib/api";
+import {
+  AuthError,
+  adminFetch,
+  clearAdminToken,
+  getAdminToken,
+  setAdminToken,
+} from "@/lib/api";
 
 const CARD_SHADOW =
   "shadow-[0px_12px_16px_-4px_rgba(16,24,40,0.08),0px_4px_6px_-2px_rgba(16,24,40,0.03)]";
@@ -135,19 +141,74 @@ function DailyBars({
   );
 }
 
+function TokenGate({
+  message,
+  onSubmit,
+}: {
+  message: string | null;
+  onSubmit: (token: string) => void;
+}) {
+  const [value, setValue] = useState("");
+  return (
+    <div className="mx-auto mt-24 max-w-sm">
+      <div className={`rounded-2xl border border-slate-200 bg-white p-6 ${CARD_SHADOW}`}>
+        <h1 className="text-lg font-extrabold tracking-tight text-slate-900">
+          운영 대시보드
+        </h1>
+        <p className="mt-1 text-sm font-medium text-slate-500">
+          관리자 토큰을 입력하세요.
+        </p>
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (value.trim()) onSubmit(value.trim());
+          }}
+          className="mt-4 flex flex-col gap-2"
+        >
+          <input
+            type="password"
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            placeholder="ADMIN_TOKEN"
+            autoFocus
+            className="rounded-xl border border-slate-300 px-3.5 py-2.5 text-sm outline-none focus:border-indigo-400"
+          />
+          <button
+            type="submit"
+            className="rounded-xl bg-indigo-600 px-4 py-2.5 text-sm font-bold text-white transition hover:bg-indigo-700"
+          >
+            확인
+          </button>
+        </form>
+        {message && (
+          <p className="mt-3 text-xs font-medium text-rose-600">{message}</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function StatsPage() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [needsAuth, setNeedsAuth] = useState(false);
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [answers, setAnswers] = useState<Record<number, Analysis | "loading" | "error">>({});
 
   const load = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/stats`);
+      const res = await adminFetch("/api/stats");
       if (!res.ok) throw new Error(`서버 오류 (${res.status})`);
       setStats(await res.json());
       setError(null);
+      setNeedsAuth(false);
     } catch (e) {
+      if (e instanceof AuthError) {
+        setNeedsAuth(true);
+        setAuthError(getAdminToken() ? e.message : null);
+        return;
+      }
       setError(e instanceof Error ? e.message : "불러오기 실패");
     }
   }, []);
@@ -164,13 +225,40 @@ export default function StatsPage() {
     if (next !== null && row.analysis_id && !answers[row.analysis_id]) {
       const aid = row.analysis_id;
       setAnswers((prev) => ({ ...prev, [aid]: "loading" }));
-      fetch(`${API_BASE}/api/analyses/${aid}`)
+      adminFetch(`/api/analyses/${aid}`)
         .then((r) => (r.ok ? r.json() : Promise.reject()))
         .then((data: Analysis) => setAnswers((prev) => ({ ...prev, [aid]: data })))
         .catch(() => setAnswers((prev) => ({ ...prev, [aid]: "error" })));
     }
   };
 
+  const downloadCsv = async () => {
+    try {
+      const res = await adminFetch("/api/stats/export");
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "metrics.csv";
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      setError("CSV 내보내기에 실패했습니다.");
+    }
+  };
+
+  if (needsAuth) {
+    return (
+      <TokenGate
+        message={authError}
+        onSubmit={(token) => {
+          setAdminToken(token);
+          setAuthError(null);
+          load();
+        }}
+      />
+    );
+  }
   if (error) {
     return <p className="py-16 text-center text-sm font-medium text-rose-600">{error}</p>;
   }
@@ -195,12 +283,26 @@ export default function StatsPage() {
             30초마다 자동 갱신 · 관리용 페이지
           </p>
         </div>
-        <a
-          href={`${API_BASE}/api/stats/export`}
-          className="rounded-full border border-slate-200 bg-white px-4 py-2 text-xs font-bold text-slate-500 transition hover:border-indigo-300 hover:text-indigo-600"
-        >
-          ⇩ 지표 CSV 내보내기
-        </a>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={downloadCsv}
+            className="rounded-full border border-slate-200 bg-white px-4 py-2 text-xs font-bold text-slate-500 transition hover:border-indigo-300 hover:text-indigo-600"
+          >
+            지표 CSV 내보내기
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              clearAdminToken();
+              setNeedsAuth(true);
+              setStats(null);
+            }}
+            className="rounded-full border border-slate-200 bg-white px-4 py-2 text-xs font-medium text-slate-400 transition hover:border-rose-200 hover:text-rose-600"
+          >
+            로그아웃
+          </button>
+        </div>
       </div>
 
       <div className="mt-6 grid grid-cols-2 gap-3 lg:grid-cols-3">

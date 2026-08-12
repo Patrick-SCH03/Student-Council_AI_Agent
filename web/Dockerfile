@@ -9,6 +9,7 @@ COPY . .
 # 빈 문자열이면 same-origin 상대 경로(/api/...)로 호출 → Caddy가 api로 프록시
 ARG NEXT_PUBLIC_API_URL=""
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
+ENV BUILD_STANDALONE=1
 RUN npm run build
 
 # --- 실행 스테이지 ---
