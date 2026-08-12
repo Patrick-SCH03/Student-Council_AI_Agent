@@ -6,14 +6,14 @@
 
 인하대학교 학생회를 대상으로 실제 운영 중인 서비스입니다.
 
-[![Live](https://img.shields.io/badge/🔗_Live_Service-000000?style=for-the-badge)](https://ai-agent-patrick-16be.vercel.app)
+[![Live](https://img.shields.io/badge/Live_Service-000000?style=for-the-badge)](https://ai-agent-patrick-16be.vercel.app)
 [![CI](https://github.com/Patrick-SCH03/AI-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/Patrick-SCH03/AI-agent/actions/workflows/ci.yml)
 
 </div>
 
 ---
 
-## 🎯 왜 만들었나
+## 왜 만들었나
 
 학생회 임원은 매 학기 바뀌지만, 지켜야 할 규정은 회칙·세칙 여러 건에 흩어져 있습니다.
 그 결과 **"몰라서" 규정을 어기고 감사에서 처분을 받는 일**이 반복됩니다 — 사전 인준 없이 예산을 집행하거나, 증빙을 갖추지 않고 물품을 구매하거나.
@@ -24,7 +24,7 @@
 
 ---
 
-## 🛠 기술 스택
+## 기술 스택
 
 <table>
 <tr>
@@ -82,7 +82,7 @@
 
 ---
 
-## 🏗 어떻게 동작하나
+## 어떻게 동작하나
 
 질문 하나에 **관점이 다른 두 전문가**를 병렬로 붙이고, 세 번째 에이전트가 종합합니다.
 
@@ -116,7 +116,7 @@ API는 브라우저가 백엔드로 **직접** 호출합니다. 프록시를 거
 
 ---
 
-## 💬 실제 답변 예시
+## 실제 답변 예시
 
 > **Q. 비룡제 VAT 누락 관련해서 어떤 감사 처분이 있었나요?**
 >
@@ -126,11 +126,11 @@ API는 브라우저가 백엔드로 **직접** 호출합니다. 프록시를 거
 >
 > **최종 권고** — 「감사처분에 관한 세칙」 1-나(직무태만으로 재정상 손실) 및 예산집행정지기준 6-다(인준 없이 사업 진행)에 따라 (…)
 >
-> 📄 근거: `25-2 총학생회_특별감사_보고서.pdf` · `감사처분에 관한 세칙.pdf`
+> **근거 문서** — `25-2 총학생회_특별감사_보고서.pdf` · `감사처분에 관한 세칙.pdf`
 
 ---
 
-## ✨ 주요 기능
+## 주요 기능
 
 | 기능 | 설명 |
 |---|---|
@@ -145,7 +145,7 @@ API는 브라우저가 백엔드로 **직접** 호출합니다. 프록시를 거
 
 ---
 
-## 🔧 기술적으로 신경 쓴 부분
+## 기술적으로 신경 쓴 부분
 
 <details>
 <summary><b>1. 한글 PDF의 널바이트 오염 — 검색 품질이 무너지던 원인</b></summary>
@@ -215,7 +215,7 @@ API는 브라우저가 백엔드로 **직접** 호출합니다. 프록시를 거
 
 ---
 
-## 📁 프로젝트 구조
+## 프로젝트 구조
 
 ```
 ├── api/                      # FastAPI 백엔드
@@ -236,7 +236,7 @@ API는 브라우저가 백엔드로 **직접** 호출합니다. 프록시를 거
 
 ---
 
-## 🚀 시작하기
+## 시작하기
 
 ### 백엔드
 
@@ -273,29 +273,28 @@ cd api
 
 ---
 
-## 📡 API
+## API
 
 | 메서드 | 경로 | 인증 | 설명 |
 |---|---|:---:|---|
 | `POST` | `/api/chat` | — | SSE 스트리밍 분석 (`stage` / `agent_done` / `token` / `result`) |
 | `GET` | `/api/health` | — | 상태 확인 (모드, 모델, 색인 청크 수) |
-| `GET` | `/api/stats` | 🔒 | 운영 지표 (질의·응답시간·토큰·비용·방문자) |
-| `GET` | `/api/stats/export` | 🔒 | 지표 CSV 내보내기 |
-| `GET` | `/api/history` · `/api/analyses/{id}` | 🔒 | 분석 이력 |
-| `POST` `GET` `DELETE` | `/api/documents` | 🔒 | 문서 색인 관리 |
+| `GET` | `/api/stats` | 필요 | 운영 지표 (질의·응답시간·토큰·비용·방문자) |
+| `GET` | `/api/stats/export` | 필요 | 지표 CSV 내보내기 |
+| `GET` | `/api/history` · `/api/analyses/{id}` | 필요 | 분석 이력 |
+| `POST` `GET` `DELETE` | `/api/documents` | 필요 | 문서 색인 관리 |
 
-🔒 = `Authorization: Bearer <ADMIN_TOKEN>` 필요
-
----
-
-## 📄 문서
-
-- **[DEPLOYMENT.md](DEPLOYMENT.md)** — Vercel + Railway 배포 절차
-- **[CONTRIBUTING.md](CONTRIBUTING.md)** — 커밋 컨벤션 · 브랜치 전략 · CI
+인증이 **필요**로 표시된 엔드포인트는 `Authorization: Bearer <ADMIN_TOKEN>` 헤더를 요구합니다.
 
 ---
 
-## ⚠️ 주의
+## 개발 컨벤션
+
+커밋 메시지 규칙, 브랜치 전략, CI 구성은 **[CONTRIBUTING.md](CONTRIBUTING.md)** 를 참고하세요.
+
+---
+
+## 주의
 
 - 이 저장소에는 **규정 PDF 원본이 포함되어 있지 않습니다** (학생회 내부 문서).
 - 본 서비스의 AI 분석은 **참고용**이며, 최종 판단은 감사위원회 및 관련 규정을 따릅니다.
