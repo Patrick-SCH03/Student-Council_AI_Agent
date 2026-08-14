@@ -64,3 +64,23 @@ cd api && python smoke_test.py
 # 프론트엔드
 cd web && npm run lint && npm run build
 ```
+
+## 답변 품질 회귀 테스트
+
+프롬프트나 검색 설정을 바꾼 뒤에는 평가셋을 실행해 품질 저하를 확인합니다.
+
+```bash
+cd api
+python evaluate.py                          # 로컬 파이프라인
+python evaluate.py --url https://<배포주소>  # 배포본
+python evaluate.py --case vat-case          # 특정 케이스만
+```
+
+`evalset.json`에 질문별 기대치(라우팅·근거 문서·핵심 키워드·위험도·실명 노출 여부)를
+정의해 두었습니다. **실제 LLM을 호출하므로 비용이 발생**하며, CI에는 포함하지 않고
+품질에 영향을 주는 변경 시에만 수동 실행합니다.
+
+테스트가 실패하면 두 가지를 구분해야 합니다.
+
+- **시스템 문제** — 근거 문서를 못 찾거나 잘못된 답변을 함 → 코드·프롬프트 수정
+- **기준 문제** — 답변은 맞는데 기대 문서만 다름 → `evalset.json` 기대치를 수정
