@@ -233,7 +233,8 @@ async def chat(request: ChatRequest):
                 analysis_id=analysis_id,
                 visitor_id=visitor_id,
             )
-            yield _sse({"type": "result", **result})
+            # analysis_id는 저장 후에야 정해지므로 응답에만 덧붙인다 (피드백 전송용)
+            yield _sse({"type": "result", **result, "analysis_id": analysis_id})
 
         except Exception as e:  # noqa: BLE001 - 스트림 내 오류는 이벤트로 전달
             in_tok, out_tok = _token_totals()
@@ -303,6 +304,21 @@ def get_analysis(analysis_id: int):
     if not item:
         raise HTTPException(status_code=404, detail="분석 기록을 찾을 수 없습니다.")
     return item
+
+
+class FeedbackRequest(BaseModel):
+    analysis_id: int = Field(ge=1)
+    helpful: bool
+    visitor_id: str | None = Field(default=None, max_length=64)
+
+
+@app.post("/api/feedback")
+def submit_feedback(request: FeedbackRequest):
+    """답변 만족도 수집 (공개 — 사용자가 누르는 버튼)."""
+    if not db.get_analysis(request.analysis_id):
+        raise HTTPException(status_code=404, detail="분석 기록을 찾을 수 없습니다.")
+    db.add_feedback(request.analysis_id, request.helpful, request.visitor_id)
+    return {"ok": True}
 
 
 class TrackRequest(BaseModel):

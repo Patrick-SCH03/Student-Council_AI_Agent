@@ -12,6 +12,7 @@ import {
   type ReviewerResult,
   ChatBlockedError,
   fetchHealth,
+  sendFeedback,
   streamChat,
 } from "@/lib/api";
 
@@ -96,7 +97,51 @@ const paths = {
     />
   ),
   reply: <path d="M9 10 4 15l5 5M4 15h11a5 5 0 0 0 5-5V7" />,
+  thumbUp: (
+    <path d="M7 10v10H4V10h3Zm3 10V10l4-6a2 2 0 0 1 3 2l-1 4h4.5a2 2 0 0 1 2 2.4l-1.3 6A2 2 0 0 1 17.2 20H10Z" />
+  ),
+  thumbDown: (
+    <path d="M7 14V4H4v10h3Zm3-10v10l4 6a2 2 0 0 0 3-2l-1-4h4.5a2 2 0 0 0 2-2.4l-1.3-6A2 2 0 0 0 17.2 4H10Z" />
+  ),
 };
+
+function FeedbackButtons({ analysisId }: { analysisId: number }) {
+  const [sent, setSent] = useState<boolean | null>(null);
+
+  const submit = (helpful: boolean) => {
+    setSent(helpful); // 낙관적 반영 — 전송 실패해도 사용자 흐름을 막지 않는다
+    sendFeedback(analysisId, helpful).catch(() => {});
+  };
+
+  if (sent !== null) {
+    return (
+      <span className="text-xs font-medium text-slate-400">
+        {sent ? "의견 감사합니다" : "의견 감사합니다. 개선에 참고하겠습니다"}
+      </span>
+    );
+  }
+
+  return (
+    <div className="flex items-center gap-1.5">
+      <span className="text-xs font-medium text-slate-400">도움이 되었나요?</span>
+      {[
+        { helpful: true, icon: paths.thumbUp, label: "도움됨" },
+        { helpful: false, icon: paths.thumbDown, label: "부족함" },
+      ].map((b) => (
+        <button
+          key={b.label}
+          type="button"
+          onClick={() => submit(b.helpful)}
+          aria-label={b.label}
+          title={b.label}
+          className="rounded-full border border-slate-200 p-1.5 text-slate-400 transition hover:border-indigo-300 hover:text-indigo-600"
+        >
+          <Icon path={b.icon} className="h-3.5 w-3.5" />
+        </button>
+      ))}
+    </div>
+  );
+}
 
 /* ---------------------------------------------------------------- 컴포넌트 */
 
@@ -365,7 +410,7 @@ function AssistantBubble({
             )}
 
             {result && (
-              <div className="mt-4 flex items-center justify-between border-t border-slate-100 pt-3">
+              <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-slate-100 pt-3">
                 <button
                   type="button"
                   onClick={copyAnswer}
@@ -377,7 +422,12 @@ function AssistantBubble({
                   />
                   {copied ? "복사됨" : "답변 복사"}
                 </button>
-                <span className="inline-flex items-center gap-1 text-xs font-medium text-slate-400">
+
+                {result.analysis_id && (
+                  <FeedbackButtons analysisId={result.analysis_id} />
+                )}
+
+                <span className="ml-auto inline-flex items-center gap-1 text-xs font-medium text-slate-400">
                   <Icon path={paths.clock} className="h-3.5 w-3.5" />
                   {result.elapsed.toFixed(1)}초
                 </span>

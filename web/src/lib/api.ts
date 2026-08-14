@@ -84,7 +84,24 @@ export type ChatResult = {
   auditor: AuditorResult | null;
   citations: Citation[];
   elapsed: number;
+  analysis_id: number | null;
 };
+
+/** 답변 만족도 전송 (실패해도 사용자 흐름을 막지 않음) */
+export async function sendFeedback(
+  analysisId: number,
+  helpful: boolean,
+): Promise<void> {
+  await fetch(`${API_BASE}/api/feedback`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      analysis_id: analysisId,
+      helpful,
+      visitor_id: getVisitorId(),
+    }),
+  });
+}
 
 export type ChatEvent =
   | { type: "stage"; label: string; route?: string }

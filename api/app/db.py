@@ -44,6 +44,12 @@ CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS feedback (
+    analysis_id INTEGER PRIMARY KEY,   -- 답변당 1건 (재평가 시 갱신)
+    ts          TEXT NOT NULL,
+    helpful     INTEGER NOT NULL,      -- 1 = 도움됨, 0 = 부족함
+    visitor_id  TEXT
+);
 """
 
 
@@ -149,6 +155,17 @@ def set_settings(values: dict[str, int]) -> None:
         )
 
 
+def add_feedback(analysis_id: int, helpful: bool, visitor_id: str | None) -> None:
+    """답변 만족도 기록. 같은 답변에 다시 누르면 갱신된다."""
+    with _connect() as conn:
+        conn.execute(
+            "INSERT INTO feedback (analysis_id, ts, helpful, visitor_id) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(analysis_id) DO UPDATE SET "
+            "helpful = excluded.helpful, ts = excluded.ts",
+            (analysis_id, _now(), 1 if helpful else 0, visitor_id),
+        )
+
+
 def count_today(visitor_id: str | None = None) -> int:
     """오늘 처리한 질의 수. visitor_id를 주면 해당 사용자 기준으로 센다."""
     with _connect() as conn:
@@ -226,9 +243,22 @@ def get_stats(days: int = 14) -> dict:
         ).fetchall()}
 
         recent = [dict(r) for r in conn.execute(
-            "SELECT id, analysis_id, ts, route, risk_level, status, elapsed, "
-            "input_tokens + output_tokens AS tokens, query_preview "
-            "FROM metrics ORDER BY id DESC LIMIT 20"
+            "SELECT m.id, m.analysis_id, m.ts, m.route, m.risk_level, m.status, m.elapsed, "
+            "m.input_tokens + m.output_tokens AS tokens, m.query_preview, f.helpful "
+            "FROM metrics m LEFT JOIN feedback f ON f.analysis_id = m.analysis_id "
+            "ORDER BY m.id DESC LIMIT 20"
+        ).fetchall()]
+
+        fb = dict(conn.execute(
+            "SELECT COALESCE(SUM(helpful), 0) AS helpful, "
+            "COALESCE(SUM(1 - helpful), 0) AS unhelpful FROM feedback"
+        ).fetchone())
+
+        # 부족하다고 평가된 답변 — 개선 대상 목록
+        fb["recent_unhelpful"] = [dict(r) for r in conn.execute(
+            "SELECT f.analysis_id, f.ts, a.query, a.risk_level "
+            "FROM feedback f JOIN analyses a ON a.id = f.analysis_id "
+            "WHERE f.helpful = 0 ORDER BY f.ts DESC LIMIT 10"
         ).fetchall()]
 
         visits = {
@@ -256,6 +286,7 @@ def get_stats(days: int = 14) -> dict:
         "recent": recent,
         "visits": visits,
         "daily_visits": daily_visits,
+        "feedback": fb,
     }
 
 

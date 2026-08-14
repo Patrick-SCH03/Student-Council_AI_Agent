@@ -29,6 +29,18 @@ type RecentRow = {
   elapsed: number | null;
   tokens: number;
   query_preview: string;
+  helpful: number | null;
+};
+
+type Feedback = {
+  helpful: number;
+  unhelpful: number;
+  recent_unhelpful: {
+    analysis_id: number;
+    ts: string;
+    query: string;
+    risk_level: string | null;
+  }[];
 };
 
 type Stats = {
@@ -59,6 +71,7 @@ type Stats = {
     usd_krw: number;
   };
   limits: Limits;
+  feedback: Feedback;
 };
 
 type Analysis = {
@@ -389,6 +402,7 @@ export default function StatsPage() {
   const totalTokens = stats.totals.input_tokens + stats.totals.output_tokens;
   const todayTokens = stats.today.input_tokens + stats.today.output_tokens;
   const riskTotal = Object.values(stats.risk).reduce((a, b) => a + b, 0);
+  const fbTotal = stats.feedback.helpful + stats.feedback.unhelpful;
 
   return (
     <div className="py-8">
@@ -520,6 +534,75 @@ export default function StatsPage() {
         </div>
       </div>
 
+      <div className="mt-4 grid gap-4 lg:grid-cols-3">
+        <div className={`rounded-2xl border border-slate-200 bg-white p-5 ${CARD_SHADOW}`}>
+          <p className="text-sm font-bold text-slate-800">답변 만족도</p>
+          {fbTotal === 0 ? (
+            <p className="mt-4 text-sm font-medium text-slate-400">
+              아직 평가가 없습니다.
+            </p>
+          ) : (
+            <>
+              <p className="mt-3 text-[26px] font-extrabold tracking-tight text-slate-900">
+                {Math.round((stats.feedback.helpful / fbTotal) * 100)}%
+                <span className="ml-1.5 text-sm font-medium text-slate-400">
+                  도움됨
+                </span>
+              </p>
+              <div className="mt-3 flex h-2 overflow-hidden rounded-full bg-slate-100">
+                <div
+                  className="bg-green-500"
+                  style={{ width: `${(stats.feedback.helpful / fbTotal) * 100}%` }}
+                />
+                <div
+                  className="bg-rose-400"
+                  style={{ width: `${(stats.feedback.unhelpful / fbTotal) * 100}%` }}
+                />
+              </div>
+              <p className="mt-2 text-xs font-medium text-slate-500">
+                도움됨 {fmt(stats.feedback.helpful)}건 · 부족함{" "}
+                {fmt(stats.feedback.unhelpful)}건
+              </p>
+            </>
+          )}
+        </div>
+
+        <div
+          className={`rounded-2xl border border-slate-200 bg-white p-5 lg:col-span-2 ${CARD_SHADOW}`}
+        >
+          <p className="text-sm font-bold text-slate-800">
+            개선이 필요한 답변{" "}
+            <span className="font-medium text-slate-400">
+              — &lsquo;부족함&rsquo; 평가를 받은 질문
+            </span>
+          </p>
+          {stats.feedback.recent_unhelpful.length === 0 ? (
+            <p className="mt-4 text-sm font-medium text-slate-400">
+              부족하다는 평가가 아직 없습니다.
+            </p>
+          ) : (
+            <ul className="mt-3 divide-y divide-slate-100">
+              {stats.feedback.recent_unhelpful.map((f) => (
+                <li
+                  key={f.analysis_id}
+                  className="flex items-center justify-between gap-3 py-2"
+                >
+                  <span className="min-w-0 truncate text-sm font-medium text-slate-700">
+                    {f.query}
+                  </span>
+                  <span className="shrink-0 text-xs font-medium text-slate-400">
+                    {new Date(f.ts).toLocaleDateString("ko-KR", {
+                      month: "numeric",
+                      day: "numeric",
+                    })}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
+
       <div className="mt-4">
         <LimitSettings limits={stats.limits} onSaved={load} />
       </div>
@@ -577,6 +660,14 @@ export default function StatsPage() {
                     {r.elapsed != null ? `${r.elapsed.toFixed(1)}초` : "—"}
                   </td>
                   <td className="whitespace-nowrap px-5 py-2.5 text-right text-xs font-medium text-slate-500">
+                    {r.helpful !== null && (
+                      <span
+                        className={`mr-2 ${r.helpful ? "text-green-600" : "text-rose-500"}`}
+                        title={r.helpful ? "도움됨" : "부족함"}
+                      >
+                        {r.helpful ? "좋음" : "부족"}
+                      </span>
+                    )}
                     {fmt(r.tokens)}
                   </td>
                 </tr>
