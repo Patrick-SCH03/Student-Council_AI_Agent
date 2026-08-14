@@ -233,8 +233,37 @@ def _vector_search(query: str, k: int, doc_type: str | None) -> list[dict]:
     ]
 
 
-def search(query: str, k: int = 5, doc_type: str | None = None) -> list[dict]:
-    """하이브리드 검색: 벡터 + 키워드 결과를 RRF로 융합한다.
+def _diversify(entries: list[dict], k: int, max_per_source: int) -> list[dict]:
+    """한 문서가 결과를 독점하지 않도록 문서별 상한을 두고 상위 k개를 고른다.
+
+    같은 문서의 인접 청크가 결과를 채우면 근거가 좁아진다. 문서당 상한을 먼저
+    적용해 여러 문서의 근거를 확보하고, 남는 자리는 순위대로 채운다.
+    """
+    picked: list[dict] = []
+    per_source: dict[str, int] = {}
+    overflow: list[dict] = []
+
+    for entry in entries:
+        source = entry["meta"].get("source_file", "")
+        if per_source.get(source, 0) < max_per_source:
+            per_source[source] = per_source.get(source, 0) + 1
+            picked.append(entry)
+            if len(picked) == k:
+                return picked
+        else:
+            overflow.append(entry)
+
+    picked.extend(overflow[: k - len(picked)])
+    return picked
+
+
+def search(
+    query: str,
+    k: int = 5,
+    doc_type: str | None = None,
+    max_per_source: int = 3,
+) -> list[dict]:
+    """하이브리드 검색: 벡터 + 키워드 결과를 RRF로 융합하고 문서 편중을 완화한다.
 
     RRF는 두 검색의 점수 체계가 달라도 순위만으로 안전하게 합칠 수 있어,
     임베딩이 놓친 정확한 표현을 키워드 쪽이 보완한다.
@@ -263,7 +292,8 @@ def search(query: str, k: int = 5, doc_type: str | None = None) -> list[dict]:
         m = index["metas"][idx]
         _add((m.get("doc_id"), m.get("chunk_index")), index["docs"][idx], m, rank)
 
-    ordered = sorted(fused.values(), key=lambda e: e["score"], reverse=True)[:k]
+    ranked = sorted(fused.values(), key=lambda e: e["score"], reverse=True)
+    ordered = _diversify(ranked, k, max_per_source)
 
     hits = []
     for entry in ordered:
