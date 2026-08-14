@@ -10,7 +10,7 @@ load_dotenv()
 GEMINI_API_KEY: str | None = (
     os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or None
 )
-GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
+GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-3.7-flash")
 GEMINI_EMBEDDING_MODEL: str = os.getenv(
     "GEMINI_EMBEDDING_MODEL", "models/gemini-embedding-2"
 )
@@ -27,9 +27,11 @@ SQLITE_PATH = DATA_DIR / "app.sqlite3"
 # 미설정 시 해당 엔드포인트는 503으로 차단된다 (공개 배포 시 사고 방지).
 ADMIN_TOKEN: str | None = os.getenv("ADMIN_TOKEN") or None
 
-# API 비용 추정용 단가 (USD / 1M 토큰, 2026-08 gemini-3.6-flash 기준. env로 조정 가능)
-PRICE_INPUT_PER_1M: float = float(os.getenv("PRICE_INPUT_PER_1M", "1.50"))
-PRICE_OUTPUT_PER_1M: float = float(os.getenv("PRICE_OUTPUT_PER_1M", "7.50"))
+# API 비용 추정용 단가 (USD / 1M 토큰). env로 조정 가능.
+# gemini-3.7-flash 도입 할인가 (~2026-12-31). 2027-01-01부터 1.50 / 7.50으로 환원되므로
+# 그 시점에 아래 기본값 또는 환경변수를 갱신해야 대시보드 비용이 정확하다.
+PRICE_INPUT_PER_1M: float = float(os.getenv("PRICE_INPUT_PER_1M", "0.75"))
+PRICE_OUTPUT_PER_1M: float = float(os.getenv("PRICE_OUTPUT_PER_1M", "3.75"))
 USD_KRW: float = float(os.getenv("USD_KRW", "1400"))
 
 CORS_ORIGINS: list[str] = [

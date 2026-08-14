@@ -34,7 +34,7 @@
 
 <img src="https://skillicons.dev/icons?i=python" height="48" />
 
-**Gemini 3.6 Flash**<br/>
+**Gemini 3.7 Flash**<br/>
 `gemini-embedding-2`<br/>
 **LangGraph 1.0**<br/>
 **ChromaDB** · pypdf
@@ -74,7 +74,7 @@
 
 | 영역 | 선택 | 이유 |
 |---|---|---|
-| **LLM** | Gemini 3.6 Flash | 한국어 규정 해석 품질 대비 비용이 낮고, 스캔본 PDF를 멀티모달로 직접 파싱 가능 |
+| **LLM** | Gemini 3.7 Flash | 한국어 규정 해석 품질 대비 비용이 낮고, 스캔본 PDF를 멀티모달로 직접 파싱 가능 |
 | **오케스트레이션** | LangGraph 1.0 | 조건부 라우팅과 fan-out 병렬 실행을 그래프로 선언 — 에이전트 추가 시 구조 변경 최소화 |
 | **벡터 DB** | ChromaDB | 문서 추가·삭제·재색인을 운영 중 수행해야 해서, 인덱스 파일 재생성형(Faiss 등)보다 컬렉션 관리형이 적합 |
 | **스트리밍** | SSE | 응답에 20~30초가 걸려 진행 상황 노출이 필수. WebSocket은 단방향 스트림에 과함 |
