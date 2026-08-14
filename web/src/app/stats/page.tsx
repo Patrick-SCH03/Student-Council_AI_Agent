@@ -228,66 +228,77 @@ function LimitSettings({
   const cap = limits.daily_limit_total;
   const pct = cap > 0 ? Math.min(Math.round((used / cap) * 100), 100) : 0;
 
+  const field = (
+    label: string,
+    value: string,
+    onChange: (v: string) => void,
+  ) => (
+    <div className="flex items-center gap-2">
+      <span className="whitespace-nowrap text-sm font-medium text-slate-600">
+        {label}
+      </span>
+      <div className="relative">
+        <input
+          type="number"
+          min={0}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          className="w-28 rounded-lg border border-slate-300 py-1.5 pl-3 pr-10 text-right text-sm tabular-nums outline-none focus:border-indigo-400"
+        />
+        <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs font-medium text-slate-400">
+          건
+        </span>
+      </div>
+    </div>
+  );
+
   return (
     <div className={`rounded-2xl border border-slate-200 bg-white p-5 ${CARD_SHADOW}`}>
-      <p className="text-sm font-bold text-slate-800">일일 질의 한도</p>
-      <p className="mt-1 text-xs font-medium text-slate-400">
-        0을 입력하면 무제한입니다.
-      </p>
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <p className="text-sm font-bold text-slate-800">일일 질의 한도</p>
+        {cap > 0 ? (
+          <p className="text-xs font-medium text-slate-500">
+            오늘 <span className="font-bold text-slate-700">{fmt(used)}</span> /{" "}
+            {fmt(cap)}건 사용 ({pct}%)
+          </p>
+        ) : (
+          <p className="text-xs font-medium text-slate-400">
+            전체 한도 없음 · 오늘 {fmt(used)}건 사용
+          </p>
+        )}
+      </div>
 
       {cap > 0 && (
-        <div className="mt-4">
-          <div className="flex justify-between text-xs font-medium text-slate-500">
-            <span>오늘 사용량</span>
-            <span>
-              {fmt(used)} / {fmt(cap)}건 ({pct}%)
-            </span>
-          </div>
-          <div className="mt-1.5 h-2 overflow-hidden rounded-full bg-slate-100">
-            <div
-              className={`h-full rounded-full ${
-                pct >= 90 ? "bg-rose-500" : pct >= 70 ? "bg-amber-500" : "bg-indigo-600"
-              }`}
-              style={{ width: `${pct}%` }}
-            />
-          </div>
+        <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-100">
+          <div
+            className={`h-full rounded-full transition-all ${
+              pct >= 90 ? "bg-rose-500" : pct >= 70 ? "bg-amber-500" : "bg-indigo-600"
+            }`}
+            style={{ width: `${pct}%` }}
+          />
         </div>
       )}
 
-      <div className="mt-4 flex flex-col gap-3">
-        <label className="flex items-center justify-between gap-3 text-sm">
-          <span className="font-medium text-slate-600">전체 (하루)</span>
-          <input
-            type="number"
-            min={0}
-            value={total}
-            onChange={(e) => setTotal(e.target.value)}
-            className="w-24 rounded-lg border border-slate-300 px-2.5 py-1.5 text-right text-sm outline-none focus:border-indigo-400"
-          />
-        </label>
-        <label className="flex items-center justify-between gap-3 text-sm">
-          <span className="font-medium text-slate-600">사용자당 (하루)</span>
-          <input
-            type="number"
-            min={0}
-            value={perUser}
-            onChange={(e) => setPerUser(e.target.value)}
-            className="w-24 rounded-lg border border-slate-300 px-2.5 py-1.5 text-right text-sm outline-none focus:border-indigo-400"
-          />
-        </label>
-      </div>
+      <div className="mt-5 flex flex-wrap items-center gap-x-6 gap-y-3">
+        {field("전체", total, setTotal)}
+        {field("사용자당", perUser, setPerUser)}
 
-      <button
-        type="button"
-        onClick={save}
-        disabled={!dirty || saving}
-        className="mt-4 w-full rounded-full bg-indigo-600 px-4 py-2 text-xs font-bold text-white transition hover:bg-indigo-700 disabled:opacity-40"
-      >
-        {saving ? "저장 중..." : "저장"}
-      </button>
-      {message && (
-        <p className="mt-2 text-center text-xs font-medium text-slate-500">{message}</p>
-      )}
+        <span className="text-xs font-medium text-slate-400">0 = 무제한</span>
+
+        <div className="ml-auto flex items-center gap-2.5">
+          {message && (
+            <span className="text-xs font-medium text-slate-500">{message}</span>
+          )}
+          <button
+            type="button"
+            onClick={save}
+            disabled={!dirty || saving}
+            className="rounded-full bg-indigo-600 px-5 py-2 text-xs font-bold text-white transition hover:bg-indigo-700 disabled:bg-slate-200 disabled:text-slate-400"
+          >
+            {saving ? "저장 중..." : "저장"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -509,7 +520,7 @@ export default function StatsPage() {
         </div>
       </div>
 
-      <div className="mt-4 grid gap-4 lg:grid-cols-3">
+      <div className="mt-4">
         <LimitSettings limits={stats.limits} onSaved={load} />
       </div>
 
