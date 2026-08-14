@@ -169,6 +169,9 @@ async def auditor_node(state: AgentState) -> AgentState:
             store.search, f"{query} 감사 처분 사례", K_AUDIT, "audit"
         ),
     )
+    # 한 사안에 대한 처분이 여러 건이면 보고서에 연속으로 나열된다.
+    # 인접 청크를 붙여야 목록 일부만 답변되는 일을 막을 수 있다.
+    audit_hits = await asyncio.to_thread(store.expand_neighbors, audit_hits)
 
     if MOCK_MODE:
         await asyncio.sleep(1.0)

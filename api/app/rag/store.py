@@ -310,6 +310,55 @@ def search(
     return hits
 
 
+def expand_neighbors(hits: list[dict], radius: int = 1) -> list[dict]:
+    """검색된 청크의 인접 청크를 함께 붙여 반환한다.
+
+    감사보고서의 처분 목록처럼 하나의 열거가 청크 경계로 나뉘면, 질의와 표면적으로
+    맞는 항목만 검색되고 같은 사안의 나머지 처분이 빠진다. (예: 비룡제 VAT 질의에
+    '부총학생회장 해임건의'만 검색되고 바로 옆 청크의 '예산집행정지 21일'이 누락)
+    순위를 바꾸지 않고 근접 문맥만 보강하므로 리랭킹보다 비용이 싸다.
+    """
+    if not hits or radius <= 0:
+        return hits
+
+    present = {(h["doc_id"], h["chunk_index"]) for h in hits}
+    wanted: list[tuple[str, int]] = []
+    for hit in hits:
+        for offset in range(-radius, radius + 1):
+            key = (hit["doc_id"], hit["chunk_index"] + offset)
+            if offset and key[1] >= 0 and key not in present and key not in wanted:
+                wanted.append(key)
+    if not wanted:
+        return hits
+
+    fetched = _get_collection().get(
+        ids=[f"{doc_id}:{idx}" for doc_id, idx in wanted],
+        include=["documents", "metadatas"],
+    )
+    neighbors = {
+        (m.get("doc_id"), m.get("chunk_index")): {
+            "text": t,
+            "source_file": m.get("source_file", "알 수 없음"),
+            "doc_id": m.get("doc_id", ""),
+            "chunk_index": m.get("chunk_index", -1),
+            "doc_type": m.get("doc_type", ""),
+        }
+        for t, m in zip(fetched["documents"], fetched["metadatas"])
+    }
+
+    # 각 청크 뒤에 그 이웃을 붙여 원문 순서에 가까운 형태로 전달한다
+    expanded: list[dict] = []
+    seen: set[tuple] = set()
+    for hit in hits:
+        for offset in range(-radius, radius + 1):
+            key = (hit["doc_id"], hit["chunk_index"] + offset)
+            entry = hit if offset == 0 else neighbors.get(key)
+            if entry and key not in seen:
+                seen.add(key)
+                expanded.append(entry)
+    return expanded
+
+
 def delete_doc(doc_id: str) -> None:
     _get_collection().delete(where={"doc_id": doc_id})
     _invalidate_bm25()
