@@ -5,6 +5,7 @@ v1은 분석 결과를 외부 Notion에 기록했지만, v2는 자체 DB에 저�
 """
 
 import json
+import re
 import sqlite3
 from datetime import datetime, timezone
 
@@ -43,6 +44,13 @@ CREATE TABLE IF NOT EXISTS visits (
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS answer_cache (
+    query_key   TEXT PRIMARY KEY,      -- 정규화된 질문
+    ts          TEXT NOT NULL,
+    analysis_id INTEGER NOT NULL,
+    result      TEXT NOT NULL,
+    hits        INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS feedback (
     analysis_id INTEGER PRIMARY KEY,   -- 답변당 1건 (재평가 시 갱신)
@@ -155,6 +163,56 @@ def set_settings(values: dict[str, int]) -> None:
         )
 
 
+# ---------------------------------------------------------------- 답변 캐시
+
+def normalize_query(query: str) -> str:
+    """캐시 키 생성: 공백·문장부호를 제거해 표기 차이를 흡수한다."""
+    return re.sub(r"[\s?!.,·…]+", "", query).lower()
+
+
+def get_cached_answer(query_key: str, ttl_hours: int) -> dict | None:
+    """TTL 이내의 캐시된 답변을 반환하고 적중 횟수를 올린다."""
+    if ttl_hours <= 0:
+        return None
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT analysis_id, result FROM answer_cache "
+            "WHERE query_key = ? AND ts >= datetime('now', ?)",
+            (query_key, f"-{ttl_hours} hours"),
+        ).fetchone()
+        if not row:
+            return None
+        conn.execute(
+            "UPDATE answer_cache SET hits = hits + 1 WHERE query_key = ?", (query_key,)
+        )
+    return {"analysis_id": row["analysis_id"], **json.loads(row["result"])}
+
+
+def save_cached_answer(query_key: str, analysis_id: int, result: dict) -> None:
+    with _connect() as conn:
+        conn.execute(
+            "INSERT INTO answer_cache (query_key, ts, analysis_id, result, hits) "
+            "VALUES (?, ?, ?, ?, 0) ON CONFLICT(query_key) DO UPDATE SET "
+            "ts = excluded.ts, analysis_id = excluded.analysis_id, "
+            "result = excluded.result, hits = 0",
+            (query_key, _now(), analysis_id, json.dumps(result, ensure_ascii=False)),
+        )
+
+
+def cache_stats() -> dict:
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS entries, COALESCE(SUM(hits), 0) AS hits FROM answer_cache"
+        ).fetchone()
+    return dict(row)
+
+
+def clear_cache() -> int:
+    with _connect() as conn:
+        cur = conn.execute("DELETE FROM answer_cache")
+    return cur.rowcount
+
+
 def add_feedback(analysis_id: int, helpful: bool, visitor_id: str | None) -> None:
     """답변 만족도 기록. 같은 답변에 다시 누르면 갱신된다."""
     with _connect() as conn:
@@ -210,7 +268,9 @@ def get_stats(days: int = 14) -> dict:
     """관측 대시보드용 집계. 일별 추이 / 누적 / 위험도 분포 / 최근 질의."""
     with _connect() as conn:
         totals = dict(conn.execute(
-            "SELECT COUNT(*) AS count, COALESCE(AVG(elapsed), 0) AS avg_elapsed, "
+            # 캐시 적중은 LLM을 호출하지 않으므로 평균 응답 시간 계산에서 제외한다
+            "SELECT COUNT(*) AS count, "
+            "COALESCE(AVG(CASE WHEN status != 'cached' THEN elapsed END), 0) AS avg_elapsed, "
             "COALESCE(SUM(input_tokens), 0) AS input_tokens, "
             "COALESCE(SUM(output_tokens), 0) AS output_tokens, "
             "COALESCE(SUM(CASE WHEN status != 'ok' THEN 1 ELSE 0 END), 0) AS errors "
@@ -218,7 +278,9 @@ def get_stats(days: int = 14) -> dict:
         ).fetchone())
 
         today = dict(conn.execute(
-            "SELECT COUNT(*) AS count, COALESCE(AVG(elapsed), 0) AS avg_elapsed, "
+            # 캐시 적중은 LLM을 호출하지 않으므로 평균 응답 시간 계산에서 제외한다
+            "SELECT COUNT(*) AS count, "
+            "COALESCE(AVG(CASE WHEN status != 'cached' THEN elapsed END), 0) AS avg_elapsed, "
             "COALESCE(SUM(input_tokens), 0) AS input_tokens, "
             "COALESCE(SUM(output_tokens), 0) AS output_tokens "
             "FROM metrics WHERE date(ts) = date('now')"
@@ -226,7 +288,7 @@ def get_stats(days: int = 14) -> dict:
 
         daily = [dict(r) for r in conn.execute(
             "SELECT date(ts) AS date, COUNT(*) AS count, "
-            "COALESCE(AVG(elapsed), 0) AS avg_elapsed, "
+            "COALESCE(AVG(CASE WHEN status != 'cached' THEN elapsed END), 0) AS avg_elapsed, "
             "COALESCE(SUM(input_tokens + output_tokens), 0) AS tokens "
             "FROM metrics WHERE ts >= datetime('now', ?) "
             "GROUP BY date(ts) ORDER BY date",
@@ -287,6 +349,7 @@ def get_stats(days: int = 14) -> dict:
         "visits": visits,
         "daily_visits": daily_visits,
         "feedback": fb,
+        "cache": cache_stats(),
     }
 
 

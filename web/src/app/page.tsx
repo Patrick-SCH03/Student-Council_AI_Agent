@@ -429,7 +429,7 @@ function AssistantBubble({
 
                 <span className="ml-auto inline-flex items-center gap-1 text-xs font-medium text-slate-400">
                   <Icon path={paths.clock} className="h-3.5 w-3.5" />
-                  {result.elapsed.toFixed(1)}초
+                  {result.cached ? "이전 답변" : `${result.elapsed.toFixed(1)}초`}
                 </span>
               </div>
             )}

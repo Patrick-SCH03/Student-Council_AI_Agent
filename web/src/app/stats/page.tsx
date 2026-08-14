@@ -11,6 +11,7 @@ import {
   AuthError,
   adminFetch,
   clearAdminToken,
+  clearAnswerCache,
   getAdminToken,
   setAdminToken,
   updateLimits,
@@ -72,6 +73,7 @@ type Stats = {
   };
   limits: Limits;
   feedback: Feedback;
+  cache: { entries: number; hits: number };
 };
 
 type Analysis = {
@@ -206,19 +208,25 @@ function TokenGate({
 
 function LimitSettings({
   limits,
+  cache,
   onSaved,
+  onClearCache,
 }: {
   limits: Limits;
+  cache: { entries: number; hits: number };
   onSaved: () => void;
+  onClearCache: () => void;
 }) {
   const [total, setTotal] = useState(String(limits.daily_limit_total));
   const [perUser, setPerUser] = useState(String(limits.daily_limit_per_user));
+  const [ttl, setTtl] = useState(String(limits.cache_ttl_hours));
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
 
   const dirty =
     total !== String(limits.daily_limit_total) ||
-    perUser !== String(limits.daily_limit_per_user);
+    perUser !== String(limits.daily_limit_per_user) ||
+    ttl !== String(limits.cache_ttl_hours);
 
   const save = async () => {
     setSaving(true);
@@ -227,6 +235,7 @@ function LimitSettings({
       await updateLimits({
         daily_limit_total: Number(total) || 0,
         daily_limit_per_user: Number(perUser) || 0,
+        cache_ttl_hours: Number(ttl) || 0,
       });
       setMessage("저장되었습니다.");
       onSaved();
@@ -245,6 +254,7 @@ function LimitSettings({
     label: string,
     value: string,
     onChange: (v: string) => void,
+    unit = "건",
   ) => (
     <div className="flex items-center gap-2">
       <span className="whitespace-nowrap text-sm font-medium text-slate-600">
@@ -259,7 +269,7 @@ function LimitSettings({
           className="w-28 rounded-lg border border-slate-300 py-1.5 pl-3 pr-10 text-right text-sm tabular-nums outline-none focus:border-indigo-400"
         />
         <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs font-medium text-slate-400">
-          건
+          {unit}
         </span>
       </div>
     </div>
@@ -268,7 +278,12 @@ function LimitSettings({
   return (
     <div className={`rounded-2xl border border-slate-200 bg-white p-5 ${CARD_SHADOW}`}>
       <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <p className="text-sm font-bold text-slate-800">일일 질의 한도</p>
+        <p className="text-sm font-bold text-slate-800">
+          사용량 설정
+          <span className="ml-2 text-xs font-medium text-slate-400">
+            캐시 {fmt(cache.entries)}건 저장 · {fmt(cache.hits)}회 재사용
+          </span>
+        </p>
         {cap > 0 ? (
           <p className="text-xs font-medium text-slate-500">
             오늘 <span className="font-bold text-slate-700">{fmt(used)}</span> /{" "}
@@ -295,13 +310,21 @@ function LimitSettings({
       <div className="mt-5 flex flex-wrap items-center gap-x-6 gap-y-3">
         {field("전체", total, setTotal)}
         {field("사용자당", perUser, setPerUser)}
+        {field("답변 재사용", ttl, setTtl, "시간")}
 
-        <span className="text-xs font-medium text-slate-400">0 = 무제한</span>
+        <span className="text-xs font-medium text-slate-400">0 = 사용 안 함</span>
 
         <div className="ml-auto flex items-center gap-2.5">
           {message && (
             <span className="text-xs font-medium text-slate-500">{message}</span>
           )}
+          <button
+            type="button"
+            onClick={onClearCache}
+            className="rounded-full border border-slate-200 px-4 py-2 text-xs font-medium text-slate-500 transition hover:border-rose-200 hover:text-rose-600"
+          >
+            캐시 비우기
+          </button>
           <button
             type="button"
             onClick={save}
@@ -604,7 +627,20 @@ export default function StatsPage() {
       </div>
 
       <div className="mt-4">
-        <LimitSettings limits={stats.limits} onSaved={load} />
+        <LimitSettings
+          limits={stats.limits}
+          cache={stats.cache}
+          onSaved={load}
+          onClearCache={async () => {
+            if (!confirm("저장된 답변 캐시를 모두 비울까요?")) return;
+            try {
+              await clearAnswerCache();
+              load();
+            } catch (e) {
+              setError(e instanceof Error ? e.message : "캐시 비우기 실패");
+            }
+          }}
+        />
       </div>
 
       <div className={`mt-4 overflow-x-auto rounded-2xl border border-slate-200 bg-white ${CARD_SHADOW}`}>

@@ -85,6 +85,7 @@ export type ChatResult = {
   citations: Citation[];
   elapsed: number;
   analysis_id: number | null;
+  cached?: boolean;
 };
 
 /** 답변 만족도 전송 (실패해도 사용자 흐름을 막지 않음) */
@@ -180,11 +181,25 @@ export async function* streamChat(
 export type Limits = {
   daily_limit_total: number;
   daily_limit_per_user: number;
+  cache_ttl_hours: number;
   used_today: number;
 };
 
+export async function clearAnswerCache(): Promise<{ cleared: number }> {
+  const token = getAdminToken();
+  const res = await fetch(`${API_BASE}/api/cache/clear`, {
+    method: "POST",
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (!res.ok) throw new Error("캐시 비우기에 실패했습니다.");
+  return res.json();
+}
+
 export async function updateLimits(
-  values: Pick<Limits, "daily_limit_total" | "daily_limit_per_user">,
+  values: Pick<
+    Limits,
+    "daily_limit_total" | "daily_limit_per_user" | "cache_ttl_hours"
+  >,
 ): Promise<Limits> {
   const token = getAdminToken();
   const res = await fetch(`${API_BASE}/api/settings`, {

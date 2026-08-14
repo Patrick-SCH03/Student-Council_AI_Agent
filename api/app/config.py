@@ -28,6 +28,10 @@ SQLITE_PATH = DATA_DIR / "app.sqlite3"
 DEFAULT_LIMITS: dict[str, int] = {
     "daily_limit_total": int(os.getenv("DAILY_LIMIT_TOTAL", "300")),
     "daily_limit_per_user": int(os.getenv("DAILY_LIMIT_PER_USER", "20")),
+    # 동일 질문 재사용 시간(시간). 0이면 캐시 사용 안 함.
+    # 규정은 자주 바뀌지 않지만 문서를 새로 색인하면 캐시를 비워야 하므로
+    # 너무 길게 두지 않는다.
+    "cache_ttl_hours": int(os.getenv("CACHE_TTL_HOURS", "24")),
 }
 
 # 관리자 API(문서 관리·운영 지표) 보호용 토큰.

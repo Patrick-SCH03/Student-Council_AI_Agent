@@ -139,6 +139,34 @@ async def chat(request: ChatRequest):
     visitor_id = request.visitor_id
     _enforce_daily_limit(visitor_id)
 
+    # 후속 질문이 아닌 단독 질문만 캐시 대상 (맥락에 따라 답이 달라지므로)
+    cache_key = db.normalize_query(query) if not history else None
+    if cache_key:
+        limits = db.get_settings(DEFAULT_LIMITS)
+        cached = db.get_cached_answer(cache_key, limits["cache_ttl_hours"])
+        if cached:
+
+            async def cached_stream():
+                yield _sse({"type": "stage", "label": "이전 답변을 불러오는 중..."})
+                db.record_metric(
+                    route=cached.get("route"),
+                    risk_level=cached.get("risk_level"),
+                    status="cached",
+                    elapsed=0.0,
+                    input_tokens=0,
+                    output_tokens=0,
+                    query_preview=query,
+                    analysis_id=cached.get("analysis_id"),
+                    visitor_id=visitor_id,
+                )
+                yield _sse({"type": "result", **cached, "cached": True})
+
+            return StreamingResponse(
+                cached_stream(),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            )
+
     async def event_stream():
         start = time.time()
         merged: dict = {"citations": []}
@@ -233,6 +261,8 @@ async def chat(request: ChatRequest):
                 analysis_id=analysis_id,
                 visitor_id=visitor_id,
             )
+            if cache_key:
+                db.save_cached_answer(cache_key, analysis_id, result)
             # analysis_id는 저장 후에야 정해지므로 응답에만 덧붙인다 (피드백 전송용)
             yield _sse({"type": "result", **result, "analysis_id": analysis_id})
 
@@ -275,6 +305,8 @@ async def upload_document(file: UploadFile):
         raise HTTPException(status_code=422, detail=str(e)) from e
 
     db.add_document(doc_id, file.filename, chunks)
+    # 색인이 바뀌면 이전 답변은 낡은 근거일 수 있으므로 캐시를 비운다
+    db.clear_cache()
     return {"doc_id": doc_id, "filename": file.filename, "chunks": chunks}
 
 
@@ -288,6 +320,7 @@ def delete_document(doc_id: str):
     if not db.delete_document(doc_id):
         raise HTTPException(status_code=404, detail="문서를 찾을 수 없습니다.")
     store.delete_doc(doc_id)
+    db.clear_cache()
     return {"deleted": doc_id}
 
 
@@ -351,6 +384,12 @@ def _cost_usd(input_tokens: int, output_tokens: int) -> float:
 class SettingsRequest(BaseModel):
     daily_limit_total: int = Field(ge=0, le=100_000)
     daily_limit_per_user: int = Field(ge=0, le=10_000)
+    cache_ttl_hours: int = Field(default=24, ge=0, le=720)
+
+
+@app.post("/api/cache/clear", dependencies=[admin_only])
+def clear_cache():
+    return {"cleared": db.clear_cache()}
 
 
 @app.get("/api/settings", dependencies=[admin_only])
