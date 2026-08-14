@@ -37,6 +37,41 @@ _splitter = RecursiveCharacterTextSplitter(
     separators=["\n\n", "\n", ".", " ", ""],
 )
 
+# 회칙·세칙의 조항 제목은 '제10조(목적)'처럼 괄호가 따라온다.
+# 반면 본문 중 참조는 '제29조에 따라', '제42조제3항'처럼 괄호가 없어,
+# 괄호를 조건에 넣으면 참조에서 잘못 끊기는 일을 피할 수 있다.
+_ARTICLE_HEAD = re.compile(r"(?=제\s*\d+\s*조(?:의\s*\d+)?\s*\()")
+ARTICLE_CHUNK_MAX = 1500  # 조항을 합쳐 담을 때의 상한
+MIN_ARTICLES = 3  # 이보다 적으면 조항 구조가 없는 문서로 보고 기본 분할
+
+
+def split_by_article(text: str) -> list[str] | None:
+    """조항 경계로 분할한다. 조항 구조가 없으면 None을 반환한다.
+
+    조항이 중간에서 잘리면 인용 근거가 불완전해지므로, 한 조항은 나누지 않고
+    짧은 조항들만 상한까지 묶는다. 상한을 넘는 긴 조항만 기본 분할기로 쪼갠다.
+    """
+    parts = [p.strip() for p in _ARTICLE_HEAD.split(text) if p.strip()]
+    if len(parts) < MIN_ARTICLES:
+        return None
+
+    chunks: list[str] = []
+    buffer = ""
+    for part in parts:
+        if len(part) > ARTICLE_CHUNK_MAX:
+            if buffer:
+                chunks.append(buffer)
+                buffer = ""
+            chunks.extend(_splitter.split_text(part))
+        elif len(buffer) + len(part) + 1 <= ARTICLE_CHUNK_MAX:
+            buffer = f"{buffer}\n{part}".strip()
+        else:
+            chunks.append(buffer)
+            buffer = part
+    if buffer:
+        chunks.append(buffer)
+    return chunks
+
 
 class IngestError(Exception):
     pass
@@ -123,7 +158,15 @@ def extract_text_from_pdf(file_bytes: bytes) -> str:
 def ingest_pdf(file_bytes: bytes, filename: str) -> tuple[str, int]:
     """PDF를 색인하고 (doc_id, 청크 수)를 반환한다."""
     text = extract_text_from_pdf(file_bytes)
-    chunks = _splitter.split_text(text)
+
+    # 회칙·세칙은 조항 단위로, 감사보고서는 길이 기준으로 나눈다
+    chunks = None
+    if store.classify_doc(filename) == "regulation":
+        chunks = split_by_article(text)
+        if chunks:
+            print(f"  조항 단위 분할: {len(chunks)}개 청크")
+    if not chunks:
+        chunks = _splitter.split_text(text)
     if not chunks:
         raise IngestError("문서에서 색인할 내용을 찾지 못했습니다.")
 

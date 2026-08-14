@@ -8,6 +8,7 @@
 
 import hashlib
 import math
+import re
 import threading
 import time
 
@@ -19,7 +20,8 @@ from app.config import CHROMA_DIR, GEMINI_API_KEY, GEMINI_EMBEDDING_MODEL, MOCK_
 COLLECTION_NAME = "regulations_mock" if MOCK_MODE else "regulations"
 _EMBED_DIM = 256  # 목업 임베딩 차원
 
-_lock = threading.Lock()
+# 재진입 가능해야 한다: BM25 색인을 만드는 도중 컬렉션 접근이 다시 락을 요구한다
+_lock = threading.RLock()
 _client: chromadb.ClientAPI | None = None
 _embedder = None
 
@@ -122,22 +124,150 @@ def add_chunks(doc_id: str, source_file: str, chunks: list[str]) -> int:
             for i in range(len(chunks))
         ],
     )
+    _invalidate_bm25()  # 색인이 바뀌었으므로 키워드 역색인 재생성 필요
     return len(chunks)
 
 
-def search(query: str, k: int = 5, doc_type: str | None = None) -> list[dict]:
-    """유사도 검색. doc_type을 주면 해당 유형(regulation/audit)만 검색한다."""
-    collection = _get_collection()
-    if collection.count() == 0:
+# ---------------------------------------------------------------- 키워드 검색 (BM25)
+# 임베딩 검색만으로는 "제32조", "비룡제" 같은 정확한 표현을 놓칠 수 있어
+# 키워드 검색을 함께 돌리고 두 결과를 융합한다.
+
+_ARTICLE_RE = re.compile(r"제\s*\d+\s*조(?:의\s*\d+)?")
+_WORD_RE = re.compile(r"[가-힣]+|[a-zA-Z]+|\d+")
+_BM25_K1, _BM25_B = 1.5, 0.75
+_RRF_K = 60  # Reciprocal Rank Fusion 상수 (관례값)
+
+_bm25_cache: dict | None = None
+
+
+def _tokenize(text: str) -> list[str]:
+    """한국어 형태소 분석기 없이 쓰는 경량 토크나이저.
+
+    조항 표기를 하나의 토큰으로 보존하고, 한글은 2-gram을 함께 넣어
+    조사·어미 변화("예산을", "예산이")를 흡수한다.
+    """
+    tokens = [re.sub(r"\s+", "", m) for m in _ARTICLE_RE.findall(text)]
+    for word in _WORD_RE.findall(text.lower()):
+        tokens.append(word)
+        if len(word) > 2 and "가" <= word[0] <= "힣":
+            tokens.extend(word[i : i + 2] for i in range(len(word) - 1))
+    return tokens
+
+
+def _build_bm25() -> dict:
+    """전체 청크로 역색인을 만든다 (수백~수천 청크 규모에서 메모리 부담 없음)."""
+    data = _get_collection().get(include=["documents", "metadatas"])
+    docs, metas = data["documents"], data["metadatas"]
+    postings: dict[str, dict[int, int]] = {}
+    lengths: list[int] = []
+    for idx, text in enumerate(docs):
+        tokens = _tokenize(text)
+        lengths.append(len(tokens) or 1)
+        counts: dict[str, int] = {}
+        for t in tokens:
+            counts[t] = counts.get(t, 0) + 1
+        for t, c in counts.items():
+            postings.setdefault(t, {})[idx] = c
+    return {
+        "docs": docs,
+        "metas": metas,
+        "postings": postings,
+        "lengths": lengths,
+        "avgdl": (sum(lengths) / len(lengths)) if lengths else 1.0,
+    }
+
+
+def _get_bm25() -> dict:
+    global _bm25_cache
+    with _lock:
+        if _bm25_cache is None:
+            _bm25_cache = _build_bm25()
+        return _bm25_cache
+
+
+def _invalidate_bm25() -> None:
+    global _bm25_cache
+    with _lock:
+        _bm25_cache = None
+
+
+def _keyword_search(query: str, k: int, doc_type: str | None) -> list[int]:
+    """BM25 점수 상위 청크의 인덱스를 반환한다."""
+    index = _get_bm25()
+    docs, postings, lengths, avgdl = (
+        index["docs"], index["postings"], index["lengths"], index["avgdl"]
+    )
+    if not docs:
         return []
+
+    n = len(docs)
+    scores: dict[int, float] = {}
+    for term in set(_tokenize(query)):
+        posting = postings.get(term)
+        if not posting:
+            continue
+        idf = math.log((n - len(posting) + 0.5) / (len(posting) + 0.5) + 1)
+        for idx, tf in posting.items():
+            norm = 1 - _BM25_B + _BM25_B * lengths[idx] / avgdl
+            scores[idx] = scores.get(idx, 0.0) + idf * tf * (_BM25_K1 + 1) / (
+                tf + _BM25_K1 * norm
+            )
+
+    if doc_type:
+        metas = index["metas"]
+        scores = {i: s for i, s in scores.items() if metas[i].get("doc_type") == doc_type}
+    return sorted(scores, key=scores.get, reverse=True)[:k]
+
+
+def _vector_search(query: str, k: int, doc_type: str | None) -> list[dict]:
+    collection = _get_collection()
     result = collection.query(
         query_embeddings=_embed([query]),
         n_results=min(k, collection.count()),
         where={"doc_type": doc_type} if doc_type else None,
         include=["documents", "metadatas"],
     )
+    return [
+        {"text": t, "meta": m}
+        for t, m in zip(result["documents"][0], result["metadatas"][0])
+    ]
+
+
+def search(query: str, k: int = 5, doc_type: str | None = None) -> list[dict]:
+    """하이브리드 검색: 벡터 + 키워드 결과를 RRF로 융합한다.
+
+    RRF는 두 검색의 점수 체계가 달라도 순위만으로 안전하게 합칠 수 있어,
+    임베딩이 놓친 정확한 표현을 키워드 쪽이 보완한다.
+    """
+    collection = _get_collection()
+    if collection.count() == 0:
+        return []
+
+    pool = max(k * 3, 15)  # 융합 전 후보를 넉넉히 확보
+    vector_hits = _vector_search(query, pool, doc_type)
+    keyword_idx = _keyword_search(query, pool, doc_type)
+    index = _get_bm25()
+
+    # 같은 청크를 (문서, 청크번호)로 식별해 두 결과를 합친다
+    fused: dict[tuple, dict] = {}
+
+    def _add(key: tuple, text: str, meta: dict, rank: int) -> None:
+        entry = fused.setdefault(key, {"text": text, "meta": meta, "score": 0.0})
+        entry["score"] += 1 / (_RRF_K + rank)
+
+    for rank, hit in enumerate(vector_hits):
+        m = hit["meta"]
+        _add((m.get("doc_id"), m.get("chunk_index")), hit["text"], m, rank)
+
+    for rank, idx in enumerate(keyword_idx):
+        m = index["metas"][idx]
+        _add((m.get("doc_id"), m.get("chunk_index")), index["docs"][idx], m, rank)
+
+    ordered = sorted(fused.values(), key=lambda e: e["score"], reverse=True)[:k]
+
     hits = []
-    for text, meta in zip(result["documents"][0], result["metadatas"][0]):
+    for entry in ordered:
+        text, meta = entry["text"], entry["meta"]
         hits.append(
             {
                 "text": text,
@@ -152,6 +282,7 @@ def search(query: str, k: int = 5, doc_type: str | None = None) -> list[dict]:
 
 def delete_doc(doc_id: str) -> None:
     _get_collection().delete(where={"doc_id": doc_id})
+    _invalidate_bm25()
 
 
 def chunk_count() -> int:
