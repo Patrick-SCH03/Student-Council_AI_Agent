@@ -40,6 +40,10 @@ CREATE TABLE IF NOT EXISTS visits (
     ts         TEXT NOT NULL,
     visitor_id TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 """
 
 
@@ -48,10 +52,14 @@ def _connect() -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.executescript(_SCHEMA)
     # 스키마 확장 마이그레이션 (기존 DB 호환)
-    try:
-        conn.execute("ALTER TABLE metrics ADD COLUMN analysis_id INTEGER")
-    except sqlite3.OperationalError:
-        pass  # 이미 존재
+    for stmt in (
+        "ALTER TABLE metrics ADD COLUMN analysis_id INTEGER",
+        "ALTER TABLE metrics ADD COLUMN visitor_id TEXT",
+    ):
+        try:
+            conn.execute(stmt)
+        except sqlite3.OperationalError:
+            pass  # 이미 존재
     return conn
 
 
@@ -103,13 +111,58 @@ def record_metric(
     output_tokens: int,
     query_preview: str,
     analysis_id: int | None = None,
+    visitor_id: str | None = None,
 ) -> None:
     with _connect() as conn:
         conn.execute(
-            "INSERT INTO metrics (ts, route, risk_level, status, elapsed, input_tokens, output_tokens, query_preview, analysis_id) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (_now(), route, risk_level, status, elapsed, input_tokens, output_tokens, query_preview[:500], analysis_id),
+            "INSERT INTO metrics (ts, route, risk_level, status, elapsed, input_tokens, output_tokens, "
+            "query_preview, analysis_id, visitor_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                _now(), route, risk_level, status, elapsed, input_tokens, output_tokens,
+                query_preview[:500], analysis_id, visitor_id,
+            ),
         )
+
+
+# ---------------------------------------------------------------- 설정 / 사용량 제한
+
+def get_settings(defaults: dict[str, int]) -> dict[str, int]:
+    """저장된 설정을 기본값과 병합해 반환한다."""
+    with _connect() as conn:
+        rows = conn.execute("SELECT key, value FROM settings").fetchall()
+    stored = {r["key"]: r["value"] for r in rows}
+    result = {}
+    for key, default in defaults.items():
+        try:
+            result[key] = int(stored[key]) if key in stored else default
+        except (TypeError, ValueError):
+            result[key] = default
+    return result
+
+
+def set_settings(values: dict[str, int]) -> None:
+    with _connect() as conn:
+        conn.executemany(
+            "INSERT INTO settings (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [(k, str(v)) for k, v in values.items()],
+        )
+
+
+def count_today(visitor_id: str | None = None) -> int:
+    """오늘 처리한 질의 수. visitor_id를 주면 해당 사용자 기준으로 센다."""
+    with _connect() as conn:
+        if visitor_id:
+            row = conn.execute(
+                "SELECT COUNT(*) AS n FROM metrics "
+                "WHERE date(ts) = date('now') AND visitor_id = ?",
+                (visitor_id,),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT COUNT(*) AS n FROM metrics WHERE date(ts) = date('now')"
+            ).fetchone()
+    return row["n"]
 
 
 def add_visit(visitor_id: str) -> None:

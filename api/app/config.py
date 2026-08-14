@@ -23,6 +23,13 @@ UPLOAD_DIR = DATA_DIR / "uploads"
 CHROMA_DIR = DATA_DIR / "chroma"
 SQLITE_PATH = DATA_DIR / "app.sqlite3"
 
+# 일일 질의 상한 기본값 (0 = 무제한). 실제 값은 SQLite settings 테이블에 저장되며
+# 관리자 대시보드에서 조절한다. 아래는 최초 실행 시 적용되는 기본값이다.
+DEFAULT_LIMITS: dict[str, int] = {
+    "daily_limit_total": int(os.getenv("DAILY_LIMIT_TOTAL", "300")),
+    "daily_limit_per_user": int(os.getenv("DAILY_LIMIT_PER_USER", "20")),
+}
+
 # 관리자 API(문서 관리·운영 지표) 보호용 토큰.
 # 미설정 시 해당 엔드포인트는 503으로 차단된다 (공개 배포 시 사고 방지).
 ADMIN_TOKEN: str | None = os.getenv("ADMIN_TOKEN") or None

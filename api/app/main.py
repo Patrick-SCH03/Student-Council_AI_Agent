@@ -17,6 +17,7 @@ from app.agents.schemas import overall_risk
 from app.config import (
     ADMIN_TOKEN,
     CORS_ORIGINS,
+    DEFAULT_LIMITS,
     GEMINI_MODEL,
     MOCK_MODE,
     PRICE_INPUT_PER_1M,
@@ -49,6 +50,8 @@ class ChatRequest(BaseModel):
     query: str = Field(min_length=1, max_length=MAX_QUERY_LENGTH)
     # 후속 질문 맥락 유지용 이전 대화 (최근 것부터 최대 3개 사용)
     history: list[HistoryItem] = Field(default_factory=list, max_length=10)
+    # 사용자별 일일 한도 계산용 익명 식별자 (브라우저 localStorage)
+    visitor_id: str | None = Field(default=None, max_length=64)
 
 
 def _sse(payload: dict) -> str:
@@ -110,10 +113,31 @@ _STAGE_LABELS = {
 }
 
 
+def _enforce_daily_limit(visitor_id: str | None) -> None:
+    """일일 질의 상한 확인. 초과 시 429로 차단한다 (0 = 무제한)."""
+    limits = db.get_settings(DEFAULT_LIMITS)
+
+    per_user = limits["daily_limit_per_user"]
+    if per_user > 0 and visitor_id and db.count_today(visitor_id) >= per_user:
+        raise HTTPException(
+            status_code=429,
+            detail=f"오늘 사용 가능한 질문 횟수({per_user}회)를 모두 사용했습니다. 내일 다시 이용해주세요.",
+        )
+
+    total = limits["daily_limit_total"]
+    if total > 0 and db.count_today() >= total:
+        raise HTTPException(
+            status_code=429,
+            detail="오늘 전체 이용 한도에 도달했습니다. 내일 다시 이용해주세요.",
+        )
+
+
 @app.post("/api/chat")
 async def chat(request: ChatRequest):
     query = request.query.strip()
     history = [h.model_dump() for h in request.history[-3:]]
+    visitor_id = request.visitor_id
+    _enforce_daily_limit(visitor_id)
 
     async def event_stream():
         start = time.time()
@@ -207,6 +231,7 @@ async def chat(request: ChatRequest):
                 output_tokens=out_tok,
                 query_preview=query,
                 analysis_id=analysis_id,
+                visitor_id=visitor_id,
             )
             yield _sse({"type": "result", **result})
 
@@ -220,6 +245,7 @@ async def chat(request: ChatRequest):
                 input_tokens=in_tok,
                 output_tokens=out_tok,
                 query_preview=query,
+                visitor_id=visitor_id,
             )
             yield _sse({"type": "error", "message": f"분석 중 오류가 발생했습니다: {e}"})
 
@@ -306,9 +332,26 @@ def _cost_usd(input_tokens: int, output_tokens: int) -> float:
     )
 
 
+class SettingsRequest(BaseModel):
+    daily_limit_total: int = Field(ge=0, le=100_000)
+    daily_limit_per_user: int = Field(ge=0, le=10_000)
+
+
+@app.get("/api/settings", dependencies=[admin_only])
+def get_settings():
+    return {**db.get_settings(DEFAULT_LIMITS), "used_today": db.count_today()}
+
+
+@app.put("/api/settings", dependencies=[admin_only])
+def update_settings(request: SettingsRequest):
+    db.set_settings(request.model_dump())
+    return {**db.get_settings(DEFAULT_LIMITS), "used_today": db.count_today()}
+
+
 @app.get("/api/stats", dependencies=[admin_only])
 def get_stats(days: int = 14):
     stats = db.get_stats(min(max(days, 1), 90))
+    stats["limits"] = {**db.get_settings(DEFAULT_LIMITS), "used_today": db.count_today()}
     total_usd = _cost_usd(stats["totals"]["input_tokens"], stats["totals"]["output_tokens"])
     today_usd = _cost_usd(stats["today"]["input_tokens"], stats["today"]["output_tokens"])
     stats["cost"] = {

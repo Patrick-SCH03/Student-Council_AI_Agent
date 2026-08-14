@@ -10,6 +10,7 @@ import {
   type Citation,
   type HistoryItem,
   type ReviewerResult,
+  ChatBlockedError,
   fetchHealth,
   streamChat,
 } from "@/lib/api";
@@ -106,6 +107,7 @@ type AssistantState = {
   auditor: AuditorResult | null;
   result: ChatResult | null;
   error: string | null;
+  blocked: boolean; // 일일 한도 초과 (오류가 아닌 안내로 표시)
   route: string | null;
 };
 
@@ -120,6 +122,7 @@ const emptyAssistant = (): AssistantState => ({
   auditor: null,
   result: null,
   error: null,
+  blocked: false,
   route: null,
 });
 
@@ -229,7 +232,7 @@ function AssistantBubble({
   isLast: boolean;
   onFollowup: (q: string) => void;
 }) {
-  const { stage, tokens, result, error, route } = state;
+  const { stage, tokens, result, error, blocked, route } = state;
   const [copied, setCopied] = useState(false);
   const reviewer = result?.reviewer ?? state.reviewer;
   const auditor = result?.auditor ?? state.auditor;
@@ -261,7 +264,11 @@ function AssistantBubble({
         className={`min-w-0 flex-1 rounded-2xl border border-slate-200 bg-white p-5 ${CARD_SHADOW}`}
       >
         {error ? (
-          <p className="flex items-center gap-2 text-sm text-rose-600">
+          <p
+            className={`flex items-center gap-2 text-sm ${
+              blocked ? "font-medium text-amber-700" : "text-rose-600"
+            }`}
+          >
             <Icon path={paths.alert} className="h-4 w-4" />
             {error}
           </p>
@@ -510,7 +517,13 @@ export default function ChatPage() {
       }
     } catch (e) {
       updateAssistant(assistantId, {
-        error: e instanceof Error ? e.message : "알 수 없는 오류",
+        error:
+          e instanceof ChatBlockedError
+            ? e.message
+            : e instanceof Error
+              ? e.message
+              : "알 수 없는 오류",
+        blocked: e instanceof ChatBlockedError,
         stage: null,
       });
     } finally {
