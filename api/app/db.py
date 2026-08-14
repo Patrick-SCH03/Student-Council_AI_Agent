@@ -273,7 +273,8 @@ def get_stats(days: int = 14) -> dict:
             "COALESCE(AVG(CASE WHEN status != 'cached' THEN elapsed END), 0) AS avg_elapsed, "
             "COALESCE(SUM(input_tokens), 0) AS input_tokens, "
             "COALESCE(SUM(output_tokens), 0) AS output_tokens, "
-            "COALESCE(SUM(CASE WHEN status != 'ok' THEN 1 ELSE 0 END), 0) AS errors "
+            # 'cached'는 정상 응답이므로 오류로 세지 않는다
+            "COALESCE(SUM(CASE WHEN status NOT IN ('ok', 'cached') THEN 1 ELSE 0 END), 0) AS errors "
             "FROM metrics"
         ).fetchone())
 
