@@ -369,7 +369,6 @@ export default function StatsPage() {
   }, []);
 
   // 마운트 시 1회 + 30초 주기로 지표를 갱신한다.
-  // load()의 setState는 fetch 이후에 실행되지만, 정적 분석상 동기 호출로 잡혀 예외 처리한다.
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- 서버 데이터 폴링(비동기 갱신)
     load();

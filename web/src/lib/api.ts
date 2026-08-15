@@ -1,7 +1,7 @@
 // FastAPI 백엔드 클라이언트: 타입 정의 + SSE 스트리밍 파서
 
-// 미설정 → 로컬 개발(백엔드 직접 호출), "/" 또는 "" → same-origin 상대 경로
-// (프로덕션에서 Next rewrites 또는 Caddy가 /api를 백엔드로 프록시)
+// 미설정이면 로컬 개발용 주소, "/" 또는 ""이면 same-origin 상대 경로.
+// 배포본은 백엔드 주소를 직접 지정한다 (프록시를 거치면 스트리밍이 타임아웃에 걸린다).
 const _raw = process.env.NEXT_PUBLIC_API_URL;
 export const API_BASE =
   _raw === undefined ? "http://localhost:8000" : _raw.replace(/\/+$/, "");

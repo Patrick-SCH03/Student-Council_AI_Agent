@@ -456,9 +456,8 @@ export default function ChatPage() {
       .catch(() => {});
   }, []);
 
-  // 새로고침해도 대화가 유지되도록 localStorage에서 복원.
-  // localStorage는 서버에 없으므로 초기 state로 읽으면 하이드레이션 불일치가 난다.
-  // 마운트 후 복원이 유일한 안전한 방법이라 set-state-in-effect 규칙을 의도적으로 예외 처리한다.
+  // 새로고침해도 대화가 유지되도록 복원한다. localStorage는 서버에 없어
+  // 초기 state로 읽으면 하이드레이션이 어긋나므로 마운트 후에 읽는다.
   useEffect(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY);

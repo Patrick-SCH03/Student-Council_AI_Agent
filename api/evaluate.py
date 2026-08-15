@@ -111,9 +111,7 @@ async def _run_local(query: str) -> dict:
 def _run_retrieval(cases: list[dict]) -> int:
     """LLM 없이 검색 단계만 평가한다 (임베딩 비용만 발생).
 
-    답변 품질 평가는 LLM 응답이 섞여 검색 변경의 효과가 묻힌다. 실제로
-    하이브리드 검색·조항 청킹을 넣었을 때 답변 통과율은 그대로였고,
-    검색만 따로 재보니 근거 문서 수가 2.08 -> 2.92로 늘어난 것이 확인됐다.
+    답변 품질 평가는 LLM 응답이 섞여 검색 변경의 효과가 묻힌다.
     """
     from app.agents.graph import K_AUDIT, K_REGULATION, NEIGHBOR_TOP_N
     from app.rag import store
@@ -134,8 +132,8 @@ def _run_retrieval(cases: list[dict]) -> int:
             store.search(f"{query} 감사 처분 사례", K_AUDIT, "audit"), 1, NEIGHBOR_TOP_N
         )
         sources = [h["source_file"] for h in found]
-        # 기대 문서가 몇 번째로 나오는지. 적중률은 후보를 넉넉히 보면 쉽게 100%가 되어
-        # 변화를 감지하지 못하므로, 순위를 함께 본다.
+        # 적중률은 후보를 넉넉히 보면 쉽게 100%가 되어 변화를 감지하지 못한다.
+        # 기대 문서가 몇 번째로 나오는지를 함께 본다.
         rank = next(
             (r for r, s in enumerate(sources, 1) if any(w in s for w in case["expect_sources"])),
             None,

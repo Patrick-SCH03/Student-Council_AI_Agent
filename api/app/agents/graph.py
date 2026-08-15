@@ -6,11 +6,8 @@
             └─(general)───> general ─────────────────────────────────> END
     (reviewer/auditor 병렬 실행, 검색은 retrieve에서 한 번만)
 
-v1 대비 개선:
-- 규정 검토/감사 에이전트가 실제로 병렬 실행된다 (v1은 이름만 병렬).
-- 위험도는 키워드 카운팅이 아니라 각 에이전트의 enum 필드에서 결정론적으로 계산.
-- 라우팅도 문자열 비교가 아닌 구조화 출력.
-- MOCK_MODE에서는 LLM 호출 없이 canned 응답으로 전체 플로우를 검증할 수 있다.
+라우팅과 각 에이전트의 판정은 구조화 출력으로 받아, 위험도를 코드에서 계산한다.
+MOCK_MODE에서는 LLM 호출 없이 고정 응답으로 전체 플로우를 검증할 수 있다.
 """
 
 import asyncio
@@ -137,9 +134,8 @@ async def route_node(state: AgentState) -> AgentState:
 async def retrieve_node(state: AgentState) -> AgentState:
     """두 에이전트가 쓸 검색을 한 번에 수행한다.
 
-    이전에는 검토·감사 노드가 같은 질의로 규정 검색을 각각 돌렸다. 평가셋
-    8건으로 확인했을 때 결과가 전부 동일했는데도 임베딩 호출과 BM25 순회가
-    그대로 중복됐다. 검색을 앞단으로 빼서 한 번만 계산한다.
+    검토·감사 노드가 각자 돌리면 같은 질의로 같은 규정 검색을 두 번 하게 되어,
+    임베딩 호출과 BM25 순회가 그대로 중복된다.
     """
     query = state.get("standalone_query") or state["query"]
     reg_hits, audit_brief, audit_full = await asyncio.gather(
@@ -301,5 +297,5 @@ def build_graph():
     return workflow.compile()
 
 
-# 서버 기동 시 1회 컴파일하여 재사용 (v1은 질의마다 재컴파일)
+# 서버 기동 시 1회 컴파일해 재사용한다
 graph = build_graph()

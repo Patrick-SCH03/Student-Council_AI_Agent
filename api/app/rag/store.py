@@ -1,9 +1,7 @@
-"""ChromaDB 벡터 스토어 래퍼.
+"""ChromaDB 벡터 스토어 래퍼. 하이브리드 검색(BM25 + 벡터)을 담당한다.
 
-- Gemini 임베딩(gemini-embedding-001) (목업 모드에서는 결정적 해시 임베딩)
-- 문서 삭제/재색인을 위해 모든 청크에 doc_id 메타데이터를 부여
-- v1의 메타데이터 키 불일치 버그(source_file vs source)를 없애기 위해
-  메타데이터 키는 이 모듈에서만 정의한다: source_file, doc_id, chunk_index
+메타데이터 키(source_file, doc_id, chunk_index, doc_type)는 이 모듈에서만
+정의한다. 저장하는 쪽과 읽는 쪽이 키를 따로 쓰면 인용이 조용히 깨진다.
 """
 
 import hashlib
@@ -234,10 +232,10 @@ def _vector_search(query: str, k: int, doc_type: str | None) -> list[dict]:
 
 
 def _diversify(entries: list[dict], k: int, max_per_source: int) -> list[dict]:
-    """한 문서가 결과를 독점하지 않도록 문서별 상한을 두고 상위 k개를 고른다.
+    """문서별 상한을 두고 상위 k개를 고른다.
 
-    같은 문서의 인접 청크가 결과를 채우면 근거가 좁아진다. 문서당 상한을 먼저
-    적용해 여러 문서의 근거를 확보하고, 남는 자리는 순위대로 채운다.
+    한 문서의 인접 청크가 결과를 채우면 근거가 좁아진다. 상한을 먼저 적용해
+    여러 문서를 확보하고, 남는 자리는 순위대로 채운다.
     """
     picked: list[dict] = []
     per_source: dict[str, int] = {}
@@ -313,13 +311,11 @@ def search(
 def expand_neighbors(hits: list[dict], radius: int = 1, top_n: int | None = None) -> list[dict]:
     """검색된 청크의 인접 청크를 함께 붙여 반환한다.
 
-    감사보고서의 처분 목록처럼 하나의 열거가 청크 경계로 나뉘면, 질의와 표면적으로
-    맞는 항목만 검색되고 같은 사안의 나머지 처분이 빠진다. (예: 비룡제 VAT 질의에
-    '부총학생회장 해임건의'만 검색되고 바로 옆 청크의 '예산집행정지 21일'이 누락)
-    순위를 바꾸지 않고 근접 문맥만 보강하므로 리랭킹보다 비용이 싸다.
+    감사보고서의 처분 목록처럼 하나의 열거가 청크 경계로 나뉘면, 질의어와 겹치는
+    항목만 검색되고 같은 사안의 나머지가 빠진다. 순위를 다시 계산하지 않고
+    근접 문맥만 보강하므로 리랭킹보다 싸다.
 
-    top_n을 주면 상위 몇 건만 확장한다. 하위 순위까지 늘리면 토큰만 불어나고
-    정작 답에 쓰이지는 않는다.
+    top_n은 확장할 상위 건수. 하위 순위까지 늘리면 토큰만 불어난다.
     """
     if not hits or radius <= 0:
         return hits
