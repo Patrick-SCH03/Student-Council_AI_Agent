@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Plus_Jakarta_Sans } from "next/font/google";
+import localFont from "next/font/local";
 import Image from "next/image";
 import Link from "next/link";
 
@@ -8,10 +8,14 @@ import VisitTracker from "@/components/VisitTracker";
 
 import "./globals.css";
 
-const jakarta = Plus_Jakarta_Sans({
+// next/font/google은 빌드마다 Google 서버에서 폰트를 받아오므로, 네트워크가
+// 막히면 빌드가 통째로 실패한다(CI에서 실제로 겪음). 가변 폰트 파일을 저장소에
+// 두고 자체 호스팅해 빌드의 외부 의존을 없앤다.
+const jakarta = localFont({
+  src: "./fonts/PlusJakartaSans-Variable.woff2",
   variable: "--font-jakarta",
-  subsets: ["latin"],
-  weight: ["400", "500", "700", "800"],
+  weight: "400 800",
+  display: "swap",
 });
 
 export const metadata: Metadata = {
