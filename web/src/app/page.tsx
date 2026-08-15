@@ -190,9 +190,14 @@ function RiskBadge({ level }: { level: string | null }) {
   );
 }
 
+// 한글에는 이탤릭 자족이 없어 브라우저가 글자를 기계적으로 기울인다.
+// 획 균형이 무너져 다른 서체처럼 보이므로, 강조는 기울임 대신 옅은 색으로 준다.
+const MARKDOWN_STYLE =
+  "max-w-none text-[15px] leading-[1.7] text-slate-700 [&_h3]:mt-5 [&_h3]:mb-1.5 [&_h3]:text-[15px] [&_h3]:font-bold [&_h3]:text-slate-900 [&_p]:my-1.5 [&_ul]:my-1.5 [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:my-1.5 [&_ol]:list-decimal [&_ol]:pl-5 [&_blockquote]:border-l-2 [&_blockquote]:border-indigo-200 [&_blockquote]:pl-3 [&_blockquote]:text-slate-500 [&_strong]:font-bold [&_strong]:text-slate-900 [&_em]:not-italic [&_em]:text-slate-500";
+
 function Markdown({ text }: { text: string }) {
   return (
-    <div className="max-w-none text-[15px] leading-[1.7] text-slate-700 [&_h3]:mt-5 [&_h3]:mb-1.5 [&_h3]:text-[15px] [&_h3]:font-bold [&_h3]:text-slate-900 [&_p]:my-1.5 [&_ul]:my-1.5 [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:my-1.5 [&_ol]:list-decimal [&_ol]:pl-5 [&_blockquote]:border-l-2 [&_blockquote]:border-indigo-200 [&_blockquote]:pl-3 [&_blockquote]:text-slate-500 [&_strong]:font-bold [&_strong]:text-slate-900">
+    <div className={MARKDOWN_STYLE}>
       <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
     </div>
   );

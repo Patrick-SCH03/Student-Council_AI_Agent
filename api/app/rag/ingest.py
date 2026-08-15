@@ -110,11 +110,33 @@ def _extract_with_gemini(file_bytes: bytes) -> str:
     return text
 
 
+# 표지·서식 제목은 자간을 벌려 조판하는 경우가 많아 "인 하 대 학 교"처럼 추출된다.
+# 낱글자 수만 보면 "위원 한 명 한 명" 같은 정상 문장까지 붙여버리므로,
+# 그 줄의 한글 대부분이 낱글자일 때만 자간 조판으로 판정한다.
+# 줄 전체가 낱글자면("가 나 다 라 마") 자간 조판과 구분할 수 없어 붙는다.
+_ISOLATED_HANGUL = re.compile(r"(?<![가-힣])[가-힣](?![가-힣])")
+_HANGUL = re.compile(r"[가-힣]")
+_HANGUL_GAP = re.compile(r"(?<=[가-힣])[ ](?=[가-힣])")
+_MIDDLE_DOT = re.compile(r"(?<=[가-힣])\s*[·ㆍ]\s*(?=[가-힣])")
+_SPACED_MIN_CHARS = 5
+_SPACED_MIN_RATIO = 0.75  # 0.6에서는 "지 할 때 는 각 자 부담한다" 같은 문장이 걸렸다
+
+
+def _collapse_spaced_line(line: str) -> str:
+    total = len(_HANGUL.findall(line))
+    isolated = len(_ISOLATED_HANGUL.findall(line))
+    if isolated >= _SPACED_MIN_CHARS and total and isolated / total >= _SPACED_MIN_RATIO:
+        return _HANGUL_GAP.sub("", line)
+    return line
+
+
 def clean_text(text: str) -> str:
     """PDF 추출 텍스트 정규화.
 
     일부 한글 PDF는 공백을 널바이트(\\x00)나 특수 공백으로 추출해 단어 경계가
     사라지고 임베딩 품질이 크게 저하된다. 이를 일반 공백으로 복원한다.
+
+    조판상의 공백도 정리한다. 그대로 두면 "재 정 · 회 계 세 칙"처럼 답변에까지 옮겨진다.
     """
     if not text:
         return ""
@@ -128,6 +150,10 @@ def clean_text(text: str) -> str:
     # 과도한 공백/빈 줄 정리
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
+    # 가운뎃점 앞뒤 공백 제거 ("재정 · 회계" → "재정·회계")
+    text = _MIDDLE_DOT.sub("·", text)
+    # 자간을 벌려 조판한 줄 복원 (줄 단위 판정)
+    text = "\n".join(_collapse_spaced_line(line) for line in text.split("\n"))
     return text.strip()
 
 

@@ -733,7 +733,7 @@ export default function StatsPage() {
                             </p>
                           )}
                           {typeof answers[r.analysis_id] === "object" && (
-                            <div className="mt-1 max-h-72 overflow-y-auto rounded-xl border border-slate-200 bg-white p-4 text-sm leading-relaxed text-slate-700 [&_h3]:mt-3 [&_h3]:mb-1 [&_h3]:font-bold [&_h3]:text-slate-900 [&_ol]:list-decimal [&_ol]:pl-5 [&_ul]:list-disc [&_ul]:pl-5">
+                            <div className="mt-1 max-h-72 overflow-y-auto rounded-xl border border-slate-200 bg-white p-4 text-sm leading-relaxed text-slate-700 [&_h3]:mt-3 [&_h3]:mb-1 [&_h3]:font-bold [&_h3]:text-slate-900 [&_ol]:list-decimal [&_ol]:pl-5 [&_ul]:list-disc [&_ul]:pl-5 [&_em]:not-italic [&_em]:text-slate-500">
                               <ReactMarkdown remarkPlugins={[remarkGfm]}>
                                 {(answers[r.analysis_id] as Analysis).result.final_markdown}
                               </ReactMarkdown>
