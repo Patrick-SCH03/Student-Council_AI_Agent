@@ -1,9 +1,10 @@
 """LangGraph 1.0 멀티에이전트 파이프라인.
 
 구조:
-    router ─┬─(regulation)─> reviewer ─┐
-            │              > auditor  ─┴─> coordinator ─> END   (reviewer/auditor 병렬)
-            └─(general)───> general ──────────────────> END
+    router ─┬─(regulation)─> retrieve ─┬─> reviewer ─┐
+            │                          └─> auditor  ─┴─> coordinator ─> END
+            └─(general)───> general ─────────────────────────────────> END
+    (reviewer/auditor 병렬 실행, 검색은 retrieve에서 한 번만)
 
 v1 대비 개선:
 - 규정 검토/감사 에이전트가 실제로 병렬 실행된다 (v1은 이름만 병렬).
@@ -33,6 +34,11 @@ from app.rag import store
 # 유형별로 나눠 충분히 확보한다.
 K_REGULATION = 6  # 회칙·세칙
 K_AUDIT = 5  # 감사보고서(선례)
+# 감사 에이전트는 감사보고서가 주 근거이고 규정은 판단 기준으로만 참고하므로
+# 규정 컨텍스트를 검토 에이전트보다 좁게 준다 (토큰 절감).
+K_AUDITOR_REGULATION = 3
+# 인접 청크는 상위 몇 건만 확장한다. 하위 순위까지 늘리면 토큰만 불어난다.
+NEIGHBOR_TOP_N = 3
 
 
 class AgentState(TypedDict, total=False):
@@ -42,6 +48,10 @@ class AgentState(TypedDict, total=False):
     # 대화 맥락을 반영해 독립적으로 재작성된 질의 (검색·분석에 사용)
     standalone_query: str
     route: str
+    # 검색 노드가 한 번만 채우고 두 에이전트가 나눠 쓴다
+    reg_hits: list[dict]
+    audit_brief: list[dict]
+    audit_full: list[dict]
     reviewer: ReviewerResult | None
     auditor: AuditorResult | None
     # 병렬 노드가 동시에 기록하므로 리듀서 필요
@@ -124,15 +134,33 @@ async def route_node(state: AgentState) -> AgentState:
     return {"route": route, "standalone_query": standalone}
 
 
+async def retrieve_node(state: AgentState) -> AgentState:
+    """두 에이전트가 쓸 검색을 한 번에 수행한다.
+
+    이전에는 검토·감사 노드가 같은 질의로 규정 검색을 각각 돌렸다. 평가셋
+    8건으로 확인했을 때 결과가 전부 동일했는데도 임베딩 호출과 BM25 순회가
+    그대로 중복됐다. 검색을 앞단으로 빼서 한 번만 계산한다.
+    """
+    query = state.get("standalone_query") or state["query"]
+    reg_hits, audit_brief, audit_full = await asyncio.gather(
+        asyncio.to_thread(store.search, query, K_REGULATION, "regulation"),
+        # 검토 에이전트가 참고할 감사 선례 (실제 적용 사례 확인용)
+        asyncio.to_thread(store.search, query, 2, "audit"),
+        asyncio.to_thread(store.search, f"{query} 감사 처분 사례", K_AUDIT, "audit"),
+    )
+    # 한 사안에 대한 처분이 여러 건이면 보고서에 연속으로 나열된다.
+    # 인접 청크를 붙여야 목록 일부만 답변되는 일을 막을 수 있다.
+    audit_full = await asyncio.to_thread(
+        store.expand_neighbors, audit_full, 1, NEIGHBOR_TOP_N
+    )
+    return {"reg_hits": reg_hits, "audit_brief": audit_brief, "audit_full": audit_full}
+
+
 async def reviewer_node(state: AgentState) -> AgentState:
     query = state.get("standalone_query") or state["query"]
     # 규정 검토는 회칙·세칙이 근거이므로 규정 문서를 우선 확보하고,
     # 감사 선례도 소수 포함해 실제 적용 사례를 참고한다.
-    reg_hits, audit_hits = await asyncio.gather(
-        asyncio.to_thread(store.search, query, K_REGULATION, "regulation"),
-        asyncio.to_thread(store.search, query, 2, "audit"),
-    )
-    hits = reg_hits + audit_hits
+    hits = state.get("reg_hits", []) + state.get("audit_brief", [])
 
     if MOCK_MODE:
         await asyncio.sleep(0.8)
@@ -163,15 +191,8 @@ async def reviewer_node(state: AgentState) -> AgentState:
 async def auditor_node(state: AgentState) -> AgentState:
     query = state.get("standalone_query") or state["query"]
     # 감사 분석은 감사보고서(선례)가 핵심이고, 판단 근거로 규정도 함께 본다.
-    reg_hits, audit_hits = await asyncio.gather(
-        asyncio.to_thread(store.search, query, K_REGULATION, "regulation"),
-        asyncio.to_thread(
-            store.search, f"{query} 감사 처분 사례", K_AUDIT, "audit"
-        ),
-    )
-    # 한 사안에 대한 처분이 여러 건이면 보고서에 연속으로 나열된다.
-    # 인접 청크를 붙여야 목록 일부만 답변되는 일을 막을 수 있다.
-    audit_hits = await asyncio.to_thread(store.expand_neighbors, audit_hits)
+    reg_hits = state.get("reg_hits", [])[:K_AUDITOR_REGULATION]
+    audit_hits = state.get("audit_full", [])
 
     if MOCK_MODE:
         await asyncio.sleep(1.0)
@@ -256,22 +277,23 @@ async def general_node(state: AgentState) -> AgentState:
 def _route_fanout(state: AgentState):
     if state.get("route") == "general":
         return "general"
-    # 리스트 반환 → 두 노드 병렬(fan-out) 실행
-    return ["reviewer", "auditor"]
+    return "retrieve"
 
 
 def build_graph():
     workflow = StateGraph(AgentState)
     workflow.add_node("router", route_node)
+    workflow.add_node("retrieve", retrieve_node)
     workflow.add_node("reviewer", reviewer_node)
     workflow.add_node("auditor", auditor_node)
     workflow.add_node("coordinator", coordinator_node)
     workflow.add_node("general", general_node)
 
     workflow.set_entry_point("router")
-    workflow.add_conditional_edges(
-        "router", _route_fanout, ["reviewer", "auditor", "general"]
-    )
+    workflow.add_conditional_edges("router", _route_fanout, ["retrieve", "general"])
+    # 검색 결과를 공유한 뒤 두 에이전트를 병렬 실행 (fan-out)
+    workflow.add_edge("retrieve", "reviewer")
+    workflow.add_edge("retrieve", "auditor")
     # reviewer와 auditor가 모두 끝나야 coordinator 실행 (join)
     workflow.add_edge(["reviewer", "auditor"], "coordinator")
     workflow.add_edge("coordinator", END)

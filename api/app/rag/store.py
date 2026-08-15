@@ -310,20 +310,24 @@ def search(
     return hits
 
 
-def expand_neighbors(hits: list[dict], radius: int = 1) -> list[dict]:
+def expand_neighbors(hits: list[dict], radius: int = 1, top_n: int | None = None) -> list[dict]:
     """검색된 청크의 인접 청크를 함께 붙여 반환한다.
 
     감사보고서의 처분 목록처럼 하나의 열거가 청크 경계로 나뉘면, 질의와 표면적으로
     맞는 항목만 검색되고 같은 사안의 나머지 처분이 빠진다. (예: 비룡제 VAT 질의에
     '부총학생회장 해임건의'만 검색되고 바로 옆 청크의 '예산집행정지 21일'이 누락)
     순위를 바꾸지 않고 근접 문맥만 보강하므로 리랭킹보다 비용이 싸다.
+
+    top_n을 주면 상위 몇 건만 확장한다. 하위 순위까지 늘리면 토큰만 불어나고
+    정작 답에 쓰이지는 않는다.
     """
     if not hits or radius <= 0:
         return hits
 
+    anchor_count = top_n if top_n else len(hits)
     present = {(h["doc_id"], h["chunk_index"]) for h in hits}
     wanted: list[tuple[str, int]] = []
-    for hit in hits:
+    for hit in hits[:anchor_count]:
         for offset in range(-radius, radius + 1):
             key = (hit["doc_id"], hit["chunk_index"] + offset)
             if offset and key[1] >= 0 and key not in present and key not in wanted:
@@ -349,8 +353,9 @@ def expand_neighbors(hits: list[dict], radius: int = 1) -> list[dict]:
     # 각 청크 뒤에 그 이웃을 붙여 원문 순서에 가까운 형태로 전달한다
     expanded: list[dict] = []
     seen: set[tuple] = set()
-    for hit in hits:
-        for offset in range(-radius, radius + 1):
+    for position, hit in enumerate(hits):
+        offsets = range(-radius, radius + 1) if position < anchor_count else (0,)
+        for offset in offsets:
             key = (hit["doc_id"], hit["chunk_index"] + offset)
             entry = hit if offset == 0 else neighbors.get(key)
             if entry and key not in seen:

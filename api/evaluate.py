@@ -115,7 +115,7 @@ def _run_retrieval(cases: list[dict]) -> int:
     하이브리드 검색·조항 청킹을 넣었을 때 답변 통과율은 그대로였고,
     검색만 따로 재보니 근거 문서 수가 2.08 -> 2.92로 늘어난 것이 확인됐다.
     """
-    from app.agents.graph import K_AUDIT, K_REGULATION
+    from app.agents.graph import K_AUDIT, K_REGULATION, NEIGHBOR_TOP_N
     from app.rag import store
 
     scored = [c for c in cases if c.get("expect_sources")]
@@ -131,7 +131,7 @@ def _run_retrieval(cases: list[dict]) -> int:
         query = case["query"]
         # 실제 파이프라인과 같은 조합으로 검색한다
         found = store.search(query, K_REGULATION, "regulation") + store.expand_neighbors(
-            store.search(f"{query} 감사 처분 사례", K_AUDIT, "audit")
+            store.search(f"{query} 감사 처분 사례", K_AUDIT, "audit"), 1, NEIGHBOR_TOP_N
         )
         sources = [h["source_file"] for h in found]
         # 기대 문서가 몇 번째로 나오는지. 적중률은 후보를 넉넉히 보면 쉽게 100%가 되어
