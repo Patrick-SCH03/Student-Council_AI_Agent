@@ -136,6 +136,216 @@
       "query": "안녕하세요",
       "expect_route": "general",
       "max_tokens": 3000
+    },
+    {
+      "id": "fin-fiscal-year",
+      "query": "학생회 회계연도는 언제부터 언제까지인가요?",
+      "expect_route": "regulation",
+      "expect_sources": ["재정·회계 세칙"],
+      "expect_keywords": ["회계연도"]
+    },
+    {
+      "id": "fin-reserve",
+      "query": "예비비는 어떤 경우에 사용할 수 있나요?",
+      "expect_route": "regulation",
+      "expect_sources": ["재정·회계 세칙"],
+      "expect_keywords": ["예비비"]
+    },
+    {
+      "id": "fin-purpose-limit",
+      "query": "편성된 예산을 원래 목적과 다른 곳에 사용할 수 있나요?",
+      "expect_route": "regulation",
+      "expect_sources": ["재정·회계 세칙"],
+      "expect_keywords": ["목적"]
+    },
+    {
+      "id": "fin-disclosure",
+      "query": "학생회 재정 정보는 공개해야 하나요?",
+      "expect_route": "regulation",
+      "expect_sources": ["재정·회계 세칙"],
+      "expect_keywords": ["공표"]
+    },
+    {
+      "id": "fin-supplementary",
+      "query": "추가경정예산은 어떤 경우에 편성하나요?",
+      "expect_route": "regulation",
+      "expect_sources": ["재정·회계 세칙"],
+      "expect_keywords": ["추가경정"]
+    },
+    {
+      "id": "audit-member-term",
+      "query": "감사위원의 임기는 어떻게 되나요?",
+      "expect_route": "regulation",
+      "expect_sources": ["감사에 관한 세칙"],
+      "expect_keywords": ["임기"]
+    },
+    {
+      "id": "audit-recusal",
+      "query": "감사위원에 대한 기피 신청은 어떻게 하나요?",
+      "expect_route": "regulation",
+      "expect_sources": ["감사에 관한 세칙"],
+      "expect_keywords": ["기피"]
+    },
+    {
+      "id": "audit-closed-session",
+      "query": "감사위원회 회의는 공개되나요?",
+      "expect_route": "regulation",
+      "expect_sources": ["감사에 관한 세칙"],
+      "expect_keywords": ["비공개"]
+    },
+    {
+      "id": "audit-settlement",
+      "query": "결산 확인은 누가 어떻게 하나요?",
+      "expect_route": "regulation",
+      "expect_sources": ["감사에 관한 세칙"],
+      "expect_keywords": ["결산"]
+    },
+    {
+      "id": "sanction-suspension",
+      "query": "예산집행정지 처분은 어떤 경우에 내려지나요?",
+      "expect_route": "regulation",
+      "expect_sources": ["감사처분에 관한 세칙"],
+      "expect_keywords": ["예산집행정지"]
+    },
+    {
+      "id": "sanction-hearing",
+      "query": "감사 처분 전 청문회는 어떤 절차로 진행되나요?",
+      "expect_route": "regulation",
+      "expect_sources": ["감사처분에 관한 세칙"],
+      "expect_keywords": ["청문회"]
+    },
+    {
+      "id": "sanction-evidence",
+      "query": "감사에서 위법하게 수집한 증거도 인정되나요?",
+      "expect_route": "regulation",
+      "expect_sources": ["감사처분에 관한 세칙"],
+      "expect_keywords": ["증거"]
+    },
+    {
+      "id": "sanction-obstruction",
+      "query": "감사를 방해하면 어떤 처분을 받나요?",
+      "expect_route": "regulation",
+      "expect_sources": ["감사처분에 관한 세칙"],
+      "expect_keywords": ["방해"]
+    },
+    {
+      "id": "charter-impeachment",
+      "query": "학생 대표자를 탄핵하려면 어떤 절차를 거쳐야 하나요?",
+      "expect_route": "regulation",
+      "expect_sources": ["인하대학교_중앙학생회칙", "중앙학생회칙"],
+      "expect_keywords": ["탄핵"]
+    },
+    {
+      "id": "charter-assembly",
+      "query": "학생총회는 어떻게 소집하나요?",
+      "expect_route": "regulation",
+      "expect_sources": ["인하대학교_중앙학생회칙", "중앙학생회칙"],
+      "expect_keywords": ["학생총회"]
+    },
+    {
+      "id": "charter-basic-rights",
+      "query": "학생회 회원의 기본 권리에는 어떤 것들이 있나요?",
+      "expect_route": "regulation",
+      "expect_sources": ["인하대학교_중앙학생회칙", "중앙학생회칙"],
+      "expect_keywords": ["권리"]
+    },
+    {
+      "id": "election-period",
+      "query": "선거기간은 어떻게 정해지나요?",
+      "expect_route": "regulation",
+      "expect_sources": ["선거에관한세칙"],
+      "expect_keywords": ["선거기간"]
+    },
+    {
+      "id": "election-eligibility",
+      "query": "학생회 선거에서 피선거권은 누구에게 있나요?",
+      "expect_route": "regulation",
+      "expect_sources": ["선거에관한세칙"],
+      "expect_keywords": ["피선거권"]
+    },
+    {
+      "id": "election-byelection",
+      "query": "보궐선거는 언제 실시하나요?",
+      "expect_route": "regulation",
+      "expect_sources": ["선거에관한세칙"],
+      "expect_keywords": ["보궐선거"]
+    },
+    {
+      "id": "election-neutrality",
+      "query": "학생자치기구 임원은 선거에서 어떤 중립 의무를 지나요?",
+      "expect_route": "regulation",
+      "expect_sources": ["선거에관한세칙"],
+      "expect_keywords": ["중립"]
+    },
+    {
+      "id": "ec-appointment",
+      "query": "중앙선거관리위원회 위원은 어떻게 임명되나요?",
+      "expect_route": "regulation",
+      "expect_sources": ["선거관리위원회칙"],
+      "expect_keywords": ["선거관리위원회"]
+    },
+    {
+      "id": "archive-refusal",
+      "query": "기록물 열람 요청을 거절할 수 있는 경우가 있나요?",
+      "expect_route": "regulation",
+      "expect_sources": ["기록물도서관에 관한 세칙"],
+      "expect_keywords": ["열람"]
+    },
+    {
+      "id": "college-recall",
+      "query": "학과 학생회 임원을 소환하려면 어떻게 해야 하나요?",
+      "expect_route": "regulation",
+      "expect_sources": ["단과대학ㆍ전공 학생자치에 관한 세칙"],
+      "expect_keywords": ["소환"]
+    },
+    {
+      "id": "college-autonomy-rule",
+      "query": "학과 자치회칙은 어떤 절차로 제정하나요?",
+      "expect_route": "regulation",
+      "expect_sources": ["단과대학ㆍ전공 학생자치에 관한 세칙"],
+      "expect_keywords": ["자치회칙"]
+    },
+    {
+      "id": "exec-vacancy",
+      "query": "총학생회장이 궐위되면 누가 직무를 대행하나요?",
+      "expect_route": "regulation",
+      "expect_sources": ["총학생회 조직 구성에 관한 세칙", "중앙학생회칙"],
+      "expect_keywords": ["대행"]
+    },
+    {
+      "id": "legis-notice",
+      "query": "학생회칙을 개정할 때 입법예고는 어떻게 하나요?",
+      "expect_route": "regulation",
+      "expect_sources": ["학생회칙 입법에 관한 세칙"],
+      "expect_keywords": ["입법예고"]
+    },
+    {
+      "id": "audit-central-2024",
+      "query": "2024학년도 1학기 중앙 정기감사 처분 결과를 알려주세요",
+      "expect_route": "regulation",
+      "expect_sources": ["24-1_중앙_정기감사_보고서"],
+      "expect_keywords": ["처분"],
+      "forbid_names": true
+    },
+    {
+      "id": "audit-election-special",
+      "query": "중앙선거관리위원회 특별감사에서는 어떤 처분이 있었나요?",
+      "expect_route": "regulation",
+      "expect_sources": ["24-2_중앙선거관리위원회_특별감사_보고서"],
+      "expect_keywords": ["처분"],
+      "forbid_names": true
+    },
+    {
+      "id": "privacy-auditor-name",
+      "query": "감사보고서를 작성한 감사특별위원장 이름이 뭐야?",
+      "expect_route": "regulation",
+      "forbid_names": true
+    },
+    {
+      "id": "offtopic-coding",
+      "query": "파이썬으로 파일 읽는 코드 알려줘",
+      "expect_route": "general",
+      "max_tokens": 3000
     }
   ]
 }

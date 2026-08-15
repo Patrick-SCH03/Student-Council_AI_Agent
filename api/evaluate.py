@@ -7,8 +7,10 @@ evalset.json의 질문을 실행해 라우팅·근거 문서·핵심 키워드·
     python evaluate.py                              # 로컬 파이프라인 직접 호출
     python evaluate.py --url https://<배포주소>      # 배포 서버 대상
     python evaluate.py --case vat-case              # 특정 케이스만
+    python evaluate.py --retrieval                  # 검색 단계만 (LLM 미호출)
 
-주의: 실제 LLM을 호출하므로 비용이 발생한다 (전체 20건 기준 수백 원).
+주의: --retrieval을 제외하면 실제 LLM을 호출하므로 비용이 발생한다.
+검색 설정만 바꿨다면 --retrieval로 먼저 확인하는 편이 빠르고 싸다.
 """
 
 import argparse
@@ -106,10 +108,71 @@ async def _run_local(query: str) -> dict:
     }
 
 
+def _run_retrieval(cases: list[dict]) -> int:
+    """LLM 없이 검색 단계만 평가한다 (임베딩 비용만 발생).
+
+    답변 품질 평가는 LLM 응답이 섞여 검색 변경의 효과가 묻힌다. 실제로
+    하이브리드 검색·조항 청킹을 넣었을 때 답변 통과율은 그대로였고,
+    검색만 따로 재보니 근거 문서 수가 2.08 -> 2.92로 늘어난 것이 확인됐다.
+    """
+    from app.agents.graph import K_AUDIT, K_REGULATION
+    from app.rag import store
+
+    scored = [c for c in cases if c.get("expect_sources")]
+    if not scored:
+        print("expect_sources가 있는 케이스가 없습니다.")
+        return 1
+
+    print(f"검색 평가 {len(scored)}건 (LLM 미호출)\n")
+    hits, top3, unique_counts, ranks = 0, 0, [], []
+    misses: list[str] = []
+
+    for i, case in enumerate(scored, 1):
+        query = case["query"]
+        # 실제 파이프라인과 같은 조합으로 검색한다
+        found = store.search(query, K_REGULATION, "regulation") + store.expand_neighbors(
+            store.search(f"{query} 감사 처분 사례", K_AUDIT, "audit")
+        )
+        sources = [h["source_file"] for h in found]
+        # 기대 문서가 몇 번째로 나오는지. 적중률은 후보를 넉넉히 보면 쉽게 100%가 되어
+        # 변화를 감지하지 못하므로, 순위를 함께 본다.
+        rank = next(
+            (r for r, s in enumerate(sources, 1) if any(w in s for w in case["expect_sources"])),
+            None,
+        )
+        unique_counts.append(len(set(sources)))
+        if rank:
+            hits += 1
+            ranks.append(rank)
+            top3 += rank <= 3
+        else:
+            misses.append(f"{case['id']}: 기대 {case['expect_sources'][0]}")
+        label = f"{rank}위" if rank else "미검색"
+        print(f"[{i:2d}/{len(scored)}] {'HIT ' if rank else 'MISS'} {case['id']:<26} {label:>6}")
+
+    n = len(scored)
+    # MRR: 기대 문서가 상위에 올수록 1에 가깝다. 상한이 없어 포화되지 않는다.
+    mrr = sum(1 / r for r in ranks) / n if n else 0
+    print(f"\n{'=' * 52}")
+    print(f"적중률   {hits}/{n} ({hits / n * 100:.0f}%)")
+    print(f"상위 3위 {top3}/{n} ({top3 / n * 100:.0f}%)")
+    print(f"MRR      {mrr:.3f}   (기대 문서 평균 순위 {sum(ranks) / len(ranks):.2f}위)" if ranks else "")
+    print(f"평균 근거 문서 {sum(unique_counts) / n:.2f}종")
+    if misses:
+        print("\n미검색:")
+        for m in misses:
+            print(f"  - {m}")
+    return 1 if misses else 0
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="답변 품질 회귀 테스트")
     parser.add_argument("--url", help="배포 서버 주소 (생략 시 로컬 파이프라인 직접 실행)")
     parser.add_argument("--case", help="특정 케이스 id만 실행")
+    parser.add_argument(
+        "--retrieval", action="store_true",
+        help="LLM 없이 검색 단계만 평가 (로컬 색인 대상, 비용 거의 없음)",
+    )
     args = parser.parse_args()
 
     cases = json.loads(EVALSET.read_text(encoding="utf-8"))["cases"]
@@ -118,6 +181,9 @@ def main() -> None:
         if not cases:
             print(f"케이스를 찾을 수 없습니다: {args.case}")
             sys.exit(1)
+
+    if args.retrieval:
+        sys.exit(_run_retrieval(cases))
 
     print(f"평가셋 {len(cases)}건 실행 ({'원격 ' + args.url if args.url else '로컬'})\n")
     passed, failed_cases = 0, []
