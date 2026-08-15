@@ -7,11 +7,14 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import {
+  type Limits,
   AuthError,
   adminFetch,
   clearAdminToken,
+  clearAnswerCache,
   getAdminToken,
   setAdminToken,
+  updateLimits,
 } from "@/lib/api";
 
 const CARD_SHADOW =
@@ -27,6 +30,18 @@ type RecentRow = {
   elapsed: number | null;
   tokens: number;
   query_preview: string;
+  helpful: number | null;
+};
+
+type Feedback = {
+  helpful: number;
+  unhelpful: number;
+  recent_unhelpful: {
+    analysis_id: number;
+    ts: string;
+    query: string;
+    risk_level: string | null;
+  }[];
 };
 
 type Stats = {
@@ -56,6 +71,9 @@ type Stats = {
     today_krw: number;
     usd_krw: number;
   };
+  limits: Limits;
+  feedback: Feedback;
+  cache: { entries: number; hits: number };
 };
 
 type Analysis = {
@@ -188,6 +206,143 @@ function TokenGate({
   );
 }
 
+function LimitSettings({
+  limits,
+  cache,
+  onSaved,
+  onClearCache,
+}: {
+  limits: Limits;
+  cache: { entries: number; hits: number };
+  onSaved: () => void;
+  onClearCache: () => void;
+}) {
+  const [total, setTotal] = useState(String(limits.daily_limit_total));
+  const [perUser, setPerUser] = useState(String(limits.daily_limit_per_user));
+  const [perIp, setPerIp] = useState(String(limits.daily_limit_per_ip));
+  const [ttl, setTtl] = useState(String(limits.cache_ttl_hours));
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+
+  const dirty =
+    total !== String(limits.daily_limit_total) ||
+    perUser !== String(limits.daily_limit_per_user) ||
+    perIp !== String(limits.daily_limit_per_ip) ||
+    ttl !== String(limits.cache_ttl_hours);
+
+  const save = async () => {
+    setSaving(true);
+    setMessage(null);
+    try {
+      await updateLimits({
+        daily_limit_total: Number(total) || 0,
+        daily_limit_per_user: Number(perUser) || 0,
+        daily_limit_per_ip: Number(perIp) || 0,
+        cache_ttl_hours: Number(ttl) || 0,
+      });
+      setMessage("저장되었습니다.");
+      onSaved();
+    } catch (e) {
+      setMessage(e instanceof Error ? e.message : "저장 실패");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const used = limits.used_today;
+  const cap = limits.daily_limit_total;
+  const pct = cap > 0 ? Math.min(Math.round((used / cap) * 100), 100) : 0;
+
+  const field = (
+    label: string,
+    value: string,
+    onChange: (v: string) => void,
+    unit = "건",
+  ) => (
+    <div className="flex items-center gap-2">
+      <span className="whitespace-nowrap text-sm font-medium text-slate-600">
+        {label}
+      </span>
+      <div className="relative">
+        <input
+          type="number"
+          min={0}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          className="w-28 rounded-lg border border-slate-300 py-1.5 pl-3 pr-10 text-right text-sm tabular-nums outline-none focus:border-indigo-400"
+        />
+        <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs font-medium text-slate-400">
+          {unit}
+        </span>
+      </div>
+    </div>
+  );
+
+  return (
+    <div className={`rounded-2xl border border-slate-200 bg-white p-5 ${CARD_SHADOW}`}>
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <p className="text-sm font-bold text-slate-800">
+          사용량 설정
+          <span className="ml-2 text-xs font-medium text-slate-400">
+            캐시 {fmt(cache.entries)}건 저장 · {fmt(cache.hits)}회 재사용
+          </span>
+        </p>
+        {cap > 0 ? (
+          <p className="text-xs font-medium text-slate-500">
+            오늘 <span className="font-bold text-slate-700">{fmt(used)}</span> /{" "}
+            {fmt(cap)}건 사용 ({pct}%)
+          </p>
+        ) : (
+          <p className="text-xs font-medium text-slate-400">
+            전체 한도 없음 · 오늘 {fmt(used)}건 사용
+          </p>
+        )}
+      </div>
+
+      {cap > 0 && (
+        <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-100">
+          <div
+            className={`h-full rounded-full transition-all ${
+              pct >= 90 ? "bg-rose-500" : pct >= 70 ? "bg-amber-500" : "bg-indigo-600"
+            }`}
+            style={{ width: `${pct}%` }}
+          />
+        </div>
+      )}
+
+      <div className="mt-5 flex flex-wrap items-center gap-x-6 gap-y-3">
+        {field("전체", total, setTotal)}
+        {field("사용자당", perUser, setPerUser)}
+        {field("IP당", perIp, setPerIp)}
+        {field("답변 재사용", ttl, setTtl, "시간")}
+
+        <span className="text-xs font-medium text-slate-400">0 = 사용 안 함</span>
+
+        <div className="ml-auto flex items-center gap-2.5">
+          {message && (
+            <span className="text-xs font-medium text-slate-500">{message}</span>
+          )}
+          <button
+            type="button"
+            onClick={onClearCache}
+            className="rounded-full border border-slate-200 px-4 py-2 text-xs font-medium text-slate-500 transition hover:border-rose-200 hover:text-rose-600"
+          >
+            캐시 비우기
+          </button>
+          <button
+            type="button"
+            onClick={save}
+            disabled={!dirty || saving}
+            className="rounded-full bg-indigo-600 px-5 py-2 text-xs font-bold text-white transition hover:bg-indigo-700 disabled:bg-slate-200 disabled:text-slate-400"
+          >
+            {saving ? "저장 중..." : "저장"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function StatsPage() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -214,7 +369,6 @@ export default function StatsPage() {
   }, []);
 
   // 마운트 시 1회 + 30초 주기로 지표를 갱신한다.
-  // load()의 setState는 fetch 이후에 실행되지만, 정적 분석상 동기 호출로 잡혀 예외 처리한다.
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- 서버 데이터 폴링(비동기 갱신)
     load();
@@ -274,6 +428,7 @@ export default function StatsPage() {
   const totalTokens = stats.totals.input_tokens + stats.totals.output_tokens;
   const todayTokens = stats.today.input_tokens + stats.today.output_tokens;
   const riskTotal = Object.values(stats.risk).reduce((a, b) => a + b, 0);
+  const fbTotal = stats.feedback.helpful + stats.feedback.unhelpful;
 
   return (
     <div className="py-8">
@@ -405,6 +560,92 @@ export default function StatsPage() {
         </div>
       </div>
 
+      <div className="mt-4 grid gap-4 lg:grid-cols-3">
+        <div className={`rounded-2xl border border-slate-200 bg-white p-5 ${CARD_SHADOW}`}>
+          <p className="text-sm font-bold text-slate-800">답변 만족도</p>
+          {fbTotal === 0 ? (
+            <p className="mt-4 text-sm font-medium text-slate-400">
+              아직 평가가 없습니다.
+            </p>
+          ) : (
+            <>
+              <p className="mt-3 text-[26px] font-extrabold tracking-tight text-slate-900">
+                {Math.round((stats.feedback.helpful / fbTotal) * 100)}%
+                <span className="ml-1.5 text-sm font-medium text-slate-400">
+                  도움됨
+                </span>
+              </p>
+              <div className="mt-3 flex h-2 overflow-hidden rounded-full bg-slate-100">
+                <div
+                  className="bg-green-500"
+                  style={{ width: `${(stats.feedback.helpful / fbTotal) * 100}%` }}
+                />
+                <div
+                  className="bg-rose-400"
+                  style={{ width: `${(stats.feedback.unhelpful / fbTotal) * 100}%` }}
+                />
+              </div>
+              <p className="mt-2 text-xs font-medium text-slate-500">
+                도움됨 {fmt(stats.feedback.helpful)}건 · 부족함{" "}
+                {fmt(stats.feedback.unhelpful)}건
+              </p>
+            </>
+          )}
+        </div>
+
+        <div
+          className={`rounded-2xl border border-slate-200 bg-white p-5 lg:col-span-2 ${CARD_SHADOW}`}
+        >
+          <p className="text-sm font-bold text-slate-800">
+            개선이 필요한 답변{" "}
+            <span className="font-medium text-slate-400">
+              — &lsquo;부족함&rsquo; 평가를 받은 질문
+            </span>
+          </p>
+          {stats.feedback.recent_unhelpful.length === 0 ? (
+            <p className="mt-4 text-sm font-medium text-slate-400">
+              부족하다는 평가가 아직 없습니다.
+            </p>
+          ) : (
+            <ul className="mt-3 divide-y divide-slate-100">
+              {stats.feedback.recent_unhelpful.map((f) => (
+                <li
+                  key={f.analysis_id}
+                  className="flex items-center justify-between gap-3 py-2"
+                >
+                  <span className="min-w-0 truncate text-sm font-medium text-slate-700">
+                    {f.query}
+                  </span>
+                  <span className="shrink-0 text-xs font-medium text-slate-400">
+                    {new Date(f.ts).toLocaleDateString("ko-KR", {
+                      month: "numeric",
+                      day: "numeric",
+                    })}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
+
+      <div className="mt-4">
+        <LimitSettings
+          limits={stats.limits}
+          cache={stats.cache}
+          onSaved={load}
+          onClearCache={async () => {
+            if (!confirm("저장된 답변 캐시를 모두 비울까요?")) return;
+            try {
+              await clearAnswerCache();
+              load();
+            } catch (e) {
+              setError(e instanceof Error ? e.message : "캐시 비우기 실패");
+            }
+          }}
+        />
+      </div>
+
       <div className={`mt-4 overflow-x-auto rounded-2xl border border-slate-200 bg-white ${CARD_SHADOW}`}>
         <p className="px-5 pt-4 text-sm font-bold text-slate-800">
           최근 질의 20건 <span className="font-medium text-slate-400">— 클릭하면 전체 내용을 볼 수 있습니다</span>
@@ -458,6 +699,14 @@ export default function StatsPage() {
                     {r.elapsed != null ? `${r.elapsed.toFixed(1)}초` : "—"}
                   </td>
                   <td className="whitespace-nowrap px-5 py-2.5 text-right text-xs font-medium text-slate-500">
+                    {r.helpful !== null && (
+                      <span
+                        className={`mr-2 ${r.helpful ? "text-green-600" : "text-rose-500"}`}
+                        title={r.helpful ? "도움됨" : "부족함"}
+                      >
+                        {r.helpful ? "좋음" : "부족"}
+                      </span>
+                    )}
                     {fmt(r.tokens)}
                   </td>
                 </tr>
@@ -484,7 +733,7 @@ export default function StatsPage() {
                             </p>
                           )}
                           {typeof answers[r.analysis_id] === "object" && (
-                            <div className="mt-1 max-h-72 overflow-y-auto rounded-xl border border-slate-200 bg-white p-4 text-sm leading-relaxed text-slate-700 [&_h3]:mt-3 [&_h3]:mb-1 [&_h3]:font-bold [&_h3]:text-slate-900 [&_ol]:list-decimal [&_ol]:pl-5 [&_ul]:list-disc [&_ul]:pl-5">
+                            <div className="mt-1 max-h-72 overflow-y-auto rounded-xl border border-slate-200 bg-white p-4 text-sm leading-relaxed text-slate-700 [&_h3]:mt-3 [&_h3]:mb-1 [&_h3]:font-bold [&_h3]:text-slate-900 [&_ol]:list-decimal [&_ol]:pl-5 [&_ul]:list-disc [&_ul]:pl-5 [&_em]:not-italic [&_em]:text-slate-500">
                               <ReactMarkdown remarkPlugins={[remarkGfm]}>
                                 {(answers[r.analysis_id] as Analysis).result.final_markdown}
                               </ReactMarkdown>

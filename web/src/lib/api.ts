@@ -1,10 +1,28 @@
 // FastAPI 백엔드 클라이언트: 타입 정의 + SSE 스트리밍 파서
 
-// 미설정 → 로컬 개발(백엔드 직접 호출), "/" 또는 "" → same-origin 상대 경로
-// (프로덕션에서 Next rewrites 또는 Caddy가 /api를 백엔드로 프록시)
+// 미설정이면 로컬 개발용 주소, "/" 또는 ""이면 same-origin 상대 경로.
+// 배포본은 백엔드 주소를 직접 지정한다 (프록시를 거치면 스트리밍이 타임아웃에 걸린다).
 const _raw = process.env.NEXT_PUBLIC_API_URL;
 export const API_BASE =
   _raw === undefined ? "http://localhost:8000" : _raw.replace(/\/+$/, "");
+
+/* --- 익명 방문자 식별 (일일 한도 계산·트래픽 집계용) ------------------- */
+
+const VISITOR_ID_KEY = "visitor-id";
+
+export function getVisitorId(): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    let id = localStorage.getItem(VISITOR_ID_KEY);
+    if (!id) {
+      id = crypto.randomUUID();
+      localStorage.setItem(VISITOR_ID_KEY, id);
+    }
+    return id;
+  } catch {
+    return null; // localStorage 차단 환경
+  }
+}
 
 /* --- 관리자 인증 (운영 대시보드 전용) --------------------------------- */
 
@@ -66,7 +84,25 @@ export type ChatResult = {
   auditor: AuditorResult | null;
   citations: Citation[];
   elapsed: number;
+  analysis_id: number | null;
+  cached?: boolean;
 };
+
+/** 답변 만족도 전송 (실패해도 사용자 흐름을 막지 않음) */
+export async function sendFeedback(
+  analysisId: number,
+  helpful: boolean,
+): Promise<void> {
+  await fetch(`${API_BASE}/api/feedback`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      analysis_id: analysisId,
+      helpful,
+      visitor_id: getVisitorId(),
+    }),
+  });
+}
 
 export type ChatEvent =
   | { type: "stage"; label: string; route?: string }
@@ -93,6 +129,9 @@ export type HealthInfo = {
   indexed_chunks: number;
 };
 
+/** 일일 한도 초과 등 서버가 사유를 알려준 경우 */
+export class ChatBlockedError extends Error {}
+
 /** POST /api/chat 의 SSE 응답을 이벤트 단위로 yield */
 export async function* streamChat(
   query: string,
@@ -102,9 +141,15 @@ export async function* streamChat(
   const res = await fetch(`${API_BASE}/api/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ query, history }),
+    body: JSON.stringify({ query, history, visitor_id: getVisitorId() }),
     signal,
   });
+  if (res.status === 429) {
+    const body = await res.json().catch(() => null);
+    throw new ChatBlockedError(
+      body?.detail ?? "오늘 이용 한도에 도달했습니다. 내일 다시 이용해주세요.",
+    );
+  }
   if (!res.ok || !res.body) {
     throw new Error(`서버 오류 (${res.status})`);
   }
@@ -131,6 +176,49 @@ export async function* streamChat(
       }
     }
   }
+}
+
+export type Limits = {
+  daily_limit_total: number;
+  daily_limit_per_user: number;
+  daily_limit_per_ip: number;
+  cache_ttl_hours: number;
+  used_today: number;
+};
+
+export async function clearAnswerCache(): Promise<{ cleared: number }> {
+  const token = getAdminToken();
+  const res = await fetch(`${API_BASE}/api/cache/clear`, {
+    method: "POST",
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (!res.ok) throw new Error("캐시 비우기에 실패했습니다.");
+  return res.json();
+}
+
+export async function updateLimits(
+  values: Pick<
+    Limits,
+    | "daily_limit_total"
+    | "daily_limit_per_user"
+    | "daily_limit_per_ip"
+    | "cache_ttl_hours"
+  >,
+): Promise<Limits> {
+  const token = getAdminToken();
+  const res = await fetch(`${API_BASE}/api/settings`, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify(values),
+  });
+  if (res.status === 401 || res.status === 503) {
+    throw new AuthError("관리자 인증이 필요합니다.");
+  }
+  if (!res.ok) throw new Error("저장에 실패했습니다.");
+  return res.json();
 }
 
 export async function fetchHealth(): Promise<HealthInfo> {

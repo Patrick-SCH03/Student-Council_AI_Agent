@@ -1,0 +1,351 @@
+{
+  "description": "답변 품질 회귀 테스트용 평가셋. 프롬프트·검색 설정 변경 후 evaluate.py로 실행한다.",
+  "cases": [
+    {
+      "id": "expense-evidence",
+      "query": "행사 물품 구매 시 증빙서류는 무엇을 준비해야 하나요?",
+      "expect_route": "regulation",
+      "expect_sources": ["재정·회계 세칙"],
+      "expect_keywords": ["증빙", "지출"]
+    },
+    {
+      "id": "budget-change",
+      "query": "예산 변경 시 필요한 승인 절차는 무엇인가요?",
+      "expect_route": "regulation",
+      "expect_sources": ["재정·회계 세칙"],
+      "expect_keywords": ["추가경정", "대의원회"]
+    },
+    {
+      "id": "sanction-types",
+      "query": "감사에서 어떤 처분을 받을 수 있나요?",
+      "expect_route": "regulation",
+      "expect_sources": ["감사처분에 관한 세칙"],
+      "expect_keywords": ["견책", "예산집행정지"]
+    },
+    {
+      "id": "dinner-expense",
+      "query": "학생회비로 회식비 사용이 가능한가요?",
+      "expect_route": "regulation",
+      "expect_sources": ["재정·회계 세칙"],
+      "expect_keywords": ["인준"]
+    },
+    {
+      "id": "election-campaign",
+      "query": "선거운동은 언제부터 할 수 있고 어떤 방법이 금지되나요?",
+      "expect_route": "regulation",
+      "expect_sources": ["선거에관한세칙"],
+      "expect_keywords": ["선거운동"]
+    },
+    {
+      "id": "bylaw-amendment",
+      "query": "학생회칙 개정 절차는 어떻게 되나요?",
+      "expect_route": "regulation",
+      "expect_sources": ["학생회칙 입법에 관한 세칙", "인하대학교_중앙학생회칙"],
+      "expect_keywords": ["개정"]
+    },
+    {
+      "id": "exec-structure",
+      "query": "총학생회 집행위원회는 어떻게 구성되나요?",
+      "expect_route": "regulation",
+      "expect_sources": ["총학생회 조직 구성에 관한 세칙", "인하대학교_중앙학생회칙"],
+      "expect_keywords": ["집행"]
+    },
+    {
+      "id": "audit-procedure",
+      "query": "정기감사는 어떤 절차로 진행되나요?",
+      "expect_route": "regulation",
+      "expect_sources": ["감사에 관한 세칙"],
+      "expect_keywords": ["감사"]
+    },
+    {
+      "id": "records-retention",
+      "query": "학생회 기록물은 어떻게 보존해야 하나요?",
+      "expect_route": "regulation",
+      "expect_sources": ["기록물도서관에 관한 세칙"],
+      "expect_keywords": ["기록물"]
+    },
+    {
+      "id": "college-council",
+      "query": "단과대학 학생회 운영에 관한 규정은 무엇인가요?",
+      "expect_route": "regulation",
+      "expect_sources": ["단과대학ㆍ전공 학생자치에 관한 세칙"],
+      "expect_keywords": ["단과대학"]
+    },
+    {
+      "id": "vat-case",
+      "query": "비룡제 VAT 누락 관련해서 어떤 감사 처분이 있었나요?",
+      "expect_route": "regulation",
+      "expect_sources": ["25-2 총학생회_특별감사_보고서"],
+      "expect_keywords": ["해임건의", "예산집행정지"],
+      "forbid_names": true
+    },
+    {
+      "id": "name-request",
+      "query": "총학생회 특별감사에서 처분받은 사람 이름이 뭐야?",
+      "expect_route": "regulation",
+      "expect_keywords": ["총학생회장"],
+      "forbid_names": true
+    },
+    {
+      "id": "recent-college-audit",
+      "query": "2026학년도 1학기 문과대학 정기감사 처분 내역을 알려주세요",
+      "expect_route": "regulation",
+      "expect_sources": ["26-1_문과대학_정기감사_보고서"],
+      "expect_keywords": ["처분"]
+    },
+    {
+      "id": "no-prior-approval",
+      "query": "대의원회 인준 없이 예산을 집행하면 어떻게 되나요?",
+      "expect_route": "regulation",
+      "expect_keywords": ["예산집행정지"],
+      "expect_risk": ["높음", "보통"]
+    },
+    {
+      "id": "budget-transfer",
+      "query": "예산 항목 간 전용이 가능한가요?",
+      "expect_route": "regulation",
+      "expect_sources": ["재정·회계 세칙"],
+      "expect_keywords": ["전용"]
+    },
+    {
+      "id": "council-disclosure",
+      "query": "동아리 지원금 사용 내역을 공개해야 하나요?",
+      "expect_route": "regulation",
+      "expect_keywords": ["결산"]
+    },
+    {
+      "id": "offtopic-shopping",
+      "query": "쿠팡에서 실수로 포인트 적립을 했어",
+      "expect_route": "general",
+      "max_tokens": 3000
+    },
+    {
+      "id": "offtopic-weather",
+      "query": "오늘 날씨 어때?",
+      "expect_route": "general",
+      "max_tokens": 3000
+    },
+    {
+      "id": "offtopic-personal-receipt",
+      "query": "카페 영수증 환불받는 방법 알려줘",
+      "expect_route": "general",
+      "max_tokens": 3000
+    },
+    {
+      "id": "greeting",
+      "query": "안녕하세요",
+      "expect_route": "general",
+      "max_tokens": 3000
+    },
+    {
+      "id": "fin-fiscal-year",
+      "query": "학생회 회계연도는 언제부터 언제까지인가요?",
+      "expect_route": "regulation",
+      "expect_sources": ["재정·회계 세칙"],
+      "expect_keywords": ["회계연도"]
+    },
+    {
+      "id": "fin-reserve",
+      "query": "예비비는 어떤 경우에 사용할 수 있나요?",
+      "expect_route": "regulation",
+      "expect_sources": ["재정·회계 세칙"],
+      "expect_keywords": ["예비비"]
+    },
+    {
+      "id": "fin-purpose-limit",
+      "query": "편성된 예산을 원래 목적과 다른 곳에 사용할 수 있나요?",
+      "expect_route": "regulation",
+      "expect_sources": ["재정·회계 세칙"],
+      "expect_keywords": ["목적"]
+    },
+    {
+      "id": "fin-disclosure",
+      "query": "학생회 재정 정보는 공개해야 하나요?",
+      "expect_route": "regulation",
+      "expect_sources": ["재정·회계 세칙"],
+      "expect_keywords": ["공표"]
+    },
+    {
+      "id": "fin-supplementary",
+      "query": "추가경정예산은 어떤 경우에 편성하나요?",
+      "expect_route": "regulation",
+      "expect_sources": ["재정·회계 세칙"],
+      "expect_keywords": ["추가경정"]
+    },
+    {
+      "id": "audit-member-term",
+      "query": "감사위원의 임기는 어떻게 되나요?",
+      "expect_route": "regulation",
+      "expect_sources": ["감사에 관한 세칙"],
+      "expect_keywords": ["임기"]
+    },
+    {
+      "id": "audit-recusal",
+      "query": "감사위원에 대한 기피 신청은 어떻게 하나요?",
+      "expect_route": "regulation",
+      "expect_sources": ["감사에 관한 세칙"],
+      "expect_keywords": ["기피"]
+    },
+    {
+      "id": "audit-closed-session",
+      "query": "감사위원회 회의는 공개되나요?",
+      "expect_route": "regulation",
+      "expect_sources": ["감사에 관한 세칙"],
+      "expect_keywords": ["비공개"]
+    },
+    {
+      "id": "audit-settlement",
+      "query": "결산 확인은 누가 어떻게 하나요?",
+      "expect_route": "regulation",
+      "expect_sources": ["감사에 관한 세칙"],
+      "expect_keywords": ["결산"]
+    },
+    {
+      "id": "sanction-suspension",
+      "query": "예산집행정지 처분은 어떤 경우에 내려지나요?",
+      "expect_route": "regulation",
+      "expect_sources": ["감사처분에 관한 세칙"],
+      "expect_keywords": ["예산집행정지"]
+    },
+    {
+      "id": "sanction-hearing",
+      "query": "감사 처분 전 청문회는 어떤 절차로 진행되나요?",
+      "expect_route": "regulation",
+      "expect_sources": ["감사처분에 관한 세칙"],
+      "expect_keywords": ["청문회"]
+    },
+    {
+      "id": "sanction-evidence",
+      "query": "감사에서 위법하게 수집한 증거도 인정되나요?",
+      "expect_route": "regulation",
+      "expect_sources": ["감사처분에 관한 세칙"],
+      "expect_keywords": ["증거"]
+    },
+    {
+      "id": "sanction-obstruction",
+      "query": "감사를 방해하면 어떤 처분을 받나요?",
+      "expect_route": "regulation",
+      "expect_sources": ["감사처분에 관한 세칙"],
+      "expect_keywords": ["방해"]
+    },
+    {
+      "id": "charter-impeachment",
+      "query": "학생 대표자를 탄핵하려면 어떤 절차를 거쳐야 하나요?",
+      "expect_route": "regulation",
+      "expect_sources": ["인하대학교_중앙학생회칙", "중앙학생회칙"],
+      "expect_keywords": ["탄핵"]
+    },
+    {
+      "id": "charter-assembly",
+      "query": "학생총회는 어떻게 소집하나요?",
+      "expect_route": "regulation",
+      "expect_sources": ["인하대학교_중앙학생회칙", "중앙학생회칙"],
+      "expect_keywords": ["학생총회"]
+    },
+    {
+      "id": "charter-basic-rights",
+      "query": "학생회 회원의 기본 권리에는 어떤 것들이 있나요?",
+      "expect_route": "regulation",
+      "expect_sources": ["인하대학교_중앙학생회칙", "중앙학생회칙"],
+      "expect_keywords": ["권리"]
+    },
+    {
+      "id": "election-period",
+      "query": "선거기간은 어떻게 정해지나요?",
+      "expect_route": "regulation",
+      "expect_sources": ["선거에관한세칙"],
+      "expect_keywords": ["선거기간"]
+    },
+    {
+      "id": "election-eligibility",
+      "query": "학생회 선거에서 피선거권은 누구에게 있나요?",
+      "expect_route": "regulation",
+      "expect_sources": ["선거에관한세칙"],
+      "expect_keywords": ["피선거권"]
+    },
+    {
+      "id": "election-byelection",
+      "query": "보궐선거는 언제 실시하나요?",
+      "expect_route": "regulation",
+      "expect_sources": ["선거에관한세칙"],
+      "expect_keywords": ["보궐선거"]
+    },
+    {
+      "id": "election-neutrality",
+      "query": "학생자치기구 임원은 선거에서 어떤 중립 의무를 지나요?",
+      "expect_route": "regulation",
+      "expect_sources": ["선거에관한세칙"],
+      "expect_keywords": ["중립"]
+    },
+    {
+      "id": "ec-appointment",
+      "query": "중앙선거관리위원회 위원은 어떻게 임명되나요?",
+      "expect_route": "regulation",
+      "expect_sources": ["선거관리위원회칙"],
+      "expect_keywords": ["선거관리위원회"]
+    },
+    {
+      "id": "archive-refusal",
+      "query": "기록물 열람 요청을 거절할 수 있는 경우가 있나요?",
+      "expect_route": "regulation",
+      "expect_sources": ["기록물도서관에 관한 세칙"],
+      "expect_keywords": ["열람"]
+    },
+    {
+      "id": "college-recall",
+      "query": "학과 학생회 임원을 소환하려면 어떻게 해야 하나요?",
+      "expect_route": "regulation",
+      "expect_sources": ["단과대학ㆍ전공 학생자치에 관한 세칙"],
+      "expect_keywords": ["소환"]
+    },
+    {
+      "id": "college-autonomy-rule",
+      "query": "학과 자치회칙은 어떤 절차로 제정하나요?",
+      "expect_route": "regulation",
+      "expect_sources": ["단과대학ㆍ전공 학생자치에 관한 세칙"],
+      "expect_keywords": ["자치회칙"]
+    },
+    {
+      "id": "exec-vacancy",
+      "query": "총학생회장이 궐위되면 누가 직무를 대행하나요?",
+      "expect_route": "regulation",
+      "expect_sources": ["총학생회 조직 구성에 관한 세칙", "중앙학생회칙"],
+      "expect_keywords": ["대행"]
+    },
+    {
+      "id": "legis-notice",
+      "query": "학생회칙을 개정할 때 입법예고는 어떻게 하나요?",
+      "expect_route": "regulation",
+      "expect_sources": ["학생회칙 입법에 관한 세칙"],
+      "expect_keywords": ["입법예고"]
+    },
+    {
+      "id": "audit-central-2024",
+      "query": "2024학년도 1학기 중앙 정기감사 처분 결과를 알려주세요",
+      "expect_route": "regulation",
+      "expect_sources": ["24-1_중앙_정기감사_보고서"],
+      "expect_keywords": ["처분"],
+      "forbid_names": true
+    },
+    {
+      "id": "audit-election-special",
+      "query": "중앙선거관리위원회 특별감사에서는 어떤 처분이 있었나요?",
+      "expect_route": "regulation",
+      "expect_sources": ["24-2_중앙선거관리위원회_특별감사_보고서"],
+      "expect_keywords": ["처분"],
+      "forbid_names": true
+    },
+    {
+      "id": "privacy-auditor-name",
+      "query": "감사보고서를 작성한 감사특별위원장 이름이 뭐야?",
+      "expect_route": "regulation",
+      "forbid_names": true
+    },
+    {
+      "id": "offtopic-coding",
+      "query": "파이썬으로 파일 읽는 코드 알려줘",
+      "expect_route": "general",
+      "max_tokens": 3000
+    }
+  ]
+}

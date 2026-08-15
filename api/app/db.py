@@ -1,10 +1,10 @@
-"""SQLite 저장소: 색인 문서 목록과 분석 이력.
+"""SQLite 저장소: 색인 문서 목록, 분석 이력, 운영 지표, 답변 캐시.
 
-v1은 분석 결과를 외부 Notion에 기록했지만, v2는 자체 DB에 저장해
-서비스 기능(이력 조회)으로 노출한다.
+단일 인스턴스 운영 규모라 별도 DB 서버 없이 볼륨에 파일로 보존한다.
 """
 
 import json
+import re
 import sqlite3
 from datetime import datetime, timezone
 
@@ -40,6 +40,23 @@ CREATE TABLE IF NOT EXISTS visits (
     ts         TEXT NOT NULL,
     visitor_id TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS answer_cache (
+    query_key   TEXT PRIMARY KEY,      -- 정규화된 질문
+    ts          TEXT NOT NULL,
+    analysis_id INTEGER NOT NULL,
+    result      TEXT NOT NULL,
+    hits        INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS feedback (
+    analysis_id INTEGER PRIMARY KEY,   -- 답변당 1건 (재평가 시 갱신)
+    ts          TEXT NOT NULL,
+    helpful     INTEGER NOT NULL,      -- 1 = 도움됨, 0 = 부족함
+    visitor_id  TEXT
+);
 """
 
 
@@ -48,10 +65,19 @@ def _connect() -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.executescript(_SCHEMA)
     # 스키마 확장 마이그레이션 (기존 DB 호환)
-    try:
-        conn.execute("ALTER TABLE metrics ADD COLUMN analysis_id INTEGER")
-    except sqlite3.OperationalError:
-        pass  # 이미 존재
+    for stmt in (
+        "ALTER TABLE metrics ADD COLUMN analysis_id INTEGER",
+        "ALTER TABLE metrics ADD COLUMN visitor_id TEXT",
+        # visitor_id는 클라이언트가 보내는 값이라 저장소를 비우면 초기화된다.
+        # 우회가 어려운 보조 기준으로 IP 해시를 함께 기록한다 (원문은 저장하지 않음).
+        "ALTER TABLE metrics ADD COLUMN ip_hash TEXT",
+        # 운영자가 직접 돌리는 질의(회귀 테스트 등). 지표에는 남기되 한도 계산에서는 뺀다.
+        "ALTER TABLE metrics ADD COLUMN is_admin INTEGER DEFAULT 0",
+    ):
+        try:
+            conn.execute(stmt)
+        except sqlite3.OperationalError:
+            pass  # 이미 존재
     return conn
 
 
@@ -103,13 +129,139 @@ def record_metric(
     output_tokens: int,
     query_preview: str,
     analysis_id: int | None = None,
+    visitor_id: str | None = None,
+    ip_hash: str | None = None,
+    is_admin: bool = False,
 ) -> None:
     with _connect() as conn:
         conn.execute(
-            "INSERT INTO metrics (ts, route, risk_level, status, elapsed, input_tokens, output_tokens, query_preview, analysis_id) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (_now(), route, risk_level, status, elapsed, input_tokens, output_tokens, query_preview[:500], analysis_id),
+            "INSERT INTO metrics (ts, route, risk_level, status, elapsed, input_tokens, output_tokens, "
+            "query_preview, analysis_id, visitor_id, ip_hash, is_admin) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                _now(), route, risk_level, status, elapsed, input_tokens, output_tokens,
+                query_preview[:500], analysis_id, visitor_id, ip_hash, int(is_admin),
+            ),
         )
+
+
+# ---------------------------------------------------------------- 설정 / 사용량 제한
+
+def get_settings(defaults: dict[str, int]) -> dict[str, int]:
+    """저장된 설정을 기본값과 병합해 반환한다."""
+    with _connect() as conn:
+        rows = conn.execute("SELECT key, value FROM settings").fetchall()
+    stored = {r["key"]: r["value"] for r in rows}
+    result = {}
+    for key, default in defaults.items():
+        try:
+            result[key] = int(stored[key]) if key in stored else default
+        except (TypeError, ValueError):
+            result[key] = default
+    return result
+
+
+def set_settings(values: dict[str, int]) -> None:
+    with _connect() as conn:
+        conn.executemany(
+            "INSERT INTO settings (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [(k, str(v)) for k, v in values.items()],
+        )
+
+
+# ---------------------------------------------------------------- 답변 캐시
+
+def normalize_query(query: str) -> str:
+    """캐시 키 생성: 공백·문장부호를 제거해 표기 차이를 흡수한다."""
+    return re.sub(r"[\s?!.,·…]+", "", query).lower()
+
+
+def get_cached_answer(query_key: str, ttl_hours: int) -> dict | None:
+    """TTL 이내의 캐시된 답변을 반환하고 적중 횟수를 올린다."""
+    if ttl_hours <= 0:
+        return None
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT analysis_id, result FROM answer_cache "
+            "WHERE query_key = ? AND ts >= datetime('now', ?)",
+            (query_key, f"-{ttl_hours} hours"),
+        ).fetchone()
+        if not row:
+            return None
+        conn.execute(
+            "UPDATE answer_cache SET hits = hits + 1 WHERE query_key = ?", (query_key,)
+        )
+    return {"analysis_id": row["analysis_id"], **json.loads(row["result"])}
+
+
+def save_cached_answer(query_key: str, analysis_id: int, result: dict) -> None:
+    with _connect() as conn:
+        conn.execute(
+            "INSERT INTO answer_cache (query_key, ts, analysis_id, result, hits) "
+            "VALUES (?, ?, ?, ?, 0) ON CONFLICT(query_key) DO UPDATE SET "
+            "ts = excluded.ts, analysis_id = excluded.analysis_id, "
+            "result = excluded.result, hits = 0",
+            (query_key, _now(), analysis_id, json.dumps(result, ensure_ascii=False)),
+        )
+
+
+def cache_stats() -> dict:
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS entries, COALESCE(SUM(hits), 0) AS hits FROM answer_cache"
+        ).fetchone()
+    return dict(row)
+
+
+def clear_cache() -> int:
+    with _connect() as conn:
+        cur = conn.execute("DELETE FROM answer_cache")
+    return cur.rowcount
+
+
+def add_feedback(analysis_id: int, helpful: bool, visitor_id: str | None) -> None:
+    """답변 만족도 기록. 같은 답변에 다시 누르면 갱신된다."""
+    with _connect() as conn:
+        conn.execute(
+            "INSERT INTO feedback (analysis_id, ts, helpful, visitor_id) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(analysis_id) DO UPDATE SET "
+            "helpful = excluded.helpful, ts = excluded.ts",
+            (analysis_id, _now(), 1 if helpful else 0, visitor_id),
+        )
+
+
+# 한도 계산에서는 운영자 질의를 제외한다. 회귀 테스트를 돌리다 실사용자 몫을
+# 소진시키거나, 반대로 점검이 한도에 막히는 일을 둘 다 막는다.
+_NOT_ADMIN = "COALESCE(is_admin, 0) = 0"
+
+
+def count_today(visitor_id: str | None = None) -> int:
+    """오늘 처리한 질의 수 (운영자 질의 제외). visitor_id를 주면 해당 사용자 기준."""
+    with _connect() as conn:
+        if visitor_id:
+            row = conn.execute(
+                f"SELECT COUNT(*) AS n FROM metrics "
+                f"WHERE date(ts) = date('now') AND {_NOT_ADMIN} AND visitor_id = ?",
+                (visitor_id,),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                f"SELECT COUNT(*) AS n FROM metrics "
+                f"WHERE date(ts) = date('now') AND {_NOT_ADMIN}"
+            ).fetchone()
+    return row["n"]
+
+
+def count_today_by_ip(ip_hash: str) -> int:
+    """오늘 같은 IP에서 처리한 질의 수 (운영자 질의 제외)."""
+    with _connect() as conn:
+        row = conn.execute(
+            f"SELECT COUNT(*) AS n FROM metrics "
+            f"WHERE date(ts) = date('now') AND {_NOT_ADMIN} AND ip_hash = ?",
+            (ip_hash,),
+        ).fetchone()
+    return row["n"]
 
 
 def add_visit(visitor_id: str) -> None:
@@ -140,23 +292,31 @@ def get_stats(days: int = 14) -> dict:
     """관측 대시보드용 집계. 일별 추이 / 누적 / 위험도 분포 / 최근 질의."""
     with _connect() as conn:
         totals = dict(conn.execute(
-            "SELECT COUNT(*) AS count, COALESCE(AVG(elapsed), 0) AS avg_elapsed, "
+            # 캐시 적중은 LLM을 호출하지 않으므로 평균 응답 시간 계산에서 제외한다
+            "SELECT COUNT(*) AS count, "
+            "COALESCE(AVG(CASE WHEN status != 'cached' THEN elapsed END), 0) AS avg_elapsed, "
             "COALESCE(SUM(input_tokens), 0) AS input_tokens, "
             "COALESCE(SUM(output_tokens), 0) AS output_tokens, "
-            "COALESCE(SUM(CASE WHEN status != 'ok' THEN 1 ELSE 0 END), 0) AS errors "
+            # 'cached'는 정상 응답이므로 오류로 세지 않는다
+            "COALESCE(SUM(CASE WHEN status NOT IN ('ok', 'cached') THEN 1 ELSE 0 END), 0) AS errors "
             "FROM metrics"
         ).fetchone())
 
         today = dict(conn.execute(
-            "SELECT COUNT(*) AS count, COALESCE(AVG(elapsed), 0) AS avg_elapsed, "
+            # 캐시 적중은 LLM을 호출하지 않으므로 평균 응답 시간 계산에서 제외한다
+            "SELECT COUNT(*) AS count, "
+            "COALESCE(AVG(CASE WHEN status != 'cached' THEN elapsed END), 0) AS avg_elapsed, "
             "COALESCE(SUM(input_tokens), 0) AS input_tokens, "
-            "COALESCE(SUM(output_tokens), 0) AS output_tokens "
+            "COALESCE(SUM(output_tokens), 0) AS output_tokens, "
+            # IP 상한이 실제로 클라이언트를 구분하는지 확인하는 용도.
+            # 프록시가 실제 IP를 넘겨주지 않으면 트래픽이 늘어도 1에서 멈춘다.
+            "COUNT(DISTINCT ip_hash) AS unique_ips "
             "FROM metrics WHERE date(ts) = date('now')"
         ).fetchone())
 
         daily = [dict(r) for r in conn.execute(
             "SELECT date(ts) AS date, COUNT(*) AS count, "
-            "COALESCE(AVG(elapsed), 0) AS avg_elapsed, "
+            "COALESCE(AVG(CASE WHEN status != 'cached' THEN elapsed END), 0) AS avg_elapsed, "
             "COALESCE(SUM(input_tokens + output_tokens), 0) AS tokens "
             "FROM metrics WHERE ts >= datetime('now', ?) "
             "GROUP BY date(ts) ORDER BY date",
@@ -173,9 +333,22 @@ def get_stats(days: int = 14) -> dict:
         ).fetchall()}
 
         recent = [dict(r) for r in conn.execute(
-            "SELECT id, analysis_id, ts, route, risk_level, status, elapsed, "
-            "input_tokens + output_tokens AS tokens, query_preview "
-            "FROM metrics ORDER BY id DESC LIMIT 20"
+            "SELECT m.id, m.analysis_id, m.ts, m.route, m.risk_level, m.status, m.elapsed, "
+            "m.input_tokens + m.output_tokens AS tokens, m.query_preview, f.helpful "
+            "FROM metrics m LEFT JOIN feedback f ON f.analysis_id = m.analysis_id "
+            "ORDER BY m.id DESC LIMIT 20"
+        ).fetchall()]
+
+        fb = dict(conn.execute(
+            "SELECT COALESCE(SUM(helpful), 0) AS helpful, "
+            "COALESCE(SUM(1 - helpful), 0) AS unhelpful FROM feedback"
+        ).fetchone())
+
+        # 부족하다고 평가된 답변 — 개선 대상 목록
+        fb["recent_unhelpful"] = [dict(r) for r in conn.execute(
+            "SELECT f.analysis_id, f.ts, a.query, a.risk_level "
+            "FROM feedback f JOIN analyses a ON a.id = f.analysis_id "
+            "WHERE f.helpful = 0 ORDER BY f.ts DESC LIMIT 10"
         ).fetchall()]
 
         visits = {
@@ -203,6 +376,8 @@ def get_stats(days: int = 14) -> dict:
         "recent": recent,
         "visits": visits,
         "daily_visits": daily_visits,
+        "feedback": fb,
+        "cache": cache_stats(),
     }
 
 

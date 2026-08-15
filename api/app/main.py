@@ -1,11 +1,12 @@
 """FastAPI 서버: SSE 스트리밍 채팅 + 문서 관리 API."""
 
+import hashlib
 import json
 import re
 import secrets
 import time
 
-from fastapi import Depends, FastAPI, Header, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse, StreamingResponse
 from langchain_core.callbacks import UsageMetadataCallbackHandler
@@ -17,7 +18,9 @@ from app.agents.schemas import overall_risk
 from app.config import (
     ADMIN_TOKEN,
     CORS_ORIGINS,
+    DEFAULT_LIMITS,
     GEMINI_MODEL,
+    IP_HASH_SALT,
     MOCK_MODE,
     PRICE_INPUT_PER_1M,
     PRICE_OUTPUT_PER_1M,
@@ -49,6 +52,8 @@ class ChatRequest(BaseModel):
     query: str = Field(min_length=1, max_length=MAX_QUERY_LENGTH)
     # 후속 질문 맥락 유지용 이전 대화 (최근 것부터 최대 3개 사용)
     history: list[HistoryItem] = Field(default_factory=list, max_length=10)
+    # 사용자별 일일 한도 계산용 익명 식별자 (브라우저 localStorage)
+    visitor_id: str | None = Field(default=None, max_length=64)
 
 
 def _sse(payload: dict) -> str:
@@ -72,6 +77,17 @@ def require_admin(authorization: str | None = Header(default=None)) -> None:
 
 
 admin_only = Depends(require_admin)
+
+
+def is_admin_request(authorization: str | None) -> bool:
+    """관리자 토큰이 실린 요청인지 판별한다 (차단하지 않고 참/거짓만 돌려준다).
+
+    회귀 테스트처럼 운영자가 직접 돌리는 질의까지 일일 한도에 걸리면
+    정작 점검이 막힌다. 한도 계산에서만 빼고 지표에는 그대로 기록한다.
+    """
+    if not ADMIN_TOKEN or not authorization:
+        return False
+    return secrets.compare_digest(authorization, f"Bearer {ADMIN_TOKEN}")
 
 
 @app.get("/api/health")
@@ -110,10 +126,95 @@ _STAGE_LABELS = {
 }
 
 
+def _client_ip_hash(http_request: Request) -> str | None:
+    """클라이언트 IP의 솔트 해시. 원문 IP는 저장하지 않는다.
+
+    X-Forwarded-For는 "클라이언트, 프록시1, 프록시2" 순으로 쌓이고 각 프록시가
+    뒤에 덧붙인다. 따라서 왼쪽 항목은 클라이언트가 위조해 보낼 수 있다.
+    (X-Forwarded-For: 1.2.3.4 를 보내면 프록시가 뒤에 실제 IP를 붙여
+    "1.2.3.4, 실제IP"가 되므로, 첫 항목을 믿으면 상한을 그냥 빠져나간다.)
+
+    신뢰할 수 있는 값은 우리 앞단 프록시가 마지막에 붙인 오른쪽 끝 항목이다.
+    """
+    parts = [p.strip() for p in http_request.headers.get("x-forwarded-for", "").split(",")]
+    ip = next((p for p in reversed(parts) if p), "")
+    if not ip and http_request.client:
+        ip = http_request.client.host
+    if not ip:
+        return None
+    return hashlib.sha256(f"{IP_HASH_SALT}:{ip}".encode()).hexdigest()[:32]
+
+
+def _enforce_daily_limit(visitor_id: str | None, ip_hash: str | None = None) -> None:
+    """일일 질의 상한 확인. 초과 시 429로 차단한다 (0 = 무제한)."""
+    limits = db.get_settings(DEFAULT_LIMITS)
+
+    per_user = limits["daily_limit_per_user"]
+    if per_user > 0 and visitor_id and db.count_today(visitor_id) >= per_user:
+        raise HTTPException(
+            status_code=429,
+            detail=f"오늘 사용 가능한 질문 횟수({per_user}회)를 모두 사용했습니다. 내일 다시 이용해주세요.",
+        )
+
+    # visitor_id는 브라우저 저장소를 비우면 초기화되므로 IP 기준으로 한 번 더 막는다
+    per_ip = limits["daily_limit_per_ip"]
+    if per_ip > 0 and ip_hash and db.count_today_by_ip(ip_hash) >= per_ip:
+        raise HTTPException(
+            status_code=429,
+            detail="같은 네트워크에서 오늘 이용 가능한 횟수를 모두 사용했습니다. 내일 다시 이용해주세요.",
+        )
+
+    total = limits["daily_limit_total"]
+    if total > 0 and db.count_today() >= total:
+        raise HTTPException(
+            status_code=429,
+            detail="오늘 전체 이용 한도에 도달했습니다. 내일 다시 이용해주세요.",
+        )
+
+
 @app.post("/api/chat")
-async def chat(request: ChatRequest):
+async def chat(
+    request: ChatRequest,
+    http_request: Request,
+    authorization: str | None = Header(default=None),
+):
     query = request.query.strip()
     history = [h.model_dump() for h in request.history[-3:]]
+    visitor_id = request.visitor_id
+    ip_hash = _client_ip_hash(http_request)
+    is_admin = is_admin_request(authorization)
+    if not is_admin:
+        _enforce_daily_limit(visitor_id, ip_hash)
+
+    # 후속 질문이 아닌 단독 질문만 캐시 대상 (맥락에 따라 답이 달라지므로)
+    cache_key = db.normalize_query(query) if not history else None
+    if cache_key:
+        limits = db.get_settings(DEFAULT_LIMITS)
+        cached = db.get_cached_answer(cache_key, limits["cache_ttl_hours"])
+        if cached:
+
+            async def cached_stream():
+                yield _sse({"type": "stage", "label": "이전 답변을 불러오는 중..."})
+                db.record_metric(
+                    route=cached.get("route"),
+                    risk_level=cached.get("risk_level"),
+                    status="cached",
+                    elapsed=0.0,
+                    input_tokens=0,
+                    output_tokens=0,
+                    query_preview=query,
+                    analysis_id=cached.get("analysis_id"),
+                    visitor_id=visitor_id,
+                    ip_hash=ip_hash,
+                    is_admin=is_admin,
+                )
+                yield _sse({"type": "result", **cached, "cached": True})
+
+            return StreamingResponse(
+                cached_stream(),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            )
 
     async def event_stream():
         start = time.time()
@@ -207,8 +308,14 @@ async def chat(request: ChatRequest):
                 output_tokens=out_tok,
                 query_preview=query,
                 analysis_id=analysis_id,
+                visitor_id=visitor_id,
+                ip_hash=ip_hash,
+                is_admin=is_admin,
             )
-            yield _sse({"type": "result", **result})
+            if cache_key:
+                db.save_cached_answer(cache_key, analysis_id, result)
+            # analysis_id는 저장 후에야 정해지므로 응답에만 덧붙인다 (피드백 전송용)
+            yield _sse({"type": "result", **result, "analysis_id": analysis_id})
 
         except Exception as e:  # noqa: BLE001 - 스트림 내 오류는 이벤트로 전달
             in_tok, out_tok = _token_totals()
@@ -220,6 +327,9 @@ async def chat(request: ChatRequest):
                 input_tokens=in_tok,
                 output_tokens=out_tok,
                 query_preview=query,
+                visitor_id=visitor_id,
+                ip_hash=ip_hash,
+                is_admin=is_admin,
             )
             yield _sse({"type": "error", "message": f"분석 중 오류가 발생했습니다: {e}"})
 
@@ -248,6 +358,8 @@ async def upload_document(file: UploadFile):
         raise HTTPException(status_code=422, detail=str(e)) from e
 
     db.add_document(doc_id, file.filename, chunks)
+    # 색인이 바뀌면 이전 답변은 낡은 근거일 수 있으므로 캐시를 비운다
+    db.clear_cache()
     return {"doc_id": doc_id, "filename": file.filename, "chunks": chunks}
 
 
@@ -261,6 +373,7 @@ def delete_document(doc_id: str):
     if not db.delete_document(doc_id):
         raise HTTPException(status_code=404, detail="문서를 찾을 수 없습니다.")
     store.delete_doc(doc_id)
+    db.clear_cache()
     return {"deleted": doc_id}
 
 
@@ -277,6 +390,21 @@ def get_analysis(analysis_id: int):
     if not item:
         raise HTTPException(status_code=404, detail="분석 기록을 찾을 수 없습니다.")
     return item
+
+
+class FeedbackRequest(BaseModel):
+    analysis_id: int = Field(ge=1)
+    helpful: bool
+    visitor_id: str | None = Field(default=None, max_length=64)
+
+
+@app.post("/api/feedback")
+def submit_feedback(request: FeedbackRequest):
+    """답변 만족도 수집 (공개 — 사용자가 누르는 버튼)."""
+    if not db.get_analysis(request.analysis_id):
+        raise HTTPException(status_code=404, detail="분석 기록을 찾을 수 없습니다.")
+    db.add_feedback(request.analysis_id, request.helpful, request.visitor_id)
+    return {"ok": True}
 
 
 class TrackRequest(BaseModel):
@@ -306,9 +434,33 @@ def _cost_usd(input_tokens: int, output_tokens: int) -> float:
     )
 
 
+class SettingsRequest(BaseModel):
+    daily_limit_total: int = Field(ge=0, le=100_000)
+    daily_limit_per_user: int = Field(ge=0, le=10_000)
+    daily_limit_per_ip: int = Field(default=60, ge=0, le=10_000)
+    cache_ttl_hours: int = Field(default=24, ge=0, le=720)
+
+
+@app.post("/api/cache/clear", dependencies=[admin_only])
+def clear_cache():
+    return {"cleared": db.clear_cache()}
+
+
+@app.get("/api/settings", dependencies=[admin_only])
+def get_settings():
+    return {**db.get_settings(DEFAULT_LIMITS), "used_today": db.count_today()}
+
+
+@app.put("/api/settings", dependencies=[admin_only])
+def update_settings(request: SettingsRequest):
+    db.set_settings(request.model_dump())
+    return {**db.get_settings(DEFAULT_LIMITS), "used_today": db.count_today()}
+
+
 @app.get("/api/stats", dependencies=[admin_only])
 def get_stats(days: int = 14):
     stats = db.get_stats(min(max(days, 1), 90))
+    stats["limits"] = {**db.get_settings(DEFAULT_LIMITS), "used_today": db.count_today()}
     total_usd = _cost_usd(stats["totals"]["input_tokens"], stats["totals"]["output_tokens"])
     today_usd = _cost_usd(stats["today"]["input_tokens"], stats["today"]["output_tokens"])
     stats["cost"] = {

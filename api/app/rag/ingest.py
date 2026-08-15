@@ -1,21 +1,20 @@
 """PDF 인제스천: 텍스트 추출 → 청킹 → 임베딩 → 벡터 스토어 저장.
 
-질의 경로와 분리된 관리자 전용 파이프라인. v1과 달리 첫 질문 시점이 아니라
-문서 업로드 시점에 색인한다.
-
-텍스트 레이어가 없는 스캔본 PDF는 Gemini 멀티모달(PDF 네이티브 입력)로
-텍스트를 추출하는 폴백을 거친다.
+질의 경로와 분리된 관리자 전용 파이프라인으로, 문서 업로드 시점에 색인한다.
+텍스트 레이어가 없는 스캔본 PDF는 Gemini 멀티모달로 추출하는 폴백을 거친다.
 """
 
+import hashlib
 import io
 import re
 import unicodedata
 import uuid
+from pathlib import Path
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from pypdf import PdfReader
 
-from app.config import GEMINI_API_KEY, GEMINI_MODEL, MOCK_MODE
+from app.config import GEMINI_API_KEY, GEMINI_MODEL, MOCK_MODE, OCR_CACHE_DIR
 from app.rag import store
 
 # 스캔본 PDF 판별 기준
@@ -37,13 +36,63 @@ _splitter = RecursiveCharacterTextSplitter(
     separators=["\n\n", "\n", ".", " ", ""],
 )
 
+# 회칙·세칙의 조항 제목은 '제10조(목적)'처럼 괄호가 따라온다.
+# 반면 본문 중 참조는 '제29조에 따라', '제42조제3항'처럼 괄호가 없어,
+# 괄호를 조건에 넣으면 참조에서 잘못 끊기는 일을 피할 수 있다.
+_ARTICLE_HEAD = re.compile(r"(?=제\s*\d+\s*조(?:의\s*\d+)?\s*\()")
+ARTICLE_CHUNK_MAX = 1500  # 조항을 합쳐 담을 때의 상한
+MIN_ARTICLES = 3  # 이보다 적으면 조항 구조가 없는 문서로 보고 기본 분할
+
+
+def split_by_article(text: str) -> list[str] | None:
+    """조항 경계로 분할한다. 조항 구조가 없으면 None을 반환한다.
+
+    조항이 중간에서 잘리면 인용 근거가 불완전해지므로, 한 조항은 나누지 않고
+    짧은 조항들만 상한까지 묶는다. 상한을 넘는 긴 조항만 기본 분할기로 쪼갠다.
+    """
+    parts = [p.strip() for p in _ARTICLE_HEAD.split(text) if p.strip()]
+    if len(parts) < MIN_ARTICLES:
+        return None
+
+    chunks: list[str] = []
+    buffer = ""
+    for part in parts:
+        if len(part) > ARTICLE_CHUNK_MAX:
+            if buffer:
+                chunks.append(buffer)
+                buffer = ""
+            chunks.extend(_splitter.split_text(part))
+        elif len(buffer) + len(part) + 1 <= ARTICLE_CHUNK_MAX:
+            buffer = f"{buffer}\n{part}".strip()
+        else:
+            chunks.append(buffer)
+            buffer = part
+    if buffer:
+        chunks.append(buffer)
+    return chunks
+
 
 class IngestError(Exception):
     pass
 
 
+def _ocr_cache_path(file_bytes: bytes) -> Path:
+    return OCR_CACHE_DIR / f"{hashlib.sha256(file_bytes).hexdigest()[:32]}.txt"
+
+
 def _extract_with_gemini(file_bytes: bytes) -> str:
-    """스캔본 PDF 폴백: Gemini 멀티모달에 PDF를 직접 넣어 텍스트를 추출한다."""
+    """스캔본 PDF 폴백: Gemini 멀티모달에 PDF를 직접 넣어 텍스트를 추출한다.
+
+    결과는 파일 내용 해시로 캐싱한다. 같은 PDF에도 매번 다른 텍스트가 나와
+    재색인마다 청크 경계가 달라지므로, 캐시로 재현성과 비용을 함께 잡는다.
+    """
+    cached = _ocr_cache_path(file_bytes)
+    if cached.exists():
+        text = cached.read_text(encoding="utf-8")
+        if text.strip():
+            print(f"  OCR 캐시 사용 ({len(text)}자)")
+            return text
+
     from google import genai
     from google.genai import types
 
@@ -55,7 +104,30 @@ def _extract_with_gemini(file_bytes: bytes) -> str:
             _OCR_PROMPT,
         ],
     )
-    return response.text or ""
+    text = response.text or ""
+    if text.strip():
+        cached.write_text(text, encoding="utf-8")
+    return text
+
+
+# 표지·서식 제목은 자간을 벌려 조판하는 경우가 많아 "인 하 대 학 교"처럼 추출된다.
+# 낱글자 수만 보면 "위원 한 명 한 명" 같은 정상 문장까지 붙여버리므로,
+# 그 줄의 한글 대부분이 낱글자일 때만 자간 조판으로 판정한다.
+# 줄 전체가 낱글자면("가 나 다 라 마") 자간 조판과 구분할 수 없어 붙는다.
+_ISOLATED_HANGUL = re.compile(r"(?<![가-힣])[가-힣](?![가-힣])")
+_HANGUL = re.compile(r"[가-힣]")
+_HANGUL_GAP = re.compile(r"(?<=[가-힣])[ ](?=[가-힣])")
+_MIDDLE_DOT = re.compile(r"(?<=[가-힣])\s*[·ㆍ]\s*(?=[가-힣])")
+_SPACED_MIN_CHARS = 5
+_SPACED_MIN_RATIO = 0.75  # 0.6에서는 "지 할 때 는 각 자 부담한다" 같은 문장이 걸렸다
+
+
+def _collapse_spaced_line(line: str) -> str:
+    total = len(_HANGUL.findall(line))
+    isolated = len(_ISOLATED_HANGUL.findall(line))
+    if isolated >= _SPACED_MIN_CHARS and total and isolated / total >= _SPACED_MIN_RATIO:
+        return _HANGUL_GAP.sub("", line)
+    return line
 
 
 def clean_text(text: str) -> str:
@@ -63,6 +135,8 @@ def clean_text(text: str) -> str:
 
     일부 한글 PDF는 공백을 널바이트(\\x00)나 특수 공백으로 추출해 단어 경계가
     사라지고 임베딩 품질이 크게 저하된다. 이를 일반 공백으로 복원한다.
+
+    조판상의 공백도 정리한다. 그대로 두면 "재 정 · 회 계 세 칙"처럼 답변에까지 옮겨진다.
     """
     if not text:
         return ""
@@ -76,6 +150,10 @@ def clean_text(text: str) -> str:
     # 과도한 공백/빈 줄 정리
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
+    # 가운뎃점 앞뒤 공백 제거 ("재정 · 회계" → "재정·회계")
+    text = _MIDDLE_DOT.sub("·", text)
+    # 자간을 벌려 조판한 줄 복원 (줄 단위 판정)
+    text = "\n".join(_collapse_spaced_line(line) for line in text.split("\n"))
     return text.strip()
 
 
@@ -123,7 +201,15 @@ def extract_text_from_pdf(file_bytes: bytes) -> str:
 def ingest_pdf(file_bytes: bytes, filename: str) -> tuple[str, int]:
     """PDF를 색인하고 (doc_id, 청크 수)를 반환한다."""
     text = extract_text_from_pdf(file_bytes)
-    chunks = _splitter.split_text(text)
+
+    # 회칙·세칙은 조항 단위로, 감사보고서는 길이 기준으로 나눈다
+    chunks = None
+    if store.classify_doc(filename) == "regulation":
+        chunks = split_by_article(text)
+        if chunks:
+            print(f"  조항 단위 분할: {len(chunks)}개 청크")
+    if not chunks:
+        chunks = _splitter.split_text(text)
     if not chunks:
         raise IngestError("문서에서 색인할 내용을 찾지 못했습니다.")
 

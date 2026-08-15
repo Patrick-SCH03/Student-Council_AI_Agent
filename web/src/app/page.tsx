@@ -10,7 +10,9 @@ import {
   type Citation,
   type HistoryItem,
   type ReviewerResult,
+  ChatBlockedError,
   fetchHealth,
+  sendFeedback,
   streamChat,
 } from "@/lib/api";
 
@@ -95,7 +97,51 @@ const paths = {
     />
   ),
   reply: <path d="M9 10 4 15l5 5M4 15h11a5 5 0 0 0 5-5V7" />,
+  thumbUp: (
+    <path d="M7 10v10H4V10h3Zm3 10V10l4-6a2 2 0 0 1 3 2l-1 4h4.5a2 2 0 0 1 2 2.4l-1.3 6A2 2 0 0 1 17.2 20H10Z" />
+  ),
+  thumbDown: (
+    <path d="M7 14V4H4v10h3Zm3-10v10l4 6a2 2 0 0 0 3-2l-1-4h4.5a2 2 0 0 0 2-2.4l-1.3-6A2 2 0 0 0 17.2 4H10Z" />
+  ),
 };
+
+function FeedbackButtons({ analysisId }: { analysisId: number }) {
+  const [sent, setSent] = useState<boolean | null>(null);
+
+  const submit = (helpful: boolean) => {
+    setSent(helpful); // 낙관적 반영 — 전송 실패해도 사용자 흐름을 막지 않는다
+    sendFeedback(analysisId, helpful).catch(() => {});
+  };
+
+  if (sent !== null) {
+    return (
+      <span className="text-xs font-medium text-slate-400">
+        {sent ? "의견 감사합니다" : "의견 감사합니다. 개선에 참고하겠습니다"}
+      </span>
+    );
+  }
+
+  return (
+    <div className="flex items-center gap-1.5">
+      <span className="text-xs font-medium text-slate-400">도움이 되었나요?</span>
+      {[
+        { helpful: true, icon: paths.thumbUp, label: "도움됨" },
+        { helpful: false, icon: paths.thumbDown, label: "부족함" },
+      ].map((b) => (
+        <button
+          key={b.label}
+          type="button"
+          onClick={() => submit(b.helpful)}
+          aria-label={b.label}
+          title={b.label}
+          className="rounded-full border border-slate-200 p-1.5 text-slate-400 transition hover:border-indigo-300 hover:text-indigo-600"
+        >
+          <Icon path={b.icon} className="h-3.5 w-3.5" />
+        </button>
+      ))}
+    </div>
+  );
+}
 
 /* ---------------------------------------------------------------- 컴포넌트 */
 
@@ -106,6 +152,7 @@ type AssistantState = {
   auditor: AuditorResult | null;
   result: ChatResult | null;
   error: string | null;
+  blocked: boolean; // 일일 한도 초과 (오류가 아닌 안내로 표시)
   route: string | null;
 };
 
@@ -120,6 +167,7 @@ const emptyAssistant = (): AssistantState => ({
   auditor: null,
   result: null,
   error: null,
+  blocked: false,
   route: null,
 });
 
@@ -142,9 +190,14 @@ function RiskBadge({ level }: { level: string | null }) {
   );
 }
 
+// 한글에는 이탤릭 자족이 없어 브라우저가 글자를 기계적으로 기울인다.
+// 획 균형이 무너져 다른 서체처럼 보이므로, 강조는 기울임 대신 옅은 색으로 준다.
+const MARKDOWN_STYLE =
+  "max-w-none text-[15px] leading-[1.7] text-slate-700 [&_h3]:mt-5 [&_h3]:mb-1.5 [&_h3]:text-[15px] [&_h3]:font-bold [&_h3]:text-slate-900 [&_p]:my-1.5 [&_ul]:my-1.5 [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:my-1.5 [&_ol]:list-decimal [&_ol]:pl-5 [&_blockquote]:border-l-2 [&_blockquote]:border-indigo-200 [&_blockquote]:pl-3 [&_blockquote]:text-slate-500 [&_strong]:font-bold [&_strong]:text-slate-900 [&_em]:not-italic [&_em]:text-slate-500";
+
 function Markdown({ text }: { text: string }) {
   return (
-    <div className="max-w-none text-[15px] leading-[1.7] text-slate-700 [&_h3]:mt-5 [&_h3]:mb-1.5 [&_h3]:text-[15px] [&_h3]:font-bold [&_h3]:text-slate-900 [&_p]:my-1.5 [&_ul]:my-1.5 [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:my-1.5 [&_ol]:list-decimal [&_ol]:pl-5 [&_blockquote]:border-l-2 [&_blockquote]:border-indigo-200 [&_blockquote]:pl-3 [&_blockquote]:text-slate-500 [&_strong]:font-bold [&_strong]:text-slate-900">
+    <div className={MARKDOWN_STYLE}>
       <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
     </div>
   );
@@ -229,7 +282,7 @@ function AssistantBubble({
   isLast: boolean;
   onFollowup: (q: string) => void;
 }) {
-  const { stage, tokens, result, error, route } = state;
+  const { stage, tokens, result, error, blocked, route } = state;
   const [copied, setCopied] = useState(false);
   const reviewer = result?.reviewer ?? state.reviewer;
   const auditor = result?.auditor ?? state.auditor;
@@ -261,7 +314,11 @@ function AssistantBubble({
         className={`min-w-0 flex-1 rounded-2xl border border-slate-200 bg-white p-5 ${CARD_SHADOW}`}
       >
         {error ? (
-          <p className="flex items-center gap-2 text-sm text-rose-600">
+          <p
+            className={`flex items-center gap-2 text-sm ${
+              blocked ? "font-medium text-amber-700" : "text-rose-600"
+            }`}
+          >
             <Icon path={paths.alert} className="h-4 w-4" />
             {error}
           </p>
@@ -358,7 +415,7 @@ function AssistantBubble({
             )}
 
             {result && (
-              <div className="mt-4 flex items-center justify-between border-t border-slate-100 pt-3">
+              <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-slate-100 pt-3">
                 <button
                   type="button"
                   onClick={copyAnswer}
@@ -370,9 +427,14 @@ function AssistantBubble({
                   />
                   {copied ? "복사됨" : "답변 복사"}
                 </button>
-                <span className="inline-flex items-center gap-1 text-xs font-medium text-slate-400">
+
+                {result.analysis_id && (
+                  <FeedbackButtons analysisId={result.analysis_id} />
+                )}
+
+                <span className="ml-auto inline-flex items-center gap-1 text-xs font-medium text-slate-400">
                   <Icon path={paths.clock} className="h-3.5 w-3.5" />
-                  {result.elapsed.toFixed(1)}초
+                  {result.cached ? "이전 답변" : `${result.elapsed.toFixed(1)}초`}
                 </span>
               </div>
             )}
@@ -399,9 +461,8 @@ export default function ChatPage() {
       .catch(() => {});
   }, []);
 
-  // 새로고침해도 대화가 유지되도록 localStorage에서 복원.
-  // localStorage는 서버에 없으므로 초기 state로 읽으면 하이드레이션 불일치가 난다.
-  // 마운트 후 복원이 유일한 안전한 방법이라 set-state-in-effect 규칙을 의도적으로 예외 처리한다.
+  // 새로고침해도 대화가 유지되도록 복원한다. localStorage는 서버에 없어
+  // 초기 state로 읽으면 하이드레이션이 어긋나므로 마운트 후에 읽는다.
   useEffect(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
@@ -510,7 +571,13 @@ export default function ChatPage() {
       }
     } catch (e) {
       updateAssistant(assistantId, {
-        error: e instanceof Error ? e.message : "알 수 없는 오류",
+        error:
+          e instanceof ChatBlockedError
+            ? e.message
+            : e instanceof Error
+              ? e.message
+              : "알 수 없는 오류",
+        blocked: e instanceof ChatBlockedError,
         stage: null,
       });
     } finally {
