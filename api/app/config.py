@@ -22,6 +22,9 @@ DATA_DIR = Path(os.getenv("DATA_DIR", Path(__file__).resolve().parent.parent / "
 UPLOAD_DIR = DATA_DIR / "uploads"
 CHROMA_DIR = DATA_DIR / "chroma"
 SQLITE_PATH = DATA_DIR / "app.sqlite3"
+# 스캔본 PDF의 OCR 결과 보관소. Gemini OCR은 같은 파일에도 매번 다른 텍스트를
+# 내놓아 재색인할 때마다 청크가 달라진다. 결과를 남겨 재현성을 확보한다.
+OCR_CACHE_DIR = DATA_DIR / "ocr_cache"
 
 # 일일 질의 상한 기본값 (0 = 무제한). 실제 값은 SQLite settings 테이블에 저장되며
 # 관리자 대시보드에서 조절한다. 아래는 최초 실행 시 적용되는 기본값이다.
@@ -49,5 +52,5 @@ CORS_ORIGINS: list[str] = [
     o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",") if o.strip()
 ]
 
-for _dir in (DATA_DIR, UPLOAD_DIR, CHROMA_DIR):
+for _dir in (DATA_DIR, UPLOAD_DIR, CHROMA_DIR, OCR_CACHE_DIR):
     _dir.mkdir(parents=True, exist_ok=True)

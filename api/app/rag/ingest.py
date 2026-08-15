@@ -7,15 +7,17 @@
 텍스트를 추출하는 폴백을 거친다.
 """
 
+import hashlib
 import io
 import re
 import unicodedata
 import uuid
+from pathlib import Path
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from pypdf import PdfReader
 
-from app.config import GEMINI_API_KEY, GEMINI_MODEL, MOCK_MODE
+from app.config import GEMINI_API_KEY, GEMINI_MODEL, MOCK_MODE, OCR_CACHE_DIR
 from app.rag import store
 
 # 스캔본 PDF 판별 기준
@@ -77,8 +79,25 @@ class IngestError(Exception):
     pass
 
 
+def _ocr_cache_path(file_bytes: bytes) -> Path:
+    return OCR_CACHE_DIR / f"{hashlib.sha256(file_bytes).hexdigest()[:32]}.txt"
+
+
 def _extract_with_gemini(file_bytes: bytes) -> str:
-    """스캔본 PDF 폴백: Gemini 멀티모달에 PDF를 직접 넣어 텍스트를 추출한다."""
+    """스캔본 PDF 폴백: Gemini 멀티모달에 PDF를 직접 넣어 텍스트를 추출한다.
+
+    OCR 결과는 파일 내용 해시로 캐싱한다. Gemini는 같은 PDF에도 매번 조금씩
+    다른 텍스트를 내놓아, 재색인할 때마다 청크 경계가 달라진다. 실제로 같은
+    문서가 로컬 19청크 / 배포본 20청크로 갈려 검색 회귀를 로컬에서 재현하지
+    못한 적이 있다. 캐시는 재현성과 함께 재색인 비용도 줄인다.
+    """
+    cached = _ocr_cache_path(file_bytes)
+    if cached.exists():
+        text = cached.read_text(encoding="utf-8")
+        if text.strip():
+            print(f"  OCR 캐시 사용 ({len(text)}자)")
+            return text
+
     from google import genai
     from google.genai import types
 
@@ -90,7 +109,10 @@ def _extract_with_gemini(file_bytes: bytes) -> str:
             _OCR_PROMPT,
         ],
     )
-    return response.text or ""
+    text = response.text or ""
+    if text.strip():
+        cached.write_text(text, encoding="utf-8")
+    return text
 
 
 def clean_text(text: str) -> str:
