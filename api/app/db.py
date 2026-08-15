@@ -71,6 +71,8 @@ def _connect() -> sqlite3.Connection:
         # visitor_id는 클라이언트가 보내는 값이라 저장소를 비우면 초기화된다.
         # 우회가 어려운 보조 기준으로 IP 해시를 함께 기록한다 (원문은 저장하지 않음).
         "ALTER TABLE metrics ADD COLUMN ip_hash TEXT",
+        # 운영자가 직접 돌리는 질의(회귀 테스트 등). 지표에는 남기되 한도 계산에서는 뺀다.
+        "ALTER TABLE metrics ADD COLUMN is_admin INTEGER DEFAULT 0",
     ):
         try:
             conn.execute(stmt)
@@ -129,14 +131,16 @@ def record_metric(
     analysis_id: int | None = None,
     visitor_id: str | None = None,
     ip_hash: str | None = None,
+    is_admin: bool = False,
 ) -> None:
     with _connect() as conn:
         conn.execute(
             "INSERT INTO metrics (ts, route, risk_level, status, elapsed, input_tokens, output_tokens, "
-            "query_preview, analysis_id, visitor_id, ip_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "query_preview, analysis_id, visitor_id, ip_hash, is_admin) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 _now(), route, risk_level, status, elapsed, input_tokens, output_tokens,
-                query_preview[:500], analysis_id, visitor_id, ip_hash,
+                query_preview[:500], analysis_id, visitor_id, ip_hash, int(is_admin),
             ),
         )
 
@@ -227,27 +231,34 @@ def add_feedback(analysis_id: int, helpful: bool, visitor_id: str | None) -> Non
         )
 
 
+# 한도 계산에서는 운영자 질의를 제외한다. 회귀 테스트를 돌리다 실사용자 몫을
+# 소진시키거나, 반대로 점검이 한도에 막히는 일을 둘 다 막는다.
+_NOT_ADMIN = "COALESCE(is_admin, 0) = 0"
+
+
 def count_today(visitor_id: str | None = None) -> int:
-    """오늘 처리한 질의 수. visitor_id를 주면 해당 사용자 기준으로 센다."""
+    """오늘 처리한 질의 수 (운영자 질의 제외). visitor_id를 주면 해당 사용자 기준."""
     with _connect() as conn:
         if visitor_id:
             row = conn.execute(
-                "SELECT COUNT(*) AS n FROM metrics "
-                "WHERE date(ts) = date('now') AND visitor_id = ?",
+                f"SELECT COUNT(*) AS n FROM metrics "
+                f"WHERE date(ts) = date('now') AND {_NOT_ADMIN} AND visitor_id = ?",
                 (visitor_id,),
             ).fetchone()
         else:
             row = conn.execute(
-                "SELECT COUNT(*) AS n FROM metrics WHERE date(ts) = date('now')"
+                f"SELECT COUNT(*) AS n FROM metrics "
+                f"WHERE date(ts) = date('now') AND {_NOT_ADMIN}"
             ).fetchone()
     return row["n"]
 
 
 def count_today_by_ip(ip_hash: str) -> int:
-    """오늘 같은 IP에서 처리한 질의 수."""
+    """오늘 같은 IP에서 처리한 질의 수 (운영자 질의 제외)."""
     with _connect() as conn:
         row = conn.execute(
-            "SELECT COUNT(*) AS n FROM metrics WHERE date(ts) = date('now') AND ip_hash = ?",
+            f"SELECT COUNT(*) AS n FROM metrics "
+            f"WHERE date(ts) = date('now') AND {_NOT_ADMIN} AND ip_hash = ?",
             (ip_hash,),
         ).fetchone()
     return row["n"]

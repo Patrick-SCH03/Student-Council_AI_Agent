@@ -79,6 +79,17 @@ def require_admin(authorization: str | None = Header(default=None)) -> None:
 admin_only = Depends(require_admin)
 
 
+def is_admin_request(authorization: str | None) -> bool:
+    """관리자 토큰이 실린 요청인지 판별한다 (차단하지 않고 참/거짓만 돌려준다).
+
+    회귀 테스트처럼 운영자가 직접 돌리는 질의까지 일일 한도에 걸리면
+    정작 점검이 막힌다. 한도 계산에서만 빼고 지표에는 그대로 기록한다.
+    """
+    if not ADMIN_TOKEN or not authorization:
+        return False
+    return secrets.compare_digest(authorization, f"Bearer {ADMIN_TOKEN}")
+
+
 @app.get("/api/health")
 def health():
     return {
@@ -162,12 +173,18 @@ def _enforce_daily_limit(visitor_id: str | None, ip_hash: str | None = None) -> 
 
 
 @app.post("/api/chat")
-async def chat(request: ChatRequest, http_request: Request):
+async def chat(
+    request: ChatRequest,
+    http_request: Request,
+    authorization: str | None = Header(default=None),
+):
     query = request.query.strip()
     history = [h.model_dump() for h in request.history[-3:]]
     visitor_id = request.visitor_id
     ip_hash = _client_ip_hash(http_request)
-    _enforce_daily_limit(visitor_id, ip_hash)
+    is_admin = is_admin_request(authorization)
+    if not is_admin:
+        _enforce_daily_limit(visitor_id, ip_hash)
 
     # 후속 질문이 아닌 단독 질문만 캐시 대상 (맥락에 따라 답이 달라지므로)
     cache_key = db.normalize_query(query) if not history else None
@@ -189,6 +206,7 @@ async def chat(request: ChatRequest, http_request: Request):
                     analysis_id=cached.get("analysis_id"),
                     visitor_id=visitor_id,
                     ip_hash=ip_hash,
+                    is_admin=is_admin,
                 )
                 yield _sse({"type": "result", **cached, "cached": True})
 
@@ -292,6 +310,7 @@ async def chat(request: ChatRequest, http_request: Request):
                 analysis_id=analysis_id,
                 visitor_id=visitor_id,
                 ip_hash=ip_hash,
+                is_admin=is_admin,
             )
             if cache_key:
                 db.save_cached_answer(cache_key, analysis_id, result)
@@ -310,6 +329,7 @@ async def chat(request: ChatRequest, http_request: Request):
                 query_preview=query,
                 visitor_id=visitor_id,
                 ip_hash=ip_hash,
+                is_admin=is_admin,
             )
             yield _sse({"type": "error", "message": f"분석 중 오류가 발생했습니다: {e}"})
 

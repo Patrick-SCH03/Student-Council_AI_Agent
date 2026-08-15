@@ -64,10 +64,13 @@ def _check(case: dict, result: dict) -> list[str]:
 
 def _run_remote(url: str, query: str) -> dict:
     body = json.dumps({"query": query}, ensure_ascii=False).encode("utf-8")
-    req = urllib.request.Request(
-        f"{url.rstrip('/')}/api/chat", data=body,
-        headers={"Content-Type": "application/json"},
-    )
+    headers = {"Content-Type": "application/json"}
+    # 관리자 토큰을 실으면 일일 한도에서 제외된다 (평가 자체가 한도에 막히지 않도록)
+    from app.config import ADMIN_TOKEN
+
+    if ADMIN_TOKEN:
+        headers["Authorization"] = f"Bearer {ADMIN_TOKEN}"
+    req = urllib.request.Request(f"{url.rstrip('/')}/api/chat", data=body, headers=headers)
     with urllib.request.urlopen(req, timeout=180) as res:
         for raw in res.read().decode("utf-8").splitlines():
             raw = raw.strip()
