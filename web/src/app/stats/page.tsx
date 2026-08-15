@@ -219,6 +219,7 @@ function LimitSettings({
 }) {
   const [total, setTotal] = useState(String(limits.daily_limit_total));
   const [perUser, setPerUser] = useState(String(limits.daily_limit_per_user));
+  const [perIp, setPerIp] = useState(String(limits.daily_limit_per_ip));
   const [ttl, setTtl] = useState(String(limits.cache_ttl_hours));
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -226,6 +227,7 @@ function LimitSettings({
   const dirty =
     total !== String(limits.daily_limit_total) ||
     perUser !== String(limits.daily_limit_per_user) ||
+    perIp !== String(limits.daily_limit_per_ip) ||
     ttl !== String(limits.cache_ttl_hours);
 
   const save = async () => {
@@ -235,6 +237,7 @@ function LimitSettings({
       await updateLimits({
         daily_limit_total: Number(total) || 0,
         daily_limit_per_user: Number(perUser) || 0,
+        daily_limit_per_ip: Number(perIp) || 0,
         cache_ttl_hours: Number(ttl) || 0,
       });
       setMessage("저장되었습니다.");
@@ -310,6 +313,7 @@ function LimitSettings({
       <div className="mt-5 flex flex-wrap items-center gap-x-6 gap-y-3">
         {field("전체", total, setTotal)}
         {field("사용자당", perUser, setPerUser)}
+        {field("IP당", perIp, setPerIp)}
         {field("답변 재사용", ttl, setTtl, "시간")}
 
         <span className="text-xs font-medium text-slate-400">0 = 사용 안 함</span>

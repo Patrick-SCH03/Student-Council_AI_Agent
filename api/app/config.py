@@ -31,6 +31,9 @@ OCR_CACHE_DIR = DATA_DIR / "ocr_cache"
 DEFAULT_LIMITS: dict[str, int] = {
     "daily_limit_total": int(os.getenv("DAILY_LIMIT_TOTAL", "300")),
     "daily_limit_per_user": int(os.getenv("DAILY_LIMIT_PER_USER", "20")),
+    # visitor_id는 클라이언트가 보내므로 저장소를 비우면 초기화된다. IP 기준 상한을
+    # 함께 두어 우회를 막는다. 공용 네트워크(학내 Wi-Fi)를 고려해 여유 있게 잡는다.
+    "daily_limit_per_ip": int(os.getenv("DAILY_LIMIT_PER_IP", "60")),
     # 동일 질문 재사용 시간(시간). 0이면 캐시 사용 안 함.
     # 규정은 자주 바뀌지 않지만 문서를 새로 색인하면 캐시를 비워야 하므로
     # 너무 길게 두지 않는다.
@@ -40,6 +43,10 @@ DEFAULT_LIMITS: dict[str, int] = {
 # 관리자 API(문서 관리·운영 지표) 보호용 토큰.
 # 미설정 시 해당 엔드포인트는 503으로 차단된다 (공개 배포 시 사고 방지).
 ADMIN_TOKEN: str | None = os.getenv("ADMIN_TOKEN") or None
+
+# IP 해시 솔트. IP 원문은 저장하지 않고 이 값을 섞은 해시만 남긴다.
+# 별도로 지정하지 않으면 ADMIN_TOKEN을 재사용한다 (배포마다 다른 값이 된다).
+IP_HASH_SALT: str = os.getenv("IP_HASH_SALT") or ADMIN_TOKEN or "inha-sc-local"
 
 # API 비용 추정용 단가 (USD / 1M 토큰). env로 조정 가능.
 # gemini-3.7-flash 도입 할인가 (~2026-12-31). 2027-01-01부터 1.50 / 7.50으로 환원되므로

@@ -69,6 +69,9 @@ def _connect() -> sqlite3.Connection:
     for stmt in (
         "ALTER TABLE metrics ADD COLUMN analysis_id INTEGER",
         "ALTER TABLE metrics ADD COLUMN visitor_id TEXT",
+        # visitor_id는 클라이언트가 보내는 값이라 저장소를 비우면 초기화된다.
+        # 우회가 어려운 보조 기준으로 IP 해시를 함께 기록한다 (원문은 저장하지 않음).
+        "ALTER TABLE metrics ADD COLUMN ip_hash TEXT",
     ):
         try:
             conn.execute(stmt)
@@ -126,14 +129,15 @@ def record_metric(
     query_preview: str,
     analysis_id: int | None = None,
     visitor_id: str | None = None,
+    ip_hash: str | None = None,
 ) -> None:
     with _connect() as conn:
         conn.execute(
             "INSERT INTO metrics (ts, route, risk_level, status, elapsed, input_tokens, output_tokens, "
-            "query_preview, analysis_id, visitor_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "query_preview, analysis_id, visitor_id, ip_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 _now(), route, risk_level, status, elapsed, input_tokens, output_tokens,
-                query_preview[:500], analysis_id, visitor_id,
+                query_preview[:500], analysis_id, visitor_id, ip_hash,
             ),
         )
 
@@ -237,6 +241,16 @@ def count_today(visitor_id: str | None = None) -> int:
             row = conn.execute(
                 "SELECT COUNT(*) AS n FROM metrics WHERE date(ts) = date('now')"
             ).fetchone()
+    return row["n"]
+
+
+def count_today_by_ip(ip_hash: str) -> int:
+    """오늘 같은 IP에서 처리한 질의 수."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS n FROM metrics WHERE date(ts) = date('now') AND ip_hash = ?",
+            (ip_hash,),
+        ).fetchone()
     return row["n"]
 
 

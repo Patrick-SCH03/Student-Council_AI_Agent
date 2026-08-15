@@ -181,6 +181,7 @@ export async function* streamChat(
 export type Limits = {
   daily_limit_total: number;
   daily_limit_per_user: number;
+  daily_limit_per_ip: number;
   cache_ttl_hours: number;
   used_today: number;
 };
@@ -198,7 +199,10 @@ export async function clearAnswerCache(): Promise<{ cleared: number }> {
 export async function updateLimits(
   values: Pick<
     Limits,
-    "daily_limit_total" | "daily_limit_per_user" | "cache_ttl_hours"
+    | "daily_limit_total"
+    | "daily_limit_per_user"
+    | "daily_limit_per_ip"
+    | "cache_ttl_hours"
   >,
 ): Promise<Limits> {
   const token = getAdminToken();

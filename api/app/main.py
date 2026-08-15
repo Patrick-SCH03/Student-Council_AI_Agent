@@ -1,11 +1,12 @@
 """FastAPI 서버: SSE 스트리밍 채팅 + 문서 관리 API."""
 
+import hashlib
 import json
 import re
 import secrets
 import time
 
-from fastapi import Depends, FastAPI, Header, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse, StreamingResponse
 from langchain_core.callbacks import UsageMetadataCallbackHandler
@@ -19,6 +20,7 @@ from app.config import (
     CORS_ORIGINS,
     DEFAULT_LIMITS,
     GEMINI_MODEL,
+    IP_HASH_SALT,
     MOCK_MODE,
     PRICE_INPUT_PER_1M,
     PRICE_OUTPUT_PER_1M,
@@ -113,7 +115,21 @@ _STAGE_LABELS = {
 }
 
 
-def _enforce_daily_limit(visitor_id: str | None) -> None:
+def _client_ip_hash(http_request: Request) -> str | None:
+    """클라이언트 IP의 솔트 해시. 원문 IP는 저장하지 않는다.
+
+    Railway 같은 프록시 뒤에서는 X-Forwarded-For의 첫 항목이 실제 클라이언트다.
+    """
+    forwarded = http_request.headers.get("x-forwarded-for", "")
+    ip = forwarded.split(",")[0].strip()
+    if not ip and http_request.client:
+        ip = http_request.client.host
+    if not ip:
+        return None
+    return hashlib.sha256(f"{IP_HASH_SALT}:{ip}".encode()).hexdigest()[:32]
+
+
+def _enforce_daily_limit(visitor_id: str | None, ip_hash: str | None = None) -> None:
     """일일 질의 상한 확인. 초과 시 429로 차단한다 (0 = 무제한)."""
     limits = db.get_settings(DEFAULT_LIMITS)
 
@@ -122,6 +138,14 @@ def _enforce_daily_limit(visitor_id: str | None) -> None:
         raise HTTPException(
             status_code=429,
             detail=f"오늘 사용 가능한 질문 횟수({per_user}회)를 모두 사용했습니다. 내일 다시 이용해주세요.",
+        )
+
+    # visitor_id는 브라우저 저장소를 비우면 초기화되므로 IP 기준으로 한 번 더 막는다
+    per_ip = limits["daily_limit_per_ip"]
+    if per_ip > 0 and ip_hash and db.count_today_by_ip(ip_hash) >= per_ip:
+        raise HTTPException(
+            status_code=429,
+            detail="같은 네트워크에서 오늘 이용 가능한 횟수를 모두 사용했습니다. 내일 다시 이용해주세요.",
         )
 
     total = limits["daily_limit_total"]
@@ -133,11 +157,12 @@ def _enforce_daily_limit(visitor_id: str | None) -> None:
 
 
 @app.post("/api/chat")
-async def chat(request: ChatRequest):
+async def chat(request: ChatRequest, http_request: Request):
     query = request.query.strip()
     history = [h.model_dump() for h in request.history[-3:]]
     visitor_id = request.visitor_id
-    _enforce_daily_limit(visitor_id)
+    ip_hash = _client_ip_hash(http_request)
+    _enforce_daily_limit(visitor_id, ip_hash)
 
     # 후속 질문이 아닌 단독 질문만 캐시 대상 (맥락에 따라 답이 달라지므로)
     cache_key = db.normalize_query(query) if not history else None
@@ -158,6 +183,7 @@ async def chat(request: ChatRequest):
                     query_preview=query,
                     analysis_id=cached.get("analysis_id"),
                     visitor_id=visitor_id,
+                    ip_hash=ip_hash,
                 )
                 yield _sse({"type": "result", **cached, "cached": True})
 
@@ -260,6 +286,7 @@ async def chat(request: ChatRequest):
                 query_preview=query,
                 analysis_id=analysis_id,
                 visitor_id=visitor_id,
+                ip_hash=ip_hash,
             )
             if cache_key:
                 db.save_cached_answer(cache_key, analysis_id, result)
@@ -277,6 +304,7 @@ async def chat(request: ChatRequest):
                 output_tokens=out_tok,
                 query_preview=query,
                 visitor_id=visitor_id,
+                ip_hash=ip_hash,
             )
             yield _sse({"type": "error", "message": f"분석 중 오류가 발생했습니다: {e}"})
 
@@ -384,6 +412,7 @@ def _cost_usd(input_tokens: int, output_tokens: int) -> float:
 class SettingsRequest(BaseModel):
     daily_limit_total: int = Field(ge=0, le=100_000)
     daily_limit_per_user: int = Field(ge=0, le=10_000)
+    daily_limit_per_ip: int = Field(default=60, ge=0, le=10_000)
     cache_ttl_hours: int = Field(default=24, ge=0, le=720)
 
 
