@@ -118,10 +118,15 @@ _STAGE_LABELS = {
 def _client_ip_hash(http_request: Request) -> str | None:
     """클라이언트 IP의 솔트 해시. 원문 IP는 저장하지 않는다.
 
-    Railway 같은 프록시 뒤에서는 X-Forwarded-For의 첫 항목이 실제 클라이언트다.
+    X-Forwarded-For는 "클라이언트, 프록시1, 프록시2" 순으로 쌓이고 각 프록시가
+    뒤에 덧붙인다. 따라서 왼쪽 항목은 클라이언트가 위조해 보낼 수 있다.
+    (X-Forwarded-For: 1.2.3.4 를 보내면 프록시가 뒤에 실제 IP를 붙여
+    "1.2.3.4, 실제IP"가 되므로, 첫 항목을 믿으면 상한을 그냥 빠져나간다.)
+
+    신뢰할 수 있는 값은 우리 앞단 프록시가 마지막에 붙인 오른쪽 끝 항목이다.
     """
-    forwarded = http_request.headers.get("x-forwarded-for", "")
-    ip = forwarded.split(",")[0].strip()
+    parts = [p.strip() for p in http_request.headers.get("x-forwarded-for", "").split(",")]
+    ip = next((p for p in reversed(parts) if p), "")
     if not ip and http_request.client:
         ip = http_request.client.host
     if not ip:

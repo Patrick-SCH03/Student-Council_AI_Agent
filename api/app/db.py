@@ -297,7 +297,10 @@ def get_stats(days: int = 14) -> dict:
             "SELECT COUNT(*) AS count, "
             "COALESCE(AVG(CASE WHEN status != 'cached' THEN elapsed END), 0) AS avg_elapsed, "
             "COALESCE(SUM(input_tokens), 0) AS input_tokens, "
-            "COALESCE(SUM(output_tokens), 0) AS output_tokens "
+            "COALESCE(SUM(output_tokens), 0) AS output_tokens, "
+            # IP 상한이 실제로 클라이언트를 구분하는지 확인하는 용도.
+            # 프록시가 실제 IP를 넘겨주지 않으면 트래픽이 늘어도 1에서 멈춘다.
+            "COUNT(DISTINCT ip_hash) AS unique_ips "
             "FROM metrics WHERE date(ts) = date('now')"
         ).fetchone())
 
