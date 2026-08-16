@@ -73,6 +73,8 @@ def _connect() -> sqlite3.Connection:
         "ALTER TABLE metrics ADD COLUMN ip_hash TEXT",
         # 운영자가 직접 돌리는 질의(회귀 테스트 등). 지표에는 남기되 한도 계산에서는 뺀다.
         "ALTER TABLE metrics ADD COLUMN is_admin INTEGER DEFAULT 0",
+        # 실패 사유. status만 남기면 대시보드를 봐도 무엇이 문제인지 알 수 없다.
+        "ALTER TABLE metrics ADD COLUMN error TEXT",
     ):
         try:
             conn.execute(stmt)
@@ -132,15 +134,17 @@ def record_metric(
     visitor_id: str | None = None,
     ip_hash: str | None = None,
     is_admin: bool = False,
+    error: str | None = None,
 ) -> None:
     with _connect() as conn:
         conn.execute(
             "INSERT INTO metrics (ts, route, risk_level, status, elapsed, input_tokens, output_tokens, "
-            "query_preview, analysis_id, visitor_id, ip_hash, is_admin) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "query_preview, analysis_id, visitor_id, ip_hash, is_admin, error) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 _now(), route, risk_level, status, elapsed, input_tokens, output_tokens,
                 query_preview[:500], analysis_id, visitor_id, ip_hash, int(is_admin),
+                (error or None) and error[:300],
             ),
         )
 
@@ -334,7 +338,7 @@ def get_stats(days: int = 14) -> dict:
 
         recent = [dict(r) for r in conn.execute(
             "SELECT m.id, m.analysis_id, m.ts, m.route, m.risk_level, m.status, m.elapsed, "
-            "m.input_tokens + m.output_tokens AS tokens, m.query_preview, f.helpful "
+            "m.input_tokens + m.output_tokens AS tokens, m.query_preview, m.error, f.helpful "
             "FROM metrics m LEFT JOIN feedback f ON f.analysis_id = m.analysis_id "
             "ORDER BY m.id DESC LIMIT 20"
         ).fetchall()]

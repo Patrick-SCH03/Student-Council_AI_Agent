@@ -30,6 +30,7 @@ type RecentRow = {
   elapsed: number | null;
   tokens: number;
   query_preview: string;
+  error: string | null;
   helpful: number | null;
 };
 
@@ -681,8 +682,16 @@ export default function StatsPage() {
                     {r.query_preview}
                   </td>
                   <td className="whitespace-nowrap px-2 py-2.5">
-                    {r.status !== "ok" ? (
-                      <span className="text-xs font-bold text-rose-600">오류</span>
+                    {/* 'cached'는 정상 응답이므로 오류로 표시하지 않는다 */}
+                    {r.status === "error" ? (
+                      <span
+                        className="cursor-help text-xs font-bold text-rose-600"
+                        title={r.error ?? "사유 미기록"}
+                      >
+                        오류
+                      </span>
+                    ) : r.status === "cached" ? (
+                      <span className="text-xs font-medium text-slate-400">캐시</span>
                     ) : r.risk_level ? (
                       <span
                         className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-bold ring-1 ${
