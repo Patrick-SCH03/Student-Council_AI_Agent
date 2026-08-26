@@ -217,10 +217,17 @@ def _keyword_search(query: str, k: int, doc_type: str | None) -> list[int]:
     return sorted(scores, key=scores.get, reverse=True)[:k]
 
 
-def _vector_search(query: str, k: int, doc_type: str | None) -> list[dict]:
+def embed_query(text: str) -> list[float]:
+    """질의 임베딩 1건. 같은 질의로 여러 검색을 돌릴 때 호출 측에서 재사용한다."""
+    return _embed([text])[0]
+
+
+def _vector_search(
+    query: str, k: int, doc_type: str | None, embedding: list[float] | None = None
+) -> list[dict]:
     collection = _get_collection()
     result = collection.query(
-        query_embeddings=_embed([query]),
+        query_embeddings=[embedding] if embedding is not None else _embed([query]),
         n_results=min(k, collection.count()),
         where={"doc_type": doc_type} if doc_type else None,
         include=["documents", "metadatas"],
@@ -260,6 +267,7 @@ def search(
     k: int = 5,
     doc_type: str | None = None,
     max_per_source: int = 3,
+    query_embedding: list[float] | None = None,
 ) -> list[dict]:
     """하이브리드 검색: 벡터 + 키워드 결과를 RRF로 융합하고 문서 편중을 완화한다.
 
@@ -271,7 +279,7 @@ def search(
         return []
 
     pool = max(k * 3, 15)  # 융합 전 후보를 넉넉히 확보
-    vector_hits = _vector_search(query, pool, doc_type)
+    vector_hits = _vector_search(query, pool, doc_type, query_embedding)
     keyword_idx = _keyword_search(query, pool, doc_type)
     index = _get_bm25()
 

@@ -11,6 +11,10 @@ GEMINI_API_KEY: str | None = (
     os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or None
 )
 GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-3.7-flash")
+# 라우터는 분류 + 한 문장 재작성만 하므로 경량 모델을 쓴다.
+# flash-lite는 공식 문서가 classification·routing 용례로 명시하는 티어로,
+# 단가가 본 모델의 1/3 수준이고 첫 토큰 지연도 가장 짧다.
+GEMINI_ROUTER_MODEL: str = os.getenv("GEMINI_ROUTER_MODEL", "gemini-3.5-flash-lite")
 GEMINI_EMBEDDING_MODEL: str = os.getenv(
     "GEMINI_EMBEDDING_MODEL", "models/gemini-embedding-2"
 )
