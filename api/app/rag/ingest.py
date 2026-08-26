@@ -7,6 +7,7 @@
 import hashlib
 import io
 import re
+import time
 import unicodedata
 import uuid
 from pathlib import Path
@@ -24,10 +25,16 @@ MIN_TEXT_LENGTH = 50
 MIN_CHARS_PER_PAGE = 200
 WARN_CHARS_PER_PAGE = 350  # 폴백 임계값은 넘겼지만 확인이 필요한 수준
 
+_OCR_MAX_RETRIES = 3
+_OCR_RETRY_WAIT = 5  # 초 (시도마다 배수로 늘린다)
+
 _OCR_PROMPT = """\
 이 PDF 문서에 있는 모든 텍스트를 원문 그대로 순서대로 추출하라.
 - 요약하거나 생략하지 마라. 조항 번호, 항, 호를 정확히 보존하라.
-- 표는 행 단위 텍스트로 풀어서 표현하라.
+- 표는 행 단위로 풀어 쓰되, 각 칸 앞에 그 칸이 속한 열 제목을 붙여라.
+  한 행이 끝나면 빈 줄로 구분하라. 예:
+    [피감사기구] 교육학과 학생회
+    [감사 처분 내용] 시정조치 요구안 송부
 - 추출한 텍스트 외에 다른 설명이나 머리말을 출력하지 마라."""
 
 _splitter = RecursiveCharacterTextSplitter(
@@ -77,7 +84,9 @@ class IngestError(Exception):
 
 
 def _ocr_cache_path(file_bytes: bytes) -> Path:
-    return OCR_CACHE_DIR / f"{hashlib.sha256(file_bytes).hexdigest()[:32]}.txt"
+    # 프롬프트도 키에 넣는다. 파일 해시만 쓰면 추출 지시를 바꿔도 옛 결과가 그대로 나온다.
+    key = hashlib.sha256(file_bytes + _OCR_PROMPT.encode()).hexdigest()[:32]
+    return OCR_CACHE_DIR / f"{key}.txt"
 
 
 def _extract_with_gemini(file_bytes: bytes) -> str:
@@ -97,14 +106,27 @@ def _extract_with_gemini(file_bytes: bytes) -> str:
     from google.genai import types
 
     client = genai.Client(api_key=GEMINI_API_KEY)
-    response = client.models.generate_content(
-        model=GEMINI_MODEL,
-        contents=[
-            types.Part.from_bytes(data=file_bytes, mime_type="application/pdf"),
-            _OCR_PROMPT,
-        ],
-    )
-    text = response.text or ""
+    part = types.Part.from_bytes(data=file_bytes, mime_type="application/pdf")
+
+    # 빈 응답이 한 번 오면 문서가 통째로 색인에서 빠진다. 실제로 겪어서 재시도를 둔다.
+    text = ""
+    for attempt in range(1, _OCR_MAX_RETRIES + 1):
+        try:
+            text = client.models.generate_content(
+                model=GEMINI_MODEL, contents=[part, _OCR_PROMPT]
+            ).text or ""
+        except Exception as e:  # noqa: BLE001 - 마지막 시도까지 실패하면 그대로 올린다
+            if attempt == _OCR_MAX_RETRIES:
+                raise
+            print(f"  추출 오류({type(e).__name__}), 재시도 {attempt}/{_OCR_MAX_RETRIES - 1}...")
+            time.sleep(_OCR_RETRY_WAIT * attempt)
+            continue
+        if len(text.strip()) >= MIN_TEXT_LENGTH:
+            break
+        if attempt < _OCR_MAX_RETRIES:
+            print(f"  추출 결과가 비어 재시도 {attempt}/{_OCR_MAX_RETRIES - 1}...")
+            time.sleep(_OCR_RETRY_WAIT * attempt)
+
     if text.strip():
         cached.write_text(text, encoding="utf-8")
     return text
@@ -157,7 +179,18 @@ def clean_text(text: str) -> str:
     return text.strip()
 
 
-def extract_text_from_pdf(file_bytes: bytes) -> str:
+# 표 구조 추출본을 채택하는 최소 분량 (pypdf 대비).
+# LLM 추출은 중간에 끊기거나 요약해버릴 수 있어, 원문보다 크게 짧으면 신뢰하지 않는다.
+MULTIMODAL_MIN_RATIO = 0.8
+
+
+def extract_text_from_pdf(file_bytes: bytes, *, prefer_multimodal: bool = False) -> str:
+    """PDF에서 텍스트를 추출한다.
+
+    prefer_multimodal이면 텍스트 레이어가 있어도 Gemini 멀티모달을 먼저 시도한다.
+    감사보고서는 표가 핵심인데 pypdf는 셀 경계를 잃어 "교육학과 학생회시정조치
+    요구안 송부감사 처분 없음"처럼 붙어 나온다. 기구와 처분의 연결이 모호해진다.
+    """
     try:
         reader = PdfReader(io.BytesIO(file_bytes))
     except Exception as e:
@@ -189,22 +222,43 @@ def extract_text_from_pdf(file_bytes: bytes) -> str:
                 "스캔본에서 유의미한 텍스트를 추출하지 못했습니다. "
                 "원본 문서에서 텍스트 PDF로 재출력을 권장합니다."
             )
-    elif chars_per_page < WARN_CHARS_PER_PAGE:
-        # 임계값은 넘겼지만 본문 일부가 이미지일 수 있어 눈에 띄게 알린다.
-        print(
-            f"  ⚠ 추출량이 적습니다 ({page_count}페이지, 페이지당 {chars_per_page:.0f}자) "
-            "— 본문 일부가 이미지일 수 있으니 답변 품질을 확인하세요."
-        )
+    else:
+        if prefer_multimodal and not MOCK_MODE:
+            text = _with_table_structure(file_bytes, text)
+        if chars_per_page < WARN_CHARS_PER_PAGE:
+            # 임계값은 넘겼지만 본문 일부가 이미지일 수 있어 눈에 띄게 알린다.
+            print(
+                f"  ⚠ 추출량이 적습니다 ({page_count}페이지, 페이지당 {chars_per_page:.0f}자) "
+                "— 본문 일부가 이미지일 수 있으니 답변 품질을 확인하세요."
+            )
+    return text
+
+
+def _with_table_structure(file_bytes: bytes, fallback: str) -> str:
+    """Gemini로 표 구조를 살려 재추출한다. 결과가 미덥지 않으면 fallback을 쓴다."""
+    try:
+        text = clean_text(_extract_with_gemini(file_bytes))
+    except Exception as e:  # noqa: BLE001 - 추출 실패가 색인 전체를 막지 않도록
+        print(f"  표 구조 추출 실패, pypdf 결과 사용: {type(e).__name__}: {e}")
+        return fallback
+
+    if len(text) < len(fallback) * MULTIMODAL_MIN_RATIO:
+        print(f"  표 구조 추출이 짧아 pypdf 결과 사용 ({len(text):,} < {len(fallback):,}자)")
+        return fallback
+    print(f"  표 구조 추출 적용 ({len(fallback):,} -> {len(text):,}자)")
     return text
 
 
 def ingest_pdf(file_bytes: bytes, filename: str) -> tuple[str, int]:
     """PDF를 색인하고 (doc_id, 청크 수)를 반환한다."""
-    text = extract_text_from_pdf(file_bytes)
+    doc_type = store.classify_doc(filename)
+    # 감사보고서만 표 구조 추출을 거친다. 회칙·세칙은 조문이 그대로 보존돼야 하고
+    # 표도 거의 없어, 원문을 그대로 읽는 pypdf가 더 안전하다.
+    text = extract_text_from_pdf(file_bytes, prefer_multimodal=doc_type == "audit")
 
     # 회칙·세칙은 조항 단위로, 감사보고서는 길이 기준으로 나눈다
     chunks = None
-    if store.classify_doc(filename) == "regulation":
+    if doc_type == "regulation":
         chunks = split_by_article(text)
         if chunks:
             print(f"  조항 단위 분할: {len(chunks)}개 청크")

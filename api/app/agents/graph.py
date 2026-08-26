@@ -24,7 +24,7 @@ from app.agents.schemas import (
     RiskLevel,
     RouteDecision,
 )
-from app.config import GEMINI_API_KEY, GEMINI_MODEL, MOCK_MODE
+from app.config import GEMINI_API_KEY, GEMINI_MODEL, GEMINI_ROUTER_MODEL, MOCK_MODE
 from app.rag import store
 
 # 코퍼스가 커지면서 상위 5개로는 규정 조항이 감사보고서에 밀려나므로,
@@ -56,18 +56,28 @@ class AgentState(TypedDict, total=False):
     final_markdown: str
 
 
-_llm = None
+_llm_cache: dict = {}
 
 
-def _get_llm():
-    global _llm
-    if _llm is None:
+def _get_llm(model: str | None = None, thinking: str | None = None):
+    """역할별 LLM 인스턴스 (같은 설정은 재사용).
+
+    temperature는 지정하지 않는다. Gemini 3 공식 가이드가 기본값 1.0 유지를
+    강력 권장하며(낮추면 루핑·품질 저하 위험), 사실성 제어는 temperature가
+    아니라 thinking_level과 프롬프트의 근거 강제로 한다.
+
+    thinking_level: 사고 토큰은 첫 응답 토큰 전에 생성되고 출력 단가로 과금된다.
+    분류·요약 병합처럼 사실 처리에 가까운 역할은 'low'로 제한해 지연·비용을 줄인다.
+    """
+    key = (model or GEMINI_MODEL, thinking)
+    if key not in _llm_cache:
         from langchain_google_genai import ChatGoogleGenerativeAI
 
-        _llm = ChatGoogleGenerativeAI(
-            model=GEMINI_MODEL, google_api_key=GEMINI_API_KEY, temperature=0.1
+        kwargs: dict = {"thinking_level": thinking} if thinking else {}
+        _llm_cache[key] = ChatGoogleGenerativeAI(
+            model=key[0], google_api_key=GEMINI_API_KEY, **kwargs
         )
-    return _llm
+    return _llm_cache[key]
 
 
 def content_to_text(content) -> str:
@@ -85,6 +95,10 @@ def content_to_text(content) -> str:
     return str(content)
 
 
+# 인용문(snippet)은 원문 복사가 아니라 에이전트가 실명 금지 규칙 아래에서 쓴다.
+# 번호 인용으로 출력 토큰을 아끼는 방안을 시도했으나, 코드가 원문을 그대로 옮기면
+# 감사보고서 곳곳(명단·의결 의견·서명)의 실명이 근거 패널에 노출된다 — 평가셋
+# forbid_names 검사에 걸려 되돌렸다. 질의당 1~3원 절감과 바꿀 수 있는 위험이 아니다.
 def _format_hits(hits: list[dict]) -> str:
     if not hits:
         return "(검색된 규정이 없습니다. 문서가 색인되어 있는지 확인이 필요합니다.)"
@@ -117,15 +131,22 @@ async def route_node(state: AgentState) -> AgentState:
         route = "regulation" if any(k in text for k in keywords) else "general"
         return {"route": route, "standalone_query": query}
 
-    llm = _get_llm().with_structured_output(RouteDecision)
-    decision: RouteDecision = await llm.ainvoke(
-        [
-            ("system", prompts.ROUTER_SYSTEM),
-            ("user", prompts.ROUTER_USER.format(
-                history=_format_history(history), query=query
-            )),
-        ]
-    )
+    # 분류 + 한 문장 재작성뿐이라 경량 모델로 충분하다 (단가 1/3, 첫 토큰 지연 최단)
+    llm = _get_llm(GEMINI_ROUTER_MODEL).with_structured_output(RouteDecision)
+    try:
+        decision: RouteDecision = await llm.ainvoke(
+            [
+                ("system", prompts.ROUTER_SYSTEM),
+                ("user", prompts.ROUTER_USER.format(
+                    history=_format_history(history), query=query
+                )),
+            ]
+        )
+    except Exception as e:  # noqa: BLE001 - 라우터 실패가 전체 응답을 막지 않도록
+        # 분류가 안 되면 규정 경로로 보낸다. 규정 질문을 잘라내는 것보다
+        # 범위 밖 질문에 한 번 성실히 답하는 쪽이 덜 해롭다.
+        print(f"라우터 호출 실패, regulation 경로로 폴백: {type(e).__name__}: {e}")
+        return {"route": "regulation", "standalone_query": query}
     route = decision.route if decision.route in ("regulation", "general") else "regulation"
     standalone = (decision.standalone_query or "").strip() or query
     return {"route": route, "standalone_query": standalone}
@@ -138,10 +159,16 @@ async def retrieve_node(state: AgentState) -> AgentState:
     임베딩 호출과 BM25 순회가 그대로 중복된다.
     """
     query = state.get("standalone_query") or state["query"]
+    # 같은 질의를 쓰는 두 검색이 각각 임베딩 API를 부르지 않도록 한 번만 임베딩한다.
+    # (임베딩 호출 감소는 무료 티어 분당 쿼터 초과 확률도 함께 낮춘다)
+    query_vec = await asyncio.to_thread(store.embed_query, query)
     reg_hits, audit_brief, audit_full = await asyncio.gather(
-        asyncio.to_thread(store.search, query, K_REGULATION, "regulation"),
+        asyncio.to_thread(
+            store.search, query, K_REGULATION, "regulation", 3, query_vec
+        ),
         # 검토 에이전트가 참고할 감사 선례 (실제 적용 사례 확인용)
-        asyncio.to_thread(store.search, query, 2, "audit"),
+        asyncio.to_thread(store.search, query, 2, "audit", 3, query_vec),
+        # 접미사를 붙인 질의는 의도적으로 다른 벡터가 되므로 자체 임베딩을 유지한다
         asyncio.to_thread(store.search, f"{query} 감사 처분 사례", K_AUDIT, "audit"),
     )
     # 한 사안에 대한 처분이 여러 건이면 보고서에 연속으로 나열된다.
@@ -244,7 +271,9 @@ async def coordinator_node(state: AgentState) -> AgentState:
         auditor_reasoning=auditor.reasoning if auditor else "-",
         auditor_recommendation=auditor.recommendation if auditor else "-",
     )
-    response = await _get_llm().ainvoke(
+    # 조정은 이미 구조화된 두 분석을 병합하는 작업이라 깊은 사고가 필요 없다.
+    # 사고 토큰은 첫 응답 토큰을 늦추고 출력 단가로 과금되므로 low로 제한한다.
+    response = await _get_llm(thinking="low").ainvoke(
         [("system", prompts.COORDINATOR_SYSTEM), ("user", user_prompt)]
     )
     return {"final_markdown": content_to_text(response.content)}

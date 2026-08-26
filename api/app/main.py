@@ -330,6 +330,7 @@ async def chat(
                 visitor_id=visitor_id,
                 ip_hash=ip_hash,
                 is_admin=is_admin,
+                error=f"{type(e).__name__}: {e}",
             )
             yield _sse({"type": "error", "message": f"분석 중 오류가 발생했습니다: {e}"})
 
