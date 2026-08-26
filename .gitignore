@@ -34,3 +34,4 @@ legacy/
 # Misc
 .DS_Store
 *.log
+api/data-mock/
