@@ -176,6 +176,18 @@ async def retrieve_node(state: AgentState) -> AgentState:
     audit_full = await asyncio.to_thread(
         store.expand_neighbors, audit_full, 1, NEIGHBOR_TOP_N
     )
+
+    # 실험 플래그(기본 꺼짐): 인용 그래프 1-hop 확장 — 근거 조항의 판례를
+    # 문서 경계를 넘어 모은다. 호출 시점에 환경변수를 읽어 A/B 토글이 가능하다.
+    import os as _os
+
+    if _os.getenv("GRAPH_EXPANSION") == "1":
+        from app.rag import citation_graph
+
+        expanded = await asyncio.to_thread(citation_graph.expand, reg_hits + audit_full)
+        for extra in expanded[len(reg_hits) + len(audit_full):]:
+            (reg_hits if extra.get("doc_type") == "regulation" else audit_full).append(extra)
+
     return {"reg_hits": reg_hits, "audit_brief": audit_brief, "audit_full": audit_full}
 
 

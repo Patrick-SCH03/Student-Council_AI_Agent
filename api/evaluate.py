@@ -166,10 +166,135 @@ def _run_retrieval(cases: list[dict]) -> int:
     return 1 if misses else 0
 
 
+def _run_multihop() -> int:
+    """multi-hop 검색 A/B: 하이브리드 단독 vs 인용 그래프 1-hop 확장 (LLM 미호출).
+
+    통과 기준은 joint evidence recall — 근거 조항과 이를 인용한 감사 판례가
+    검색 결과에 '전부' 포함돼야 한다. 평가셋은 인용 그래프에서 생성해
+    코퍼스에 실재함을 검증한 것만 담았다 (evalset_multihop.json).
+    """
+    import re as _re
+
+    from app.agents.graph import K_AUDIT, K_REGULATION, NEIGHBOR_TOP_N
+    from app.rag import citation_graph, store
+
+    cases = json.loads(
+        (Path(__file__).resolve().parent / "evalset_multihop.json").read_text(encoding="utf-8")
+    )["cases"]
+
+    def retrieve(query: str, use_graph: bool) -> list[dict]:
+        hits = store.search(query, K_REGULATION, "regulation") + store.expand_neighbors(
+            store.search(f"{query} 감사 처분 사례", K_AUDIT, "audit"), 1, NEIGHBOR_TOP_N
+        )
+        if use_graph:
+            hits = citation_graph.expand(hits)
+        return hits
+
+    def score(hits: list[dict], evidence: list[dict]) -> tuple[int, int]:
+        found = 0
+        for ev in evidence:
+            no = _re.search(r"\d+", ev["marker"]).group()
+            pat = _re.compile(rf"제\s*{no}\s*조")
+            if any(ev["doc"] == h["source_file"] and pat.search(h["text"]) for h in hits):
+                found += 1
+        return found, len(evidence)
+
+    print(f"multi-hop 검색 A/B — {len(cases)}건 (LLM 미호출)\n")
+    print(f"{'케이스':<22}{'단독':>12}{'그래프':>12}")
+    print("-" * 50)
+    totals = {"base": [0, 0, 0, 0], "graph": [0, 0, 0, 0]}  # found, total, joint, chunks
+    for case in cases:
+        row = {}
+        for arm, use_graph in (("base", False), ("graph", True)):
+            hits = retrieve(case["query"], use_graph)
+            f, n = score(hits, case["evidence"])
+            totals[arm][0] += f
+            totals[arm][1] += n
+            totals[arm][2] += f == n
+            totals[arm][3] += len(hits)
+            row[arm] = (f, n)
+        b = f"{row['base'][0]}/{row['base'][1]}"
+        gr = f"{row['graph'][0]}/{row['graph'][1]}"
+        print(f"{case['id']:<24}{b:>8}{gr:>10}")
+    print("-" * 50)
+    n = len(cases)
+    for arm, label in (("base", "하이브리드 단독"), ("graph", "+ 그래프 확장")):
+        f, tot, joint, ch = totals[arm]
+        print(
+            f"{label:<14} 근거 회수율 {f}/{tot} ({f / tot * 100:.0f}%) · "
+            f"전부 회수(joint) {joint}/{n} · 평균 {ch / n:.1f}청크"
+        )
+    return 0
+
+
+def _run_multihop_answers() -> int:
+    """multi-hop 답변층 A/B (실제 LLM 호출 — 케이스당 2회 비용 발생).
+
+    답변이 근거 조항과 판례 문서들을 실제로 담는지 잰다. 커버리지는
+    (a) citations의 문서 일치, (b) 답변 본문의 문서 언급(문서명 어간) 합집합.
+    """
+    import os as _os
+    import re as _re
+
+    cases = json.loads(
+        (Path(__file__).resolve().parent / "evalset_multihop.json").read_text(encoding="utf-8")
+    )["cases"]
+
+    def stem(doc: str) -> str:
+        s = doc.replace(".pdf", "")
+        m = _re.search(r"([가-힣]{2,}(?:대학|학생회|위원회))", s)
+        return m.group(1) if m else s[:8]
+
+    def coverage(result: dict, evidence: list[dict]) -> tuple[int, int]:
+        cited = {c["source_file"] for c in result.get("citations", [])}
+        answer = result.get("final_markdown", "")
+        found = 0
+        for ev in evidence:
+            in_cite = ev["doc"] in cited
+            in_text = stem(ev["doc"]) in answer
+            found += in_cite or in_text
+        return found, len(evidence)
+
+    print(f"multi-hop 답변 A/B — {len(cases)}건 × 2회 (실제 LLM 호출)\n")
+    totals = {"base": [0, 0, 0.0, 0], "graph": [0, 0, 0.0, 0]}  # found,total,elapsed,tokens
+    for case in cases:
+        row = {}
+        for arm, flag in (("base", ""), ("graph", "1")):
+            _os.environ["GRAPH_EXPANSION"] = flag
+            t0 = time.time()
+            result = asyncio.run(_run_local(case["query"]))
+            el = time.time() - t0
+            f, n = coverage(result, case["evidence"])
+            totals[arm][0] += f
+            totals[arm][1] += n
+            totals[arm][2] += el
+            totals[arm][3] += result.get("_tokens", 0)
+            row[arm] = f"{f}/{n}"
+        print(f"{case['id']:<24}{row['base']:>8}{row['graph']:>10}")
+    _os.environ["GRAPH_EXPANSION"] = ""
+    n = len(cases)
+    print("-" * 50)
+    for arm, label in (("base", "하이브리드 단독"), ("graph", "+ 그래프 확장")):
+        f, tot, el, tk = totals[arm]
+        print(
+            f"{label:<14} 답변 근거 커버리지 {f}/{tot} ({f / tot * 100:.0f}%) · "
+            f"평균 {el / n:.1f}초 · 평균 {tk / n:,.0f}토큰"
+        )
+    return 0
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="답변 품질 회귀 테스트")
     parser.add_argument("--url", help="배포 서버 주소 (생략 시 로컬 파이프라인 직접 실행)")
     parser.add_argument("--case", help="특정 케이스 id만 실행")
+    parser.add_argument(
+        "--multihop-answers", action="store_true",
+        help="multi-hop 답변층 A/B (LLM 호출, 케이스당 2회 비용)",
+    )
+    parser.add_argument(
+        "--multihop", action="store_true",
+        help="multi-hop 검색 A/B: 하이브리드 vs 인용 그래프 확장 (LLM 미호출)",
+    )
     parser.add_argument(
         "--retrieval", action="store_true",
         help="LLM 없이 검색 단계만 평가 (로컬 색인 대상, 비용 거의 없음)",
@@ -182,6 +307,12 @@ def main() -> None:
         if not cases:
             print(f"케이스를 찾을 수 없습니다: {args.case}")
             sys.exit(1)
+
+    if args.multihop_answers:
+        sys.exit(_run_multihop_answers())
+
+    if args.multihop:
+        sys.exit(_run_multihop())
 
     if args.retrieval:
         sys.exit(_run_retrieval(cases))

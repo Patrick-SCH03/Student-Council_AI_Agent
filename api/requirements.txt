@@ -13,3 +13,4 @@ langchain-text-splitters>=1.0
 # --- RAG ---
 chromadb>=1.0
 pypdf>=5.0
+networkx>=3.0
