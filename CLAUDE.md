@@ -26,6 +26,7 @@
 cd api
 .venv/Scripts/python.exe smoke_test.py              # 목업 스모크 (CI와 동일)
 .venv/Scripts/python.exe evaluate.py --retrieval    # 검색 지표(MRR·순위), LLM 미호출
+.venv/Scripts/python.exe evaluate.py --multihop     # 인용 그래프 A/B(판례 커버리지), LLM 미호출
 .venv/Scripts/python.exe ingest_folder.py           # documents/ ↔ 로컬 색인 동기화
 .venv/Scripts/python.exe upload_to_remote.py <배포URL>  # 배포 서버로 업로드 (기존 파일 건너뜀)
 cd web && npm run lint && npm run build
@@ -39,6 +40,7 @@ Windows 주의: 인터프리터는 `api/.venv/Scripts/python.exe`, 한글 출력
 - **원격 평가 전 답변 캐시를 비운다** (`POST /api/cache/clear`). 안 비우면 캐시가 0.3초에 응답해 새 코드가 검증되지 않는다. 문서 추가·삭제 시엔 자동으로 비워진다.
 - 관리자 API 인증: `Authorization: Bearer <ADMIN_TOKEN>` (`api/.env`). settings 변경은 **PUT** (POST는 405).
 - 관리자 토큰이 실린 `/api/chat`은 일일 한도에서 제외된다 (지표엔 기록됨). `evaluate.py --url`이 토큰을 자동으로 싣는다.
+- 인용 그래프(`citation_graph.py`)는 색인의 파생물 — 문서 추가·삭제 시 자동 재생성된다. 확장은 라우터의 `needs_precedents` 판별로만 켜지고, `GRAPH_EXPANSION=0`이 킬 스위치다.
 - 문서 분류는 파일명 기준(`classify_doc`): `보고서`/`감사결과` 포함 → audit (Gemini 표 구조 추출), 그 외 → regulation (pypdf + 조항 청킹).
 - `documents/`는 git 제외(내부 문서). 로컬 색인과 배포 색인은 **별개** — 배포 반영은 `upload_to_remote.py`.
 - Railway 프록시 뒤에서 클라이언트 IP는 X-Forwarded-For의 **오른쪽 끝** 항목이다 (앞쪽은 클라이언트가 위조 가능).

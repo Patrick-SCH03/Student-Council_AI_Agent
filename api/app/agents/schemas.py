@@ -26,6 +26,10 @@ class RouteDecision(BaseModel):
         default="",
         description="대화 맥락 없이도 이해 가능하도록 재작성한 질문. 맥락이 불필요하면 원래 질문 그대로",
     )
+    needs_precedents: bool = Field(
+        default=False,
+        description="과거 감사 사례·판례·처분 이력을 '모아' 보여달라는 질문이면 true",
+    )
 
 
 class Citation(BaseModel):

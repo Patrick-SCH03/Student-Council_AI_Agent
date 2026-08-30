@@ -259,7 +259,7 @@ def _run_multihop_answers() -> int:
     totals = {"base": [0, 0, 0.0, 0], "graph": [0, 0, 0.0, 0]}  # found,total,elapsed,tokens
     for case in cases:
         row = {}
-        for arm, flag in (("base", ""), ("graph", "1")):
+        for arm, flag in (("base", "0"), ("graph", "1")):
             _os.environ["GRAPH_EXPANSION"] = flag
             t0 = time.time()
             result = asyncio.run(_run_local(case["query"]))

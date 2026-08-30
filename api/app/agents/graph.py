@@ -45,6 +45,8 @@ class AgentState(TypedDict, total=False):
     # 대화 맥락을 반영해 독립적으로 재작성된 질의 (검색·분석에 사용)
     standalone_query: str
     route: str
+    # 판례 집계형 질문 여부 (라우터 판별) — 인용 그래프 확장 게이트
+    needs_precedents: bool
     # 검색 노드가 한 번만 채우고 두 에이전트가 나눠 쓴다
     reg_hits: list[dict]
     audit_brief: list[dict]
@@ -129,7 +131,8 @@ async def route_node(state: AgentState) -> AgentState:
         keywords = ("학생회", "규정", "예산", "감사", "회계", "회비", "지원금", "선거")
         text = query + " ".join(h.get("question", "") for h in history)
         route = "regulation" if any(k in text for k in keywords) else "general"
-        return {"route": route, "standalone_query": query}
+        precedents = any(k in query for k in ("사례", "판례", "처분 내역", "이력"))
+        return {"route": route, "standalone_query": query, "needs_precedents": precedents}
 
     # 분류 + 한 문장 재작성뿐이라 경량 모델로 충분하다 (단가 1/3, 첫 토큰 지연 최단)
     llm = _get_llm(GEMINI_ROUTER_MODEL).with_structured_output(RouteDecision)
@@ -146,10 +149,14 @@ async def route_node(state: AgentState) -> AgentState:
         # 분류가 안 되면 규정 경로로 보낸다. 규정 질문을 잘라내는 것보다
         # 범위 밖 질문에 한 번 성실히 답하는 쪽이 덜 해롭다.
         print(f"라우터 호출 실패, regulation 경로로 폴백: {type(e).__name__}: {e}")
-        return {"route": "regulation", "standalone_query": query}
+        return {"route": "regulation", "standalone_query": query, "needs_precedents": False}
     route = decision.route if decision.route in ("regulation", "general") else "regulation"
     standalone = (decision.standalone_query or "").strip() or query
-    return {"route": route, "standalone_query": standalone}
+    return {
+        "route": route,
+        "standalone_query": standalone,
+        "needs_precedents": bool(decision.needs_precedents),
+    }
 
 
 async def retrieve_node(state: AgentState) -> AgentState:
@@ -177,11 +184,14 @@ async def retrieve_node(state: AgentState) -> AgentState:
         store.expand_neighbors, audit_full, 1, NEIGHBOR_TOP_N
     )
 
-    # 실험 플래그(기본 꺼짐): 인용 그래프 1-hop 확장 — 근거 조항의 판례를
-    # 문서 경계를 넘어 모은다. 호출 시점에 환경변수를 읽어 A/B 토글이 가능하다.
+    # 인용 그래프 1-hop 확장 — 근거 조항의 판례를 문서 경계를 넘어 모은다.
+    # 일반 질의에서도 게이트가 98% 열려 전역 상시 적용은 비용(+7원)·지연(+2초)
+    # 회귀를 만들므로, 라우터가 '판례 집계형'으로 판별한 질의에만 켠다.
+    # GRAPH_EXPANSION 환경변수는 강제 스위치: "1"=항상, "0"=차단(킬 스위치).
     import os as _os
 
-    if _os.getenv("GRAPH_EXPANSION") == "1":
+    flag = _os.getenv("GRAPH_EXPANSION", "")
+    if flag == "1" or (flag != "0" and state.get("needs_precedents")):
         from app.rag import citation_graph
 
         expanded = await asyncio.to_thread(citation_graph.expand, reg_hits + audit_full)

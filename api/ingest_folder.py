@@ -80,6 +80,13 @@ def main() -> None:
             print(f"[오류]   {name} — {type(e).__name__}: {e}")
             failed += 1
 
+    if added or updated or removed:
+        # 인용 그래프는 색인의 파생물 — 색인이 바뀌면 함께 재생성해 낡음을 방지한다
+        from app.rag import citation_graph
+
+        citation_graph.get_graph(rebuild=True)
+        print("인용 그래프 재생성 완료")
+
     print(
         f"\n신규 {added}건, 갱신 {updated}건, 제거 {removed}건, "
         f"변경 없음 {skipped}건, 실패 {failed}건 / 총 청크: {store.chunk_count()}"
