@@ -361,6 +361,10 @@ async def upload_document(file: UploadFile):
     db.add_document(doc_id, file.filename, chunks)
     # 색인이 바뀌면 이전 답변은 낡은 근거일 수 있으므로 캐시를 비운다
     db.clear_cache()
+    # 인용 그래프도 색인의 파생물이므로 함께 재생성한다 (약 2초, 낡은 그래프 방지)
+    from app.rag import citation_graph
+
+    citation_graph.get_graph(rebuild=True)
     return {"doc_id": doc_id, "filename": file.filename, "chunks": chunks}
 
 
@@ -375,6 +379,9 @@ def delete_document(doc_id: str):
         raise HTTPException(status_code=404, detail="문서를 찾을 수 없습니다.")
     store.delete_doc(doc_id)
     db.clear_cache()
+    from app.rag import citation_graph
+
+    citation_graph.get_graph(rebuild=True)
     return {"deleted": doc_id}
 
 
