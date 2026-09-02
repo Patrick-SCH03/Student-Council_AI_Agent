@@ -53,6 +53,14 @@ PRICE_INPUT_PER_1M: float = float(os.getenv("PRICE_INPUT_PER_1M", "0.75"))
 PRICE_OUTPUT_PER_1M: float = float(os.getenv("PRICE_OUTPUT_PER_1M", "3.75"))
 USD_KRW: float = float(os.getenv("USD_KRW", "1400"))
 
+# 운영 지표·방문·분석 기록 보존 기간(일). 지나면 기동 시 삭제한다.
+RETENTION_DAYS: int = int(os.getenv("RETENTION_DAYS", "365"))
+# 동시에 LLM 파이프라인을 돌리는 요청 상한. 한도는 완료된 요청만 세므로,
+# 응답이 끝나기 전에 몰려오는 요청을 여기서 막는다 (비용 폭주 방지).
+MAX_INFLIGHT_TOTAL: int = int(os.getenv("MAX_INFLIGHT_TOTAL", "5"))
+# LLM 호출 타임아웃(초). 상류가 느려져도 요청이 무기한 붙잡히지 않도록.
+LLM_TIMEOUT: int = int(os.getenv("LLM_TIMEOUT", "60"))
+
 CORS_ORIGINS: list[str] = [
     o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",") if o.strip()
 ]

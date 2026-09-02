@@ -60,9 +60,15 @@ CREATE TABLE IF NOT EXISTS feedback (
 """
 
 
+_initialized = False
+
+
 def _connect() -> sqlite3.Connection:
+    global _initialized
     conn = sqlite3.connect(SQLITE_PATH)
     conn.row_factory = sqlite3.Row
+    if _initialized:
+        return conn
     conn.executescript(_SCHEMA)
     # 스키마 확장 마이그레이션 (기존 DB 호환)
     for stmt in (
@@ -80,6 +86,16 @@ def _connect() -> sqlite3.Connection:
             conn.execute(stmt)
         except sqlite3.OperationalError:
             pass  # 이미 존재
+    # 한도 계산·일별 집계가 매 요청 ts 범위를 훑는다. 인덱스가 있어야 행이 쌓여도 비용이 일정하다.
+    for stmt in (
+        "CREATE INDEX IF NOT EXISTS idx_metrics_ts ON metrics(ts)",
+        "CREATE INDEX IF NOT EXISTS idx_metrics_visitor ON metrics(visitor_id, ts)",
+        "CREATE INDEX IF NOT EXISTS idx_metrics_ip ON metrics(ip_hash, ts)",
+        "CREATE INDEX IF NOT EXISTS idx_visits_ts ON visits(ts)",
+    ):
+        conn.execute(stmt)
+    conn.commit()
+    _initialized = True
     return conn
 
 
@@ -188,7 +204,7 @@ def get_cached_answer(query_key: str, ttl_hours: int) -> dict | None:
     with _connect() as conn:
         row = conn.execute(
             "SELECT analysis_id, result FROM answer_cache "
-            "WHERE query_key = ? AND ts >= datetime('now', ?)",
+            "WHERE query_key = ? AND datetime(ts) >= datetime('now', ?)",
             (query_key, f"-{ttl_hours} hours"),
         ).fetchone()
         if not row:
@@ -246,13 +262,13 @@ def count_today(visitor_id: str | None = None) -> int:
         if visitor_id:
             row = conn.execute(
                 f"SELECT COUNT(*) AS n FROM metrics "
-                f"WHERE date(ts) = date('now') AND {_NOT_ADMIN} AND visitor_id = ?",
+                f"WHERE ts >= date('now') AND ts < date('now', '+1 day') AND {_NOT_ADMIN} AND visitor_id = ?",
                 (visitor_id,),
             ).fetchone()
         else:
             row = conn.execute(
                 f"SELECT COUNT(*) AS n FROM metrics "
-                f"WHERE date(ts) = date('now') AND {_NOT_ADMIN}"
+                f"WHERE ts >= date('now') AND ts < date('now', '+1 day') AND {_NOT_ADMIN}"
             ).fetchone()
     return row["n"]
 
@@ -262,7 +278,7 @@ def count_today_by_ip(ip_hash: str) -> int:
     with _connect() as conn:
         row = conn.execute(
             f"SELECT COUNT(*) AS n FROM metrics "
-            f"WHERE date(ts) = date('now') AND {_NOT_ADMIN} AND ip_hash = ?",
+            f"WHERE ts >= date('now') AND ts < date('now', '+1 day') AND {_NOT_ADMIN} AND ip_hash = ?",
             (ip_hash,),
         ).fetchone()
     return row["n"]
@@ -275,6 +291,12 @@ def add_visit(visitor_id: str) -> None:
         )
 
 
+def _csv_safe(value) -> str:
+    """스프레드시트가 수식으로 해석하는 선행 문자(=, +, -, @)를 무력화한다 (CSV 인젝션)."""
+    s = (value or "").replace('"', '""')
+    return ("'" + s) if s[:1] in ("=", "+", "-", "@", "\t", "\r") else s
+
+
 def export_metrics_csv() -> str:
     """포트폴리오/분석용 전체 지표 CSV 덤프."""
     with _connect() as conn:
@@ -284,7 +306,7 @@ def export_metrics_csv() -> str:
         ).fetchall()
     lines = ["ts,route,risk_level,status,elapsed,input_tokens,output_tokens,query"]
     for r in rows:
-        query = (r["query_preview"] or "").replace('"', '""')
+        query = _csv_safe(r["query_preview"])
         lines.append(
             f'{r["ts"]},{r["route"] or ""},{r["risk_level"] or ""},{r["status"]},'
             f'{r["elapsed"] or 0},{r["input_tokens"]},{r["output_tokens"]},"{query}"'
@@ -315,7 +337,7 @@ def get_stats(days: int = 14) -> dict:
             # IP 상한이 실제로 클라이언트를 구분하는지 확인하는 용도.
             # 프록시가 실제 IP를 넘겨주지 않으면 트래픽이 늘어도 1에서 멈춘다.
             "COUNT(DISTINCT ip_hash) AS unique_ips "
-            "FROM metrics WHERE date(ts) = date('now')"
+            "FROM metrics WHERE ts >= date('now') AND ts < date('now', '+1 day')"
         ).fetchone())
 
         daily = [dict(r) for r in conn.execute(
@@ -357,7 +379,7 @@ def get_stats(days: int = 14) -> dict:
 
         visits = {
             "today_visitors": conn.execute(
-                "SELECT COUNT(DISTINCT visitor_id) AS n FROM visits WHERE date(ts) = date('now')"
+                "SELECT COUNT(DISTINCT visitor_id) AS n FROM visits WHERE ts >= date('now') AND ts < date('now', '+1 day')"
             ).fetchone()["n"],
             "total_visitors": conn.execute(
                 "SELECT COUNT(DISTINCT visitor_id) AS n FROM visits"
@@ -411,3 +433,35 @@ def list_analyses(limit: int = 20) -> list[dict]:
         item["result"] = json.loads(item["result"])
         items.append(item)
     return items
+
+
+def _ts_column(conn: sqlite3.Connection, table: str) -> str:
+    cols = [row[1] for row in conn.execute(f"PRAGMA table_info({table})")]
+    return "ts" if "ts" in cols else "created_at"
+
+
+def purge_old(days: int) -> dict[str, int]:
+    """보존 기간이 지난 지표·방문·분석 기록을 지운다. 답변 캐시는 7일이 지나면 지운다.
+
+    질의 원문과 답변을 무기한 쌓아둘 이유가 없다 — 운영 지표는 집계면 충분하다.
+    """
+    if days <= 0:
+        return {}
+    cutoff = f"-{days} days"
+    removed: dict[str, int] = {}
+    with _connect() as conn:
+        for table in ("metrics", "visits", "analyses"):
+            col = _ts_column(conn, table)
+            if table == "analyses":
+                removed["feedback"] = conn.execute(
+                    f"DELETE FROM feedback WHERE analysis_id IN "
+                    f"(SELECT id FROM analyses WHERE datetime({col}) < datetime('now', ?))",
+                    (cutoff,),
+                ).rowcount
+            removed[table] = conn.execute(
+                f"DELETE FROM {table} WHERE datetime({col}) < datetime('now', ?)", (cutoff,)
+            ).rowcount
+        removed["answer_cache"] = conn.execute(
+            "DELETE FROM answer_cache WHERE datetime(ts) < datetime('now', '-7 days')"
+        ).rowcount
+    return removed

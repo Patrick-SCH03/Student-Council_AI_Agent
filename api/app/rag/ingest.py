@@ -195,6 +195,8 @@ def extract_text_from_pdf(file_bytes: bytes, *, prefer_multimodal: bool = False)
         reader = PdfReader(io.BytesIO(file_bytes))
     except Exception as e:
         raise IngestError(f"PDF 파일을 읽을 수 없습니다: {e}") from e
+    if reader.is_encrypted:
+        raise IngestError("암호화된 PDF는 지원하지 않습니다. 암호를 해제한 뒤 업로드하세요.")
 
     text = clean_text("\n".join((page.extract_text() or "") for page in reader.pages))
 

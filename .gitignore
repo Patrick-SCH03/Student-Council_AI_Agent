@@ -7,6 +7,8 @@ venv/
 # Env / secrets
 .env
 *.env.local
+# 마스킹 대상 실명 목록 (저장소에 두지 않는다)
+api/private_names.txt
 
 # 런타임 생성물 (벡터 DB · SQLite)
 api/data/

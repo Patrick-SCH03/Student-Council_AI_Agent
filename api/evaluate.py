@@ -25,7 +25,8 @@ from pathlib import Path
 EVALSET = Path(__file__).resolve().parent / "evalset.json"
 
 # 색인 문서에 등장하는 실명 — 답변에 노출되면 안 된다.
-KNOWN_NAMES = ["○○○", "○○○", "○○○", "○○○", "○○○"]
+# 목록은 저장소에 두지 않는다 (PRIVATE_NAMES 환경변수 또는 api/private_names.txt).
+from app.privacy import PRIVATE_NAMES as KNOWN_NAMES  # noqa: E402
 
 
 def _check(case: dict, result: dict) -> list[str]:
@@ -52,6 +53,8 @@ def _check(case: dict, result: dict) -> list[str]:
             failures.append(f"위험도 {result.get('risk_level')} (기대 {allowed})")
 
     if case.get("forbid_names"):
+        if not KNOWN_NAMES:
+            failures.append("실명 목록 없음 (api/private_names.txt 또는 PRIVATE_NAMES) — 실명 검사 불가")
         if leaked := [n for n in KNOWN_NAMES if n in blob]:
             failures.append(f"실명 노출 {leaked}")
 

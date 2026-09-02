@@ -1,5 +1,6 @@
 """FastAPI 서버: SSE 스트리밍 채팅 + 문서 관리 API."""
 
+import asyncio
 import hashlib
 import json
 import re
@@ -10,7 +11,8 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse, StreamingResponse
 from langchain_core.callbacks import UsageMetadataCallbackHandler
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+from starlette.datastructures import MutableHeaders
 
 from app import db
 from app.agents.graph import content_to_text, graph
@@ -21,18 +23,28 @@ from app.config import (
     DEFAULT_LIMITS,
     GEMINI_MODEL,
     IP_HASH_SALT,
+    MAX_INFLIGHT_TOTAL,
     MOCK_MODE,
     PRICE_INPUT_PER_1M,
     PRICE_OUTPUT_PER_1M,
+    RETENTION_DAYS,
     USD_KRW,
 )
+from app.privacy import StreamMasker, mask_obj
 from app.rag import store
 from app.rag.ingest import IngestError, ingest_pdf
 
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 MAX_QUERY_LENGTH = 1000
 
-app = FastAPI(title="학생회 규정 AI 어시스턴트 API", version="2.0.0")
+app = FastAPI(
+    title="학생회 규정 AI 어시스턴트 API",
+    version="2.0.0",
+    # 자동 문서는 관리자 API 표면을 그대로 드러내므로 목업(로컬)에서만 연다
+    docs_url="/docs" if MOCK_MODE else None,
+    redoc_url="/redoc" if MOCK_MODE else None,
+    openapi_url="/openapi.json" if MOCK_MODE else None,
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -41,6 +53,34 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+class _SecurityHeaders:
+    """모든 응답에 기본 보안 헤더를 붙인다.
+
+    순수 ASGI로 구현해 SSE 스트리밍 응답을 버퍼링하지 않는다.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+
+        async def send_with_headers(message):
+            if message["type"] == "http.response.start":
+                headers = MutableHeaders(scope=message)
+                headers.setdefault("X-Content-Type-Options", "nosniff")
+                headers.setdefault("X-Frame-Options", "DENY")
+                headers.setdefault("Referrer-Policy", "no-referrer")
+                headers.setdefault("Cache-Control", "no-store")
+            await send(message)
+
+        await self.app(scope, receive, send_with_headers)
+
+
+app.add_middleware(_SecurityHeaders)
 
 
 class HistoryItem(BaseModel):
@@ -54,6 +94,14 @@ class ChatRequest(BaseModel):
     history: list[HistoryItem] = Field(default_factory=list, max_length=10)
     # 사용자별 일일 한도 계산용 익명 식별자 (브라우저 localStorage)
     visitor_id: str | None = Field(default=None, max_length=64)
+
+    @field_validator("query")
+    @classmethod
+    def _strip_query(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("질문을 입력해 주세요.")
+        return value
 
 
 def _sse(payload: dict) -> str:
@@ -72,7 +120,8 @@ def require_admin(authorization: str | None = Header(default=None)) -> None:
             detail="ADMIN_TOKEN이 설정되지 않아 관리자 API가 비활성화되었습니다.",
         )
     expected = f"Bearer {ADMIN_TOKEN}"
-    if not authorization or not secrets.compare_digest(authorization, expected):
+    # 바이트로 비교한다. 문자열 비교는 비ASCII 헤더에서 TypeError → 500이 된다.
+    if not authorization or not secrets.compare_digest(authorization.encode(), expected.encode()):
         raise HTTPException(status_code=401, detail="관리자 인증이 필요합니다.")
 
 
@@ -87,7 +136,7 @@ def is_admin_request(authorization: str | None) -> bool:
     """
     if not ADMIN_TOKEN or not authorization:
         return False
-    return secrets.compare_digest(authorization, f"Bearer {ADMIN_TOKEN}")
+    return secrets.compare_digest(authorization.encode(), f"Bearer {ADMIN_TOKEN}".encode())
 
 
 @app.get("/api/health")
@@ -145,12 +194,33 @@ def _client_ip_hash(http_request: Request) -> str | None:
     return hashlib.sha256(f"{IP_HASH_SALT}:{ip}".encode()).hexdigest()[:32]
 
 
+# 진행 중인 요청 수 (키: "total" / "u:<visitor>" / "ip:<hash>").
+# 한도는 완료된 요청(지표)만 세므로, 응답이 끝나기 전에 몰려오는 요청은 전부
+# 통과했다 — 진행 중인 것까지 더해서 검사하고, 동시 실행 상한도 둔다.
+_inflight: dict[str, int] = {}
+
+
+def _inflight_add(keys: list[str], delta: int) -> None:
+    for key in keys:
+        value = _inflight.get(key, 0) + delta
+        if value > 0:
+            _inflight[key] = value
+        else:
+            _inflight.pop(key, None)
+
+
 def _enforce_daily_limit(visitor_id: str | None, ip_hash: str | None = None) -> None:
     """일일 질의 상한 확인. 초과 시 429로 차단한다 (0 = 무제한)."""
+    if _inflight.get("total", 0) >= MAX_INFLIGHT_TOTAL:
+        raise HTTPException(
+            status_code=429, detail="지금 요청이 몰려 있습니다. 잠시 후 다시 시도해주세요."
+        )
+
     limits = db.get_settings(DEFAULT_LIMITS)
 
     per_user = limits["daily_limit_per_user"]
-    if per_user > 0 and visitor_id and db.count_today(visitor_id) >= per_user:
+    used_by_user = db.count_today(visitor_id) + _inflight.get(f"u:{visitor_id}", 0)
+    if per_user > 0 and visitor_id and used_by_user >= per_user:
         raise HTTPException(
             status_code=429,
             detail=f"오늘 사용 가능한 질문 횟수({per_user}회)를 모두 사용했습니다. 내일 다시 이용해주세요.",
@@ -158,14 +228,15 @@ def _enforce_daily_limit(visitor_id: str | None, ip_hash: str | None = None) -> 
 
     # visitor_id는 브라우저 저장소를 비우면 초기화되므로 IP 기준으로 한 번 더 막는다
     per_ip = limits["daily_limit_per_ip"]
-    if per_ip > 0 and ip_hash and db.count_today_by_ip(ip_hash) >= per_ip:
+    used_by_ip = (db.count_today_by_ip(ip_hash) if ip_hash else 0) + _inflight.get(f"ip:{ip_hash}", 0)
+    if per_ip > 0 and ip_hash and used_by_ip >= per_ip:
         raise HTTPException(
             status_code=429,
             detail="같은 네트워크에서 오늘 이용 가능한 횟수를 모두 사용했습니다. 내일 다시 이용해주세요.",
         )
 
     total = limits["daily_limit_total"]
-    if total > 0 and db.count_today() >= total:
+    if total > 0 and db.count_today() + _inflight.get("total", 0) >= total:
         raise HTTPException(
             status_code=429,
             detail="오늘 전체 이용 한도에 도달했습니다. 내일 다시 이용해주세요.",
@@ -208,7 +279,7 @@ async def chat(
                     ip_hash=ip_hash,
                     is_admin=is_admin,
                 )
-                yield _sse({"type": "result", **cached, "cached": True})
+                yield _sse({"type": "result", **mask_obj(cached), "cached": True})
 
             return StreamingResponse(
                 cached_stream(),
@@ -216,10 +287,19 @@ async def chat(
                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
             )
 
+    inflight_keys = ["total"] + [
+        key
+        for key in (f"u:{visitor_id}" if visitor_id else "", f"ip:{ip_hash}" if ip_hash else "")
+        if key
+    ]
+    _inflight_add(inflight_keys, +1)
+
     async def event_stream():
         start = time.time()
         merged: dict = {"citations": []}
         usage_handler = UsageMetadataCallbackHandler()
+        # 프롬프트의 실명 금지 규칙은 확률적이다. 나가는 모든 텍스트를 코드가 한 번 더 지운다.
+        masker = StreamMasker()
 
         def _token_totals() -> tuple[int, int]:
             usage = usage_handler.usage_metadata or {}
@@ -241,7 +321,8 @@ async def chat(
                     node = meta.get("langgraph_node", "")
                     content = content_to_text(getattr(chunk, "content", ""))
                     if node in ("coordinator", "general") and content:
-                        yield _sse({"type": "token", "content": content})
+                        if visible := masker.feed(content):
+                            yield _sse({"type": "token", "content": visible})
                     continue
 
                 # mode == "updates": {node_name: state_delta}
@@ -267,7 +348,7 @@ async def chat(
                         yield _sse({
                             "type": "agent_done",
                             "agent": node,
-                            "data": agent_result.model_dump() if agent_result else None,
+                            "data": mask_obj(agent_result.model_dump()) if agent_result else None,
                         })
                         if merged.get("reviewer") is not None and merged.get("auditor") is not None:
                             yield _sse({"type": "stage", "label": "조정 에이전트가 결과를 종합 중..."})
@@ -285,6 +366,8 @@ async def chat(
                     citations.append({"source_file": c.source_file, "snippet": c.snippet})
 
             final_markdown, followups = _extract_followups(merged.get("final_markdown", ""))
+            if tail := masker.flush():
+                yield _sse({"type": "token", "content": tail})
 
             result = {
                 "query": query,
@@ -297,6 +380,7 @@ async def chat(
                 "citations": citations,
                 "elapsed": round(time.time() - start, 2),
             }
+            result = mask_obj(result)
             analysis_id = db.add_analysis(query, risk, result)
             in_tok, out_tok = _token_totals()
             db.record_metric(
@@ -332,7 +416,10 @@ async def chat(
                 is_admin=is_admin,
                 error=f"{type(e).__name__}: {e}",
             )
-            yield _sse({"type": "error", "message": f"분석 중 오류가 발생했습니다: {e}"})
+            # 예외 원문(LLM 출력 조각·내부 경로가 섞일 수 있음)은 지표에만 남기고 사용자에겐 일반 문구
+            yield _sse({"type": "error", "message": "분석 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요."})
+        finally:
+            _inflight_add(inflight_keys, -1)
 
     return StreamingResponse(
         event_stream(),
@@ -353,19 +440,25 @@ async def upload_document(file: UploadFile):
     if len(content) > MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=413, detail="파일이 너무 큽니다 (최대 20MB).")
 
+    # OCR·임베딩·그래프 재구축은 수 분이 걸리는 동기 작업이다. 이벤트 루프에서
+    # 돌리면 그동안 모든 채팅 스트림이 멈추므로 스레드로 보낸다.
     try:
-        doc_id, chunks = ingest_pdf(content, file.filename)
+        doc_id, chunks = await asyncio.to_thread(_index_upload, content, file.filename)
     except IngestError as e:
         raise HTTPException(status_code=422, detail=str(e)) from e
+    return {"doc_id": doc_id, "filename": file.filename, "chunks": chunks}
 
-    db.add_document(doc_id, file.filename, chunks)
+
+def _index_upload(content: bytes, filename: str) -> tuple[str, int]:
+    doc_id, chunks = ingest_pdf(content, filename)
+    db.add_document(doc_id, filename, chunks)
     # 색인이 바뀌면 이전 답변은 낡은 근거일 수 있으므로 캐시를 비운다
     db.clear_cache()
     # 인용 그래프도 색인의 파생물이므로 함께 재생성한다 (약 2초, 낡은 그래프 방지)
     from app.rag import citation_graph
 
     citation_graph.get_graph(rebuild=True)
-    return {"doc_id": doc_id, "filename": file.filename, "chunks": chunks}
+    return doc_id, chunks
 
 
 @app.get("/api/documents", dependencies=[admin_only])
@@ -479,3 +572,7 @@ def get_stats(days: int = 14):
         "usd_krw": USD_KRW,
     }
     return stats
+
+
+# 보존 기간이 지난 기록은 기동 시 정리한다 (지표·방문·분석·오래된 답변 캐시)
+db.purge_old(RETENTION_DAYS)
