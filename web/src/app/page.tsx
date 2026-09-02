@@ -198,7 +198,7 @@ const MARKDOWN_STYLE =
 function Markdown({ text }: { text: string }) {
   return (
     <div className={MARKDOWN_STYLE}>
-      <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
+      <ReactMarkdown remarkPlugins={[remarkGfm]} disallowedElements={["img"]} unwrapDisallowed>{text}</ReactMarkdown>
     </div>
   );
 }
@@ -548,6 +548,7 @@ export default function ChatPage() {
 
     try {
       let tokens = "";
+      let flushScheduled = false;
       for await (const event of streamChat(query, history)) {
         if (event.type === "stage") {
           updateAssistant(assistantId, {
@@ -562,7 +563,14 @@ export default function ChatPage() {
           }
         } else if (event.type === "token") {
           tokens += event.content;
-          updateAssistant(assistantId, { tokens });
+          // 토큰마다 렌더하면 마크다운 전체를 매번 다시 파싱한다 — 프레임당 한 번만 반영
+          if (!flushScheduled) {
+            flushScheduled = true;
+            requestAnimationFrame(() => {
+              flushScheduled = false;
+              updateAssistant(assistantId, { tokens });
+            });
+          }
         } else if (event.type === "result") {
           updateAssistant(assistantId, { result: event, stage: null });
         } else if (event.type === "error") {
