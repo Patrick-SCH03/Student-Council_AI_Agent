@@ -30,7 +30,7 @@ from app.config import (
     RETENTION_DAYS,
     USD_KRW,
 )
-from app.privacy import StreamMasker, mask_obj
+from app.privacy import PRIVATE_NAMES, StreamMasker, mask_obj
 from app.rag import store
 from app.rag.ingest import IngestError, ingest_pdf
 
@@ -549,13 +549,23 @@ def clear_cache():
 
 @app.get("/api/settings", dependencies=[admin_only])
 def get_settings():
-    return {**db.get_settings(DEFAULT_LIMITS), "used_today": db.count_today()}
+    return {
+        **db.get_settings(DEFAULT_LIMITS),
+        "used_today": db.count_today(),
+        # 마스킹 목록이 실제로 로드됐는지 운영자가 확인할 수 있게 개수만 노출한다
+        "private_names": len(PRIVATE_NAMES),
+    }
 
 
 @app.put("/api/settings", dependencies=[admin_only])
 def update_settings(request: SettingsRequest):
     db.set_settings(request.model_dump())
-    return {**db.get_settings(DEFAULT_LIMITS), "used_today": db.count_today()}
+    return {
+        **db.get_settings(DEFAULT_LIMITS),
+        "used_today": db.count_today(),
+        # 마스킹 목록이 실제로 로드됐는지 운영자가 확인할 수 있게 개수만 노출한다
+        "private_names": len(PRIVATE_NAMES),
+    }
 
 
 @app.get("/api/stats", dependencies=[admin_only])
