@@ -6,6 +6,7 @@ import json
 import re
 import secrets
 import time
+from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -528,6 +529,43 @@ def export_stats():
     )
 
 
+def _memory_mb() -> dict:
+    """컨테이너 메모리 사용량. Railway 요금이 메모리 기준이라 지표로 남긴다.
+
+    Linux 컨테이너에서만 값이 나온다 (로컬 개발 환경에서는 None).
+    """
+
+    def _read(path: str) -> int | None:
+        try:
+            return int(Path(path).read_text().strip())
+        except (OSError, ValueError):
+            return None
+
+    rss = None
+    try:
+        for line in Path('/proc/self/status').read_text().splitlines():
+            if line.startswith('VmRSS:'):
+                rss = int(line.split()[1]) / 1024  # kB → MB
+                break
+    except OSError:
+        pass
+
+    # cgroup v2 우선, 없으면 v1
+    used = _read('/sys/fs/cgroup/memory.current') or _read(
+        '/sys/fs/cgroup/memory/memory.usage_in_bytes'
+    )
+    limit = _read('/sys/fs/cgroup/memory.max') or _read(
+        '/sys/fs/cgroup/memory/memory.limit_in_bytes'
+    )
+    # 상한이 없으면 호스트 전체 메모리가 찍히므로(수십 GB) 의미 없는 값은 버린다
+    limit_mb = limit / 1024 / 1024 if limit and limit < 1 << 43 else None
+    return {
+        "rss_mb": round(rss, 1) if rss else None,
+        "container_mb": round(used / 1024 / 1024, 1) if used else None,
+        "limit_mb": round(limit_mb, 1) if limit_mb else None,
+    }
+
+
 def _cost_usd(input_tokens: int, output_tokens: int) -> float:
     return (
         input_tokens / 1_000_000 * PRICE_INPUT_PER_1M
@@ -572,6 +610,7 @@ def update_settings(request: SettingsRequest):
 def get_stats(days: int = 14):
     stats = db.get_stats(min(max(days, 1), 90))
     stats["limits"] = {**db.get_settings(DEFAULT_LIMITS), "used_today": db.count_today()}
+    stats["memory"] = _memory_mb()
     total_usd = _cost_usd(stats["totals"]["input_tokens"], stats["totals"]["output_tokens"])
     today_usd = _cost_usd(stats["today"]["input_tokens"], stats["today"]["output_tokens"])
     stats["cost"] = {
