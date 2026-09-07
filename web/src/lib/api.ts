@@ -132,49 +132,73 @@ export type HealthInfo = {
 /** 일일 한도 초과 등 서버가 사유를 알려준 경우 */
 export class ChatBlockedError extends Error {}
 
+/** 이 시간 동안 아무 이벤트도 오지 않으면 연결을 끊는다 (상류 장애 시 스피너 영구 표시 방지) */
+const STREAM_IDLE_TIMEOUT_MS = 90_000;
+
 /** POST /api/chat 의 SSE 응답을 이벤트 단위로 yield */
 export async function* streamChat(
   query: string,
   history: HistoryItem[] = [],
   signal?: AbortSignal,
 ): AsyncGenerator<ChatEvent> {
-  const res = await fetch(`${API_BASE}/api/chat`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ query, history, visitor_id: getVisitorId() }),
-    signal,
-  });
-  if (res.status === 429) {
-    const body = await res.json().catch(() => null);
-    throw new ChatBlockedError(
-      body?.detail ?? "오늘 이용 한도에 도달했습니다. 내일 다시 이용해주세요.",
-    );
-  }
-  if (!res.ok || !res.body) {
-    throw new Error(`서버 오류 (${res.status})`);
-  }
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  signal?.addEventListener("abort", abort);
+  let idleTimer: ReturnType<typeof setTimeout> | undefined;
+  const resetIdle = () => {
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(abort, STREAM_IDLE_TIMEOUT_MS);
+  };
 
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
+  try {
+    resetIdle();
+    const res = await fetch(`${API_BASE}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query, history, visitor_id: getVisitorId() }),
+      signal: controller.signal,
+    });
+    if (res.status === 429) {
+      const body = await res.json().catch(() => null);
+      throw new ChatBlockedError(
+        body?.detail ?? "오늘 이용 한도에 도달했습니다. 내일 다시 이용해주세요.",
+      );
+    }
+    if (!res.ok || !res.body) {
+      throw new Error(`서버 오류 (${res.status})`);
+    }
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
 
-    // SSE 이벤트는 빈 줄로 구분된다
-    let sep;
-    while ((sep = buffer.indexOf("\n\n")) !== -1) {
-      const raw = buffer.slice(0, sep).trim();
-      buffer = buffer.slice(sep + 2);
-      if (!raw.startsWith("data:")) continue;
-      try {
-        yield JSON.parse(raw.slice(5).trim()) as ChatEvent;
-      } catch {
-        // 손상된 이벤트는 무시
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      resetIdle();
+      buffer += decoder.decode(value, { stream: true });
+
+      // SSE 이벤트는 빈 줄로 구분된다
+      let sep;
+      while ((sep = buffer.indexOf("\n\n")) !== -1) {
+        const raw = buffer.slice(0, sep).trim();
+        buffer = buffer.slice(sep + 2);
+        if (!raw.startsWith("data:")) continue;
+        try {
+          yield JSON.parse(raw.slice(5).trim()) as ChatEvent;
+        } catch {
+          // 손상된 이벤트는 무시
+        }
       }
     }
+  } catch (e) {
+    if (controller.signal.aborted && !signal?.aborted) {
+      throw new Error("응답이 지연되어 연결을 종료했습니다. 잠시 후 다시 시도해주세요.");
+    }
+    throw e;
+  } finally {
+    clearTimeout(idleTimer);
+    signal?.removeEventListener("abort", abort);
   }
 }
 

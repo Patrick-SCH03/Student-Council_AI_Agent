@@ -373,7 +373,9 @@ export default function StatsPage() {
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- 서버 데이터 폴링(비동기 갱신)
     load();
-    const t = setInterval(load, 30_000);
+    const t = setInterval(() => {
+      if (document.visibilityState === "visible") load();
+    }, 30_000);
     return () => clearInterval(t);
   }, [load]);
 
@@ -743,7 +745,7 @@ export default function StatsPage() {
                           )}
                           {typeof answers[r.analysis_id] === "object" && (
                             <div className="mt-1 max-h-72 overflow-y-auto rounded-xl border border-slate-200 bg-white p-4 text-sm leading-relaxed text-slate-700 [&_h3]:mt-3 [&_h3]:mb-1 [&_h3]:font-bold [&_h3]:text-slate-900 [&_ol]:list-decimal [&_ol]:pl-5 [&_ul]:list-disc [&_ul]:pl-5 [&_em]:not-italic [&_em]:text-slate-500">
-                              <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                              <ReactMarkdown remarkPlugins={[remarkGfm]} disallowedElements={["img"]} unwrapDisallowed>
                                 {(answers[r.analysis_id] as Analysis).result.final_markdown}
                               </ReactMarkdown>
                             </div>

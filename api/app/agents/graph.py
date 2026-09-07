@@ -24,7 +24,13 @@ from app.agents.schemas import (
     RiskLevel,
     RouteDecision,
 )
-from app.config import GEMINI_API_KEY, GEMINI_MODEL, GEMINI_ROUTER_MODEL, MOCK_MODE
+from app.config import (
+    GEMINI_API_KEY,
+    GEMINI_MODEL,
+    GEMINI_ROUTER_MODEL,
+    LLM_TIMEOUT,
+    MOCK_MODE,
+)
 from app.rag import store
 
 # 코퍼스가 커지면서 상위 5개로는 규정 조항이 감사보고서에 밀려나므로,
@@ -75,7 +81,10 @@ def _get_llm(model: str | None = None, thinking: str | None = None):
     if key not in _llm_cache:
         from langchain_google_genai import ChatGoogleGenerativeAI
 
-        kwargs: dict = {"thinking_level": thinking} if thinking else {}
+        # 기본값(timeout 없음, 재시도 6회)은 상류가 느려질 때 요청을 몇 분씩 붙잡는다.
+        kwargs: dict = {"timeout": LLM_TIMEOUT, "max_retries": 2}
+        if thinking:
+            kwargs["thinking_level"] = thinking
         _llm_cache[key] = ChatGoogleGenerativeAI(
             model=key[0], google_api_key=GEMINI_API_KEY, **kwargs
         )

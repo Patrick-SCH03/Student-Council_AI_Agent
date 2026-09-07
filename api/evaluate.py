@@ -25,7 +25,8 @@ from pathlib import Path
 EVALSET = Path(__file__).resolve().parent / "evalset.json"
 
 # 색인 문서에 등장하는 실명 — 답변에 노출되면 안 된다.
-KNOWN_NAMES = ["○○○", "○○○", "○○○", "○○○", "○○○"]
+# 목록은 저장소에 두지 않는다 (PRIVATE_NAMES 환경변수 또는 api/private_names.txt).
+from app.privacy import PRIVATE_NAMES as KNOWN_NAMES  # noqa: E402
 
 
 def _check(case: dict, result: dict) -> list[str]:
@@ -52,6 +53,8 @@ def _check(case: dict, result: dict) -> list[str]:
             failures.append(f"위험도 {result.get('risk_level')} (기대 {allowed})")
 
     if case.get("forbid_names"):
+        if not KNOWN_NAMES:
+            failures.append("실명 목록 없음 (api/private_names.txt 또는 PRIVATE_NAMES) — 실명 검사 불가")
         if leaked := [n for n in KNOWN_NAMES if n in blob]:
             failures.append(f"실명 노출 {leaked}")
 
@@ -286,7 +289,7 @@ def _run_multihop_answers() -> int:
 def main() -> None:
     parser = argparse.ArgumentParser(description="답변 품질 회귀 테스트")
     parser.add_argument("--url", help="배포 서버 주소 (생략 시 로컬 파이프라인 직접 실행)")
-    parser.add_argument("--case", help="특정 케이스 id만 실행")
+    parser.add_argument("--case", help="특정 케이스만 실행 (쉼표로 여러 개)")
     parser.add_argument(
         "--multihop-answers", action="store_true",
         help="multi-hop 답변층 A/B (LLM 호출, 케이스당 2회 비용)",
@@ -303,9 +306,11 @@ def main() -> None:
 
     cases = json.loads(EVALSET.read_text(encoding="utf-8"))["cases"]
     if args.case:
-        cases = [c for c in cases if c["id"] == args.case]
-        if not cases:
-            print(f"케이스를 찾을 수 없습니다: {args.case}")
+        wanted = [c.strip() for c in args.case.split(",") if c.strip()]
+        cases = [c for c in cases if c["id"] in wanted]
+        if len(cases) != len(wanted):
+            missing = set(wanted) - {c["id"] for c in cases}
+            print(f"케이스를 찾을 수 없습니다: {', '.join(sorted(missing))}")
             sys.exit(1)
 
     if args.multihop_answers:
@@ -317,8 +322,12 @@ def main() -> None:
     if args.retrieval:
         sys.exit(_run_retrieval(cases))
 
-    print(f"평가셋 {len(cases)}건 실행 ({'원격 ' + args.url if args.url else '로컬'})\n")
+    from app.config import GEMINI_MODEL
+
+    target = "원격 " + args.url if args.url else "로컬"
+    print(f"평가셋 {len(cases)}건 실행 ({target} · {GEMINI_MODEL})\n")
     passed, failed_cases = 0, []
+    elapsed_all, tokens_all = [], []
     start_all = time.time()
 
     for i, case in enumerate(cases, 1):
@@ -334,6 +343,9 @@ def main() -> None:
 
         failures = _check(case, result)
         elapsed = time.time() - started
+        elapsed_all.append(elapsed)
+        if tokens := result.get("_tokens"):
+            tokens_all.append(tokens)
         if failures:
             failed_cases.append((case["id"], failures))
             print(f"[{i:2d}/{len(cases)}] FAIL  {case['id']} ({elapsed:.1f}s)")
@@ -347,6 +359,11 @@ def main() -> None:
     rate = passed / total * 100 if total else 0
     print(f"\n{'=' * 52}")
     print(f"통과 {passed}/{total} ({rate:.0f}%) · 소요 {time.time() - start_all:.0f}초")
+    if elapsed_all:
+        summary = f"평균 응답 {sum(elapsed_all) / len(elapsed_all):.1f}초"
+        if tokens_all:
+            summary += f" · 평균 토큰 {sum(tokens_all) / len(tokens_all):,.0f}"
+        print(summary)
     if failed_cases:
         print("\n실패 케이스:")
         for cid, reasons in failed_cases:
