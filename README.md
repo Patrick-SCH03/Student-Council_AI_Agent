@@ -7,7 +7,7 @@
 인하대학교 학생회를 대상으로 실제 운영 중인 서비스입니다.
 
 [![Live](https://img.shields.io/badge/Live_Service-000000?style=for-the-badge)](https://ai-agent-patrick-16be.vercel.app)
-[![CI](https://github.com/Patrick-SCH03/AI_agent/actions/workflows/ci.yml/badge.svg)](https://github.com/Patrick-SCH03/AI_agent/actions/workflows/ci.yml)
+[![CI](https://github.com/Patrick-SCH03/Student-Council_AI_Agent/actions/workflows/ci.yml/badge.svg)](https://github.com/Patrick-SCH03/Student-Council_AI_Agent/actions/workflows/ci.yml)
 
 </div>
 
