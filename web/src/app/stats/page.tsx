@@ -2,7 +2,7 @@
 
 // 운영 관측 대시보드 (숨김 URL: /stats — 네비게이션에 노출하지 않음)
 
-import { Fragment, useCallback, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -349,14 +349,19 @@ export default function StatsPage() {
   const [error, setError] = useState<string | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
   const [needsAuth, setNeedsAuth] = useState(false);
+  // 로그아웃 뒤 늦게 도착한 응답이 화면을 되살리지 않도록 세션을 구분한다
+  const sessionRef = useRef(0);
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [answers, setAnswers] = useState<Record<number, Analysis | "loading" | "error">>({});
 
   const load = useCallback(async () => {
+    const session = sessionRef.current;
     try {
       const res = await adminFetch("/api/stats");
       if (!res.ok) throw new Error(`서버 오류 (${res.status})`);
-      setStats(await res.json());
+      const data = await res.json();
+      if (session !== sessionRef.current) return; // 그사이 로그아웃됨
+      setStats(data);
       setError(null);
       setNeedsAuth(false);
     } catch (e) {
@@ -455,6 +460,7 @@ export default function StatsPage() {
           <button
             type="button"
             onClick={() => {
+              sessionRef.current += 1;
               clearAdminToken();
               setNeedsAuth(true);
               setStats(null);
