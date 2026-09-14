@@ -522,10 +522,12 @@ export default function ChatPage() {
     for (let i = 0; i < msgs.length - 1; i++) {
       const q = msgs[i];
       const a = msgs[i + 1];
+      // 범위 밖·실명 거절 안내는 대화 맥락이 아니다 — 후속 질문 재작성에 섞이지 않게 뺀다
       if (
         q.role === "user" &&
         a.role === "assistant" &&
-        a.state.result?.final_markdown
+        a.state.result?.final_markdown &&
+        a.state.result.route !== "general"
       ) {
         pairs.push({
           question: q.text,

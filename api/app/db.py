@@ -6,6 +6,7 @@
 import json
 import re
 import sqlite3
+import threading
 from datetime import datetime, timezone
 
 from app.config import SQLITE_PATH
@@ -223,16 +224,17 @@ def get_cached_answer(query_key: str, ttl_hours: int) -> dict | None:
 def save_cached_answer(
     query_key: str, analysis_id: int, result: dict, generation: int | None = None
 ) -> None:
-    if generation is not None and generation != _cache_generation:
-        return  # 요청 도중 캐시가 비워졌다 — 이 답은 옛 색인 기준일 수 있다
-    with _connect() as conn:
-        conn.execute(
-            "INSERT INTO answer_cache (query_key, ts, analysis_id, result, hits) "
-            "VALUES (?, ?, ?, ?, 0) ON CONFLICT(query_key) DO UPDATE SET "
-            "ts = excluded.ts, analysis_id = excluded.analysis_id, "
-            "result = excluded.result, hits = 0",
-            (query_key, _now(), analysis_id, json.dumps(result, ensure_ascii=False)),
-        )
+    with _cache_lock:
+        if generation is not None and generation != _cache_generation:
+            return  # 요청 도중 캐시가 비워졌다 — 이 답은 옛 색인 기준일 수 있다
+        with _connect() as conn:
+            conn.execute(
+                "INSERT INTO answer_cache (query_key, ts, analysis_id, result, hits) "
+                "VALUES (?, ?, ?, ?, 0) ON CONFLICT(query_key) DO UPDATE SET "
+                "ts = excluded.ts, analysis_id = excluded.analysis_id, "
+                "result = excluded.result, hits = 0",
+                (query_key, _now(), analysis_id, json.dumps(result, ensure_ascii=False)),
+            )
 
 
 def cache_stats() -> dict:
@@ -246,6 +248,9 @@ def cache_stats() -> dict:
 # 캐시를 비울 때마다 1씩 오른다. 비우기 전에 시작된 요청은 완료돼도 저장하지
 # 못하게 해서, 옛 색인으로 만든 답이 새 캐시에 들어가는 일을 막는다.
 _cache_generation = 0
+# 세대 검사와 INSERT, 세대 증가와 DELETE는 각각 한 덩어리여야 한다. 스레드풀에서
+# 도는 문서 삭제가 검사와 저장 사이에 끼면 지운 문서의 답이 새 캐시에 남는다.
+_cache_lock = threading.Lock()
 
 
 def cache_generation() -> int:
@@ -254,9 +259,10 @@ def cache_generation() -> int:
 
 def clear_cache() -> int:
     global _cache_generation
-    _cache_generation += 1
-    with _connect() as conn:
-        cur = conn.execute("DELETE FROM answer_cache")
+    with _cache_lock:
+        _cache_generation += 1
+        with _connect() as conn:
+            cur = conn.execute("DELETE FROM answer_cache")
     return cur.rowcount
 
 

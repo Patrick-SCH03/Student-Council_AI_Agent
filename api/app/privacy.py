@@ -46,9 +46,15 @@ def _load_names() -> list[str]:
 
 PRIVATE_NAMES: list[str] = _load_names()
 
-# 스트리밍 중 아직 내보내지 않고 붙들어 두는 꼬리 길이.
-# 어떤 패턴도 이 길이보다 길지 않아야 토큰 경계를 걸친 일치를 놓치지 않는다.
-_HOLD = 96  # 이메일 최대 길이(64+1+63+…)를 넘는다
+# 스트리밍 보류 규칙: 전화·계좌·이메일·실명은 모두 공백을 포함하지 않는다(전화의
+# 구분 공백만 예외이고, 그건 아래 경계 검사가 잡는다). 그러므로 마지막 공백 뒤의
+# 토막은 아직 끝나지 않은 패턴일 수 있어 붙들고, 그 앞은 확정으로 내보낸다.
+# 고정 길이 보류(32·96자)는 정규식이 허용하는 최대 길이보다 짧아 앞부분이 샜다.
+_WS = (" ", "\n", "\t")
+_HOLD_MAX = 512  # 공백 없는 토막이 이보다 길면(URL·표) 앞부분은 내보낸다
+# 전화번호만 공백으로 나뉠 수 있다("010 1234 5678"). 버퍼 끝이 전화번호의 앞부분이면
+# 아직 끝나지 않은 것으로 보고 그 시작점 앞에서 끊는다 (최대 14자 보류).
+_PHONE_PREFIX = re.compile(r"01[016789][-.\s]?\d{0,4}[-.\s]?\d{0,4}$")
 
 
 def _spans(text: str) -> list[tuple[int, int]]:
@@ -105,10 +111,12 @@ class StreamMasker:
 
     def feed(self, text: str) -> str:
         self._buf += text
-        if len(self._buf) <= _HOLD:
-            return ""
-        cut = len(self._buf) - _HOLD
-        # 경계를 걸친 일치가 있으면 그 시작점까지만 내보낸다
+        # 마지막 공백까지가 확정 구간. 공백 없이 너무 길면 상한만큼만 붙든다.
+        cut = max(self._buf.rfind(ch) for ch in _WS) + 1
+        cut = max(cut, len(self._buf) - _HOLD_MAX)
+        if partial := _PHONE_PREFIX.search(self._buf):
+            cut = min(cut, partial.start())
+        # 경계를 걸친 일치(공백 구분 전화번호 등)가 있으면 그 시작점까지만 내보낸다
         for start, end in _spans(self._buf):
             if start < cut < end:
                 cut = min(cut, start)

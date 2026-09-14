@@ -32,7 +32,7 @@ from app.config import (
     LLM_TIMEOUT,
     MOCK_MODE,
 )
-from app.privacy import find_private_name
+from app.privacy import find_private_name, mask_text
 from app.rag import citation_graph, store
 
 # 코퍼스가 커지면서 상위 5개로는 규정 조항이 감사보고서에 밀려나므로,
@@ -130,26 +130,37 @@ def _format_history(history: list[dict]) -> str:
         return ""
     lines = ["**이전 대화:**"]
     for item in history[-3:]:
-        lines.append(f"- 질문: {item.get('question', '')}")
-        answer = (item.get("answer") or "")[:500]
+        # 이력은 클라이언트가 보내는 값이다. 거절된 이전 질문의 이름이 여기 남아 있으므로
+        # 마스킹해서 넣는다 — 라우터(LLM)에도 실명이 닿지 않게.
+        lines.append(f"- 질문: {mask_text(item.get('question', ''))}")
+        answer = mask_text((item.get("answer") or "")[:500])
         lines.append(f"  답변 요약: {answer}")
     return "\n".join(lines) + "\n\n"
+
+
+def _refuse_private_name(query: str) -> AgentState:
+    return {
+        "route": "general",
+        "guard": "private_name",
+        "standalone_query": query,
+        "needs_precedents": False,
+    }
 
 
 async def route_node(state: AgentState) -> AgentState:
     query = state["query"]
     history = state.get("history") or []
 
-    # 등록된 실명이 질문(또는 이전 질문)에 있으면 LLM을 부르지 않고 입구에서 거절한다.
+    # 등록된 실명이 질문에 있으면 LLM을 부르지 않고 입구에서 거절한다.
     # 프롬프트 규칙·출력 마스킹은 답변 단계의 방어다. 이름으로 특정인의 처분을
     # 캐묻는 질문은 받지 않는 편이 맞고, 비용도 판단 여지도 0이다.
-    if find_private_name(" ".join([query, *(h.get("question", "") for h in history)])):
-        return {
-            "route": "general",
-            "guard": "private_name",
-            "standalone_query": query,
-            "needs_precedents": False,
-        }
+    #
+    # 검사 범위: 현재 질문 + 이력의 '답변'. 이전 '질문'은 보지 않는다 — 거절된 턴의
+    # 질문에 이름이 남아 있어, 안내대로 직책으로 고쳐 물어도 또 거절되기 때문이다.
+    # 답변은 서버가 만든 것이라 실명이 있을 수 없으므로, 있으면 클라이언트가 위조한 것이다.
+    # 이력의 이름이 라우터 재작성을 타고 들어오는 경로는 아래 standalone_query 검사가 막는다.
+    if find_private_name(query) or any(find_private_name(h.get("answer", "")) for h in history):
+        return _refuse_private_name(query)
 
     if MOCK_MODE:
         keywords = ("학생회", "규정", "예산", "감사", "회계", "회비", "지원금", "선거")
@@ -176,6 +187,9 @@ async def route_node(state: AgentState) -> AgentState:
         return {"route": "regulation", "standalone_query": query, "needs_precedents": False}
     route = decision.route if decision.route in ("regulation", "general") else "regulation"
     standalone = (decision.standalone_query or "").strip() or query
+    # 재작성이 이력에서 이름을 끌어왔으면("그 사람의 처분은?" → "○○○의 처분") 여기서 막는다
+    if find_private_name(standalone):
+        return _refuse_private_name(query)
     return {
         "route": route,
         "standalone_query": standalone,
