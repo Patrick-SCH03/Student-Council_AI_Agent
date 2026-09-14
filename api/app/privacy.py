@@ -60,6 +60,20 @@ def _spans(text: str) -> list[tuple[int, int]]:
     return spans
 
 
+def find_private_name(text: str) -> str | None:
+    """텍스트에 등록된 실명이 있으면 그 이름을 돌려준다.
+
+    "성 보현"처럼 띄어 쓴 변형도 잡기 위해 공백을 지운 사본도 함께 본다.
+    """
+    if not text:
+        return None
+    compact = re.sub(r"\s+", "", text)
+    for name in PRIVATE_NAMES:
+        if name in text or name in compact:
+            return name
+    return None
+
+
 def mask_text(text: str) -> str:
     if not text:
         return text

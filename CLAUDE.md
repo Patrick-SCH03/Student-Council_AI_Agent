@@ -39,7 +39,7 @@ Windows 주의: 인터프리터는 `api/.venv/Scripts/python.exe`, 한글 출력
 - **검색 관련 회귀는 배포본에서 확인한다.** OCR이 비결정적이라 로컬/원격 청크 경계가 달라 로컬만 통과한 적이 있다. 지금은 `data/ocr_cache`로 고정 — 캐시 키가 파일해시+프롬프트라 `_OCR_PROMPT`를 바꾸면 전체 재추출 비용이 발생한다.
 - **원격 평가 전 답변 캐시를 비운다** (`POST /api/cache/clear`). 안 비우면 캐시가 0.3초에 응답해 새 코드가 검증되지 않는다. 문서 추가·삭제 시엔 자동으로 비워진다.
 - 관리자 API 인증: `Authorization: Bearer <ADMIN_TOKEN>` (`api/.env`). settings 변경은 **PUT** (POST는 405). `/docs`·`/openapi.json`은 운영에서 꺼져 있다 (목업 모드에서만 열림).
-- 개인정보는 프롬프트 규칙 + **코드 마스킹**(`app/privacy.py`) 이중 방어. 실명 목록은 저장소에 없다 — 로컬은 `api/private_names.txt`(gitignore), 배포는 Railway 환경변수 `PRIVATE_NAMES`(쉼표 구분). 목록이 비면 `evaluate.py`의 실명 검사가 실패로 표시된다. 전화·계좌·이메일은 목록 없이도 정규식으로 지운다.
+- 개인정보는 프롬프트 규칙 + **코드 마스킹**(`app/privacy.py`) 이중 방어. 실명 목록은 저장소에 없다 — 로컬은 `api/private_names.txt`(gitignore), 배포는 Railway 환경변수 `PRIVATE_NAMES`(쉼표 구분). 목록이 비면 `evaluate.py`의 실명 검사가 실패로 표시된다. 전화·계좌·이메일은 목록 없이도 정규식으로 지운다. 등록된 실명이 **질문에** 있으면 라우터 전에 `general`(고정 거절문)로 보낸다 — LLM 미호출.
 - 비용 폭주 방어: 일일 한도에 진행 중 요청을 더해 검사하고, 동시 LLM 파이프라인은 `MAX_INFLIGHT_TOTAL`(기본 5)로 제한한다. 지표·분석 기록은 `RETENTION_DAYS`(기본 365) 지나면 기동 시 삭제.
 - 관리자 토큰이 실린 `/api/chat`은 일일 한도에서 제외된다 (지표엔 기록됨). `evaluate.py --url`이 토큰을 자동으로 싣는다.
 - 인용 그래프(`citation_graph.py`)는 색인의 파생물 — 문서 추가·삭제 시 자동 재생성된다. 확장은 라우터의 `needs_precedents` 판별로만 켜지고, `GRAPH_EXPANSION=0`이 킬 스위치다.

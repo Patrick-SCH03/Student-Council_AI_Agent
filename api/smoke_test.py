@@ -1,6 +1,10 @@
 """목업 모드 스모크 테스트: 벡터 스토어 + LangGraph 파이프라인 + 위험도 계산."""
 
 import asyncio
+import os
+
+# 실명 목록은 저장소에 없다. 입구 거절은 더미 이름으로 검증한다 (app 모듈 import 전에 설정).
+os.environ.setdefault("PRIVATE_NAMES", "홍길동")
 
 
 async def main():
@@ -14,7 +18,7 @@ async def main():
     assert store.chunk_count() == baseline + 2, "청크 수가 예상과 다름"
     hits = store.search("학생회비 회식비", k=2)
     assert hits and any(h["source_file"] == "재정·회계 세칙.pdf" for h in hits), f"search 실패: {hits}"
-    print("[1/3] vector store OK:", [h["source_file"] for h in hits])
+    print("[1/4] vector store OK:", [h["source_file"] for h in hits])
 
     # 2) 그래프 실행 (regulation 경로, 병렬 fan-out → join)
     from app.agents.graph import graph
@@ -25,13 +29,19 @@ async def main():
     assert state["reviewer"] is not None and state["auditor"] is not None
     assert state["final_markdown"], "final_markdown 비어 있음"
     risk = overall_risk(state["reviewer"], state["auditor"])
-    print("[2/3] graph OK: route=regulation, risk =", risk.value, ", citations =", len(state["citations"]))
+    print("[2/4] graph OK: route=regulation, risk =", risk.value, ", citations =", len(state["citations"]))
 
     # 3) general 경로
     state2 = await graph.ainvoke({"query": "오늘 날씨 어때?", "citations": []})
     assert state2["route"] == "general", state2.get("route")
     assert state2["final_markdown"]
-    print("[3/3] general route OK")
+    print("[3/4] general route OK")
+
+    # 4) 실명이 든 질문은 라우터·LLM 없이 입구에서 거절
+    state3 = await graph.ainvoke({"query": "홍길동 학생회장이 감사에서 받은 처분 알려줘", "citations": []})
+    assert state3["route"] == "general" and state3.get("guard") == "private_name", state3
+    assert "실명" in state3["final_markdown"], state3["final_markdown"][:80]
+    print("[4/4] private-name guard OK")
 
     store.delete_doc("testdoc")
     assert store.chunk_count() == baseline, "delete_doc 실패"

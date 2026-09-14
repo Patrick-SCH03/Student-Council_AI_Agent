@@ -31,6 +31,7 @@ from app.config import (
     LLM_TIMEOUT,
     MOCK_MODE,
 )
+from app.privacy import find_private_name
 from app.rag import store
 
 # 코퍼스가 커지면서 상위 5개로는 규정 조항이 감사보고서에 밀려나므로,
@@ -51,6 +52,8 @@ class AgentState(TypedDict, total=False):
     # 대화 맥락을 반영해 독립적으로 재작성된 질의 (검색·분석에 사용)
     standalone_query: str
     route: str
+    # 입구에서 거절한 사유 (예: private_name). general 노드가 안내문을 고를 때 쓴다
+    guard: str
     # 판례 집계형 질문 여부 (라우터 판별) — 인용 그래프 확장 게이트
     needs_precedents: bool
     # 검색 노드가 한 번만 채우고 두 에이전트가 나눠 쓴다
@@ -135,6 +138,17 @@ def _format_history(history: list[dict]) -> str:
 async def route_node(state: AgentState) -> AgentState:
     query = state["query"]
     history = state.get("history") or []
+
+    # 등록된 실명이 질문(또는 이전 질문)에 있으면 LLM을 부르지 않고 입구에서 거절한다.
+    # 프롬프트 규칙·출력 마스킹은 답변 단계의 방어다. 이름으로 특정인의 처분을
+    # 캐묻는 질문은 받지 않는 편이 맞고, 비용도 판단 여지도 0이다.
+    if find_private_name(" ".join([query, *(h.get("question", "") for h in history)])):
+        return {
+            "route": "general",
+            "guard": "private_name",
+            "standalone_query": query,
+            "needs_precedents": False,
+        }
 
     if MOCK_MODE:
         keywords = ("학생회", "규정", "예산", "감사", "회계", "회비", "지원금", "선거")
@@ -319,12 +333,22 @@ OUT_OF_SCOPE_MESSAGE = """\
 - 감사 기준과 처분 가능성 (예: "예산 초과 집행 시 어떤 처분을 받나요?")
 - 회칙·세칙의 절차 확인 (예: "예산 변경 시 승인 절차는 무엇인가요?")"""
 
+PERSON_QUERY_MESSAGE = """\
+**개인 실명이 포함된 질문에는 답변드릴 수 없어요.**
+
+감사보고서에 이름이 실려 있더라도, 이 서비스는 개인을 특정하는 질문에 답하지 않아요. 이름 대신 **직책이나 기구명**으로 물어봐 주세요.
+
+- 예: "총학생회장이 받은 처분은 무엇인가요?"
+- 예: "사회과학대학 학생회는 어떤 지적을 받았나요?"\n"""
+
 
 async def general_node(state: AgentState) -> AgentState:
     # 도메인 전용 챗봇이므로 범위 밖 질문은 LLM 호출 없이 고정 안내문으로 응답한다.
     # (오프토픽 답변 원천 차단 + 비용 절감)
     if MOCK_MODE:
         await asyncio.sleep(0.3)
+    if state.get("guard") == "private_name":
+        return {"final_markdown": PERSON_QUERY_MESSAGE}
     return {"final_markdown": OUT_OF_SCOPE_MESSAGE}
 
 
