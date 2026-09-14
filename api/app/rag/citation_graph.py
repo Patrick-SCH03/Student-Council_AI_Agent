@@ -99,7 +99,10 @@ def build_graph() -> nx.DiGraph:
                     g.add_edge(art_node, chunk_node, type="contains")
 
             if dtype == "audit":
-                # 명명 위치들을 모아 각 제N조를 가장 가까운 선행 명명에 귀속
+                # 명명 위치들을 모아 각 제N조를 가장 가까운 선행 명명에 귀속.
+                # 이 청크에서 명명이 나오기 전의 조항은 '이전 청크까지의 마지막 명명'을
+                # 따라야 한다 — 같은 청크의 뒤쪽 명명이 앞 조항에 붙으면 안 된다.
+                named_before_chunk = last_named
                 names: list[tuple[int, str]] = []
                 for nm in _NAME.finditer(text):
                     raw = nm.group(0).strip()
@@ -113,7 +116,7 @@ def build_graph() -> nx.DiGraph:
                         last_named = dst
                 for am in _ART_REF.finditer(text):
                     scope = [d for pos, d in names if pos <= am.start()]
-                    dst_doc = scope[-1] if scope else last_named
+                    dst_doc = scope[-1] if scope else named_before_chunk
                     if not dst_doc or dst_doc == src_doc:
                         continue
                     art_node = ("article", dst_doc, _art_key(am.group(1), am.group(2)))

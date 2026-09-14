@@ -57,7 +57,12 @@ _EMBED_MAX_RETRIES = 5
 _EMBED_BACKOFF_BASE = 30  # 초
 
 
-def _embed(texts: list[str]) -> list[list[float]]:
+def _embed(
+    texts: list[str],
+    *,
+    max_retries: int = _EMBED_MAX_RETRIES,
+    backoff_base: int = _EMBED_BACKOFF_BASE,
+) -> list[list[float]]:
     if MOCK_MODE:
         return _mock_embed(texts)
     global _embedder
@@ -71,7 +76,7 @@ def _embed(texts: list[str]) -> list[list[float]]:
     vectors: list[list[float]] = []
     for start in range(0, len(texts), _EMBED_BATCH):
         batch = texts[start : start + _EMBED_BATCH]
-        for attempt in range(_EMBED_MAX_RETRIES):
+        for attempt in range(max_retries):
             try:
                 vectors.extend(_embedder.embed_documents(batch))
                 break
@@ -82,10 +87,10 @@ def _embed(texts: list[str]) -> list[list[float]]:
                     token in msg
                     for token in ("429", "RESOURCE_EXHAUSTED", "503", "UNAVAILABLE", "500", "INTERNAL")
                 )
-                if not retryable or attempt == _EMBED_MAX_RETRIES - 1:
+                if not retryable or attempt == max_retries - 1:
                     raise
-                wait = _EMBED_BACKOFF_BASE * (2**attempt)
-                print(f"임베딩 일시 오류. {wait}초 대기 후 재시도 ({attempt + 1}/{_EMBED_MAX_RETRIES})...")
+                wait = backoff_base * (2**attempt)
+                print(f"임베딩 일시 오류. {wait}초 대기 후 재시도 ({attempt + 1}/{max_retries})...")
                 time.sleep(wait)
     return vectors
 
@@ -189,8 +194,12 @@ def _invalidate_bm25() -> None:
         _bm25_cache = None
 
 
-def _keyword_search(query: str, k: int, doc_type: str | None) -> list[int]:
-    """BM25 점수 상위 청크의 인덱스를 반환한다."""
+def _keyword_search(query: str, k: int, doc_type: str | None) -> list[tuple[str, dict]]:
+    """BM25 점수 상위 청크를 (본문, 메타) 목록으로 반환한다.
+
+    인덱스 번호가 아니라 본문을 돌려준다. 번호를 돌려주면 호출 측이 다시 읽는
+    인덱스가 그 사이 재구축돼 다른 청크를 가리킬 수 있다 (업로드·삭제와 동시 실행).
+    """
     index = _get_bm25()
     docs, postings, lengths, avgdl = (
         index["docs"], index["postings"], index["lengths"], index["avgdl"]
@@ -214,12 +223,17 @@ def _keyword_search(query: str, k: int, doc_type: str | None) -> list[int]:
     if doc_type:
         metas = index["metas"]
         scores = {i: s for i, s in scores.items() if metas[i].get("doc_type") == doc_type}
-    return sorted(scores, key=scores.get, reverse=True)[:k]
+    top = sorted(scores, key=scores.get, reverse=True)[:k]
+    return [(docs[i], index["metas"][i]) for i in top]
 
 
 def embed_query(text: str) -> list[float]:
-    """질의 임베딩 1건. 같은 질의로 여러 검색을 돌릴 때 호출 측에서 재사용한다."""
-    return _embed([text])[0]
+    """질의 임베딩 1건. 같은 질의로 여러 검색을 돌릴 때 호출 측에서 재사용한다.
+
+    색인용 백오프(최대 450초)를 그대로 쓰면 사용자 요청이 그만큼 붙잡힌다.
+    질의는 짧게 두 번만 시도하고 실패를 빨리 돌려준다.
+    """
+    return _embed([text], max_retries=2, backoff_base=2)[0]
 
 
 def _vector_search(
@@ -280,8 +294,7 @@ def search(
 
     pool = max(k * 3, 15)  # 융합 전 후보를 넉넉히 확보
     vector_hits = _vector_search(query, pool, doc_type, query_embedding)
-    keyword_idx = _keyword_search(query, pool, doc_type)
-    index = _get_bm25()
+    keyword_hits = _keyword_search(query, pool, doc_type)
 
     # 같은 청크를 (문서, 청크번호)로 식별해 두 결과를 합친다
     fused: dict[tuple, dict] = {}
@@ -294,9 +307,8 @@ def search(
         m = hit["meta"]
         _add((m.get("doc_id"), m.get("chunk_index")), hit["text"], m, rank)
 
-    for rank, idx in enumerate(keyword_idx):
-        m = index["metas"][idx]
-        _add((m.get("doc_id"), m.get("chunk_index")), index["docs"][idx], m, rank)
+    for rank, (text, m) in enumerate(keyword_hits):
+        _add((m.get("doc_id"), m.get("chunk_index")), text, m, rank)
 
     ranked = sorted(fused.values(), key=lambda e: e["score"], reverse=True)
     ordered = _diversify(ranked, k, max_per_source)

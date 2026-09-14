@@ -17,7 +17,8 @@ from app.config import DATA_DIR
 
 _PHONE = re.compile(r"01[016789][-.\s]?\d{3,4}[-.\s]?\d{4}")
 _ACCOUNT = re.compile(r"(?<!\d)\d{3,6}-\d{2,6}-\d{4,8}(?:-\d{1,4})?(?!\d)")
-_EMAIL = re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+")
+# 길이를 제한한다 — 무한정이면 스트림 보류 길이보다 긴 이메일의 앞부분이 먼저 나간다
+_EMAIL = re.compile(r"[\w.+-]{1,64}@[\w-]{1,63}(?:\.[\w-]{1,63}){1,4}")
 
 _PATTERNS: list[tuple[re.Pattern, str]] = [
     (_PHONE, "010-****-****"),
@@ -47,7 +48,7 @@ PRIVATE_NAMES: list[str] = _load_names()
 
 # 스트리밍 중 아직 내보내지 않고 붙들어 두는 꼬리 길이.
 # 어떤 패턴도 이 길이보다 길지 않아야 토큰 경계를 걸친 일치를 놓치지 않는다.
-_HOLD = 32
+_HOLD = 96  # 이메일 최대 길이(64+1+63+…)를 넘는다
 
 
 def _spans(text: str) -> list[tuple[int, int]]:

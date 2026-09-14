@@ -193,8 +193,13 @@ def set_settings(values: dict[str, int]) -> None:
 # ---------------------------------------------------------------- 답변 캐시
 
 def normalize_query(query: str) -> str:
-    """캐시 키 생성: 공백·문장부호를 제거해 표기 차이를 흡수한다."""
-    return re.sub(r"[\s?!.,·…]+", "", query).lower()
+    """캐시 키 생성: 공백·문장부호를 제거해 표기 차이를 흡수한다.
+
+    숫자 사이의 마침표는 남긴다 — "1.5%"와 "15%"가 같은 키로 합쳐지면
+    앞 질문의 답이 뒤 질문에 그대로 나간다.
+    """
+    query = re.sub(r"(?<!\d)\.|\.(?!\d)", "", query)
+    return re.sub(r"[\s?!,·…]+", "", query).lower()
 
 
 def get_cached_answer(query_key: str, ttl_hours: int) -> dict | None:
@@ -215,7 +220,11 @@ def get_cached_answer(query_key: str, ttl_hours: int) -> dict | None:
     return {"analysis_id": row["analysis_id"], **json.loads(row["result"])}
 
 
-def save_cached_answer(query_key: str, analysis_id: int, result: dict) -> None:
+def save_cached_answer(
+    query_key: str, analysis_id: int, result: dict, generation: int | None = None
+) -> None:
+    if generation is not None and generation != _cache_generation:
+        return  # 요청 도중 캐시가 비워졌다 — 이 답은 옛 색인 기준일 수 있다
     with _connect() as conn:
         conn.execute(
             "INSERT INTO answer_cache (query_key, ts, analysis_id, result, hits) "
@@ -234,19 +243,35 @@ def cache_stats() -> dict:
     return dict(row)
 
 
+# 캐시를 비울 때마다 1씩 오른다. 비우기 전에 시작된 요청은 완료돼도 저장하지
+# 못하게 해서, 옛 색인으로 만든 답이 새 캐시에 들어가는 일을 막는다.
+_cache_generation = 0
+
+
+def cache_generation() -> int:
+    return _cache_generation
+
+
 def clear_cache() -> int:
+    global _cache_generation
+    _cache_generation += 1
     with _connect() as conn:
         cur = conn.execute("DELETE FROM answer_cache")
     return cur.rowcount
 
 
 def add_feedback(analysis_id: int, helpful: bool, visitor_id: str | None) -> None:
-    """답변 만족도 기록. 같은 답변에 다시 누르면 갱신된다."""
+    """답변 만족도 기록. 같은 방문자가 다시 누르면 갱신된다.
+
+    analysis_id는 순번이라 누구나 추측할 수 있다. 다른 방문자가 남긴 평가를
+    덮어쓰지 못하도록, 갱신은 처음 남긴 방문자(또는 익명 기록)에게만 허용한다.
+    """
     with _connect() as conn:
         conn.execute(
             "INSERT INTO feedback (analysis_id, ts, helpful, visitor_id) VALUES (?, ?, ?, ?) "
             "ON CONFLICT(analysis_id) DO UPDATE SET "
-            "helpful = excluded.helpful, ts = excluded.ts",
+            "helpful = excluded.helpful, ts = excluded.ts, visitor_id = excluded.visitor_id "
+            "WHERE feedback.visitor_id IS NULL OR feedback.visitor_id = excluded.visitor_id",
             (analysis_id, _now(), 1 if helpful else 0, visitor_id),
         )
 
@@ -254,6 +279,12 @@ def add_feedback(analysis_id: int, helpful: bool, visitor_id: str | None) -> Non
 # 한도 계산에서는 운영자 질의를 제외한다. 회귀 테스트를 돌리다 실사용자 몫을
 # 소진시키거나, 반대로 점검이 한도에 막히는 일을 둘 다 막는다.
 _NOT_ADMIN = "COALESCE(is_admin, 0) = 0"
+# '오늘'은 한국 자정 기준이다. ts는 UTC ISO 문자열이므로 KST 자정을 UTC로 옮긴
+# 경계('T' 구분자를 맞춰야 문자열 비교가 시간순이 된다)와 비교한다 — 색인을 탄다.
+_TODAY = (
+    "ts >= strftime('%Y-%m-%dT%H:%M:%S', date('now', '+9 hours'), '-9 hours') "
+    "AND ts < strftime('%Y-%m-%dT%H:%M:%S', date('now', '+9 hours'), '+15 hours')"
+)
 
 
 def count_today(visitor_id: str | None = None) -> int:
@@ -262,13 +293,13 @@ def count_today(visitor_id: str | None = None) -> int:
         if visitor_id:
             row = conn.execute(
                 f"SELECT COUNT(*) AS n FROM metrics "
-                f"WHERE ts >= date('now') AND ts < date('now', '+1 day') AND {_NOT_ADMIN} AND visitor_id = ?",
+                f"WHERE {_TODAY} AND {_NOT_ADMIN} AND visitor_id = ?",
                 (visitor_id,),
             ).fetchone()
         else:
             row = conn.execute(
                 f"SELECT COUNT(*) AS n FROM metrics "
-                f"WHERE ts >= date('now') AND ts < date('now', '+1 day') AND {_NOT_ADMIN}"
+                f"WHERE {_TODAY} AND {_NOT_ADMIN}"
             ).fetchone()
     return row["n"]
 
@@ -278,16 +309,19 @@ def count_today_by_ip(ip_hash: str) -> int:
     with _connect() as conn:
         row = conn.execute(
             f"SELECT COUNT(*) AS n FROM metrics "
-            f"WHERE ts >= date('now') AND ts < date('now', '+1 day') AND {_NOT_ADMIN} AND ip_hash = ?",
+            f"WHERE {_TODAY} AND {_NOT_ADMIN} AND ip_hash = ?",
             (ip_hash,),
         ).fetchone()
     return row["n"]
 
 
 def add_visit(visitor_id: str) -> None:
+    """방문 기록. 방문자당 하루 1행만 남긴다 (무인증 엔드포인트라 무한 INSERT를 막는다)."""
     with _connect() as conn:
         conn.execute(
-            "INSERT INTO visits (ts, visitor_id) VALUES (?, ?)", (_now(), visitor_id)
+            "INSERT INTO visits (ts, visitor_id) SELECT ?, ? WHERE NOT EXISTS ("
+            f"SELECT 1 FROM visits WHERE visitor_id = ? AND {_TODAY})",
+            (_now(), visitor_id, visitor_id),
         )
 
 
@@ -337,15 +371,15 @@ def get_stats(days: int = 14) -> dict:
             # IP 상한이 실제로 클라이언트를 구분하는지 확인하는 용도.
             # 프록시가 실제 IP를 넘겨주지 않으면 트래픽이 늘어도 1에서 멈춘다.
             "COUNT(DISTINCT ip_hash) AS unique_ips "
-            "FROM metrics WHERE ts >= date('now') AND ts < date('now', '+1 day')"
+            f"FROM metrics WHERE {_TODAY}"
         ).fetchone())
 
         daily = [dict(r) for r in conn.execute(
-            "SELECT date(ts) AS date, COUNT(*) AS count, "
+            "SELECT date(ts, '+9 hours') AS date, COUNT(*) AS count, "
             "COALESCE(AVG(CASE WHEN status != 'cached' THEN elapsed END), 0) AS avg_elapsed, "
             "COALESCE(SUM(input_tokens + output_tokens), 0) AS tokens "
             "FROM metrics WHERE ts >= datetime('now', ?) "
-            "GROUP BY date(ts) ORDER BY date",
+            "GROUP BY date(ts, '+9 hours') ORDER BY date",
             (f"-{days} days",),
         ).fetchall()]
 
@@ -379,7 +413,7 @@ def get_stats(days: int = 14) -> dict:
 
         visits = {
             "today_visitors": conn.execute(
-                "SELECT COUNT(DISTINCT visitor_id) AS n FROM visits WHERE ts >= date('now') AND ts < date('now', '+1 day')"
+                f"SELECT COUNT(DISTINCT visitor_id) AS n FROM visits WHERE {_TODAY}"
             ).fetchone()["n"],
             "total_visitors": conn.execute(
                 "SELECT COUNT(DISTINCT visitor_id) AS n FROM visits"
@@ -388,8 +422,8 @@ def get_stats(days: int = 14) -> dict:
         }
 
         daily_visits = [dict(r) for r in conn.execute(
-            "SELECT date(ts) AS date, COUNT(DISTINCT visitor_id) AS visitors "
-            "FROM visits WHERE ts >= datetime('now', ?) GROUP BY date(ts) ORDER BY date",
+            "SELECT date(ts, '+9 hours') AS date, COUNT(DISTINCT visitor_id) AS visitors "
+            "FROM visits WHERE ts >= datetime('now', ?) GROUP BY date(ts, '+9 hours') ORDER BY date",
             (f"-{days} days",),
         ).fetchall()]
 
@@ -421,6 +455,7 @@ def get_analysis(analysis_id: int) -> dict | None:
 
 
 def list_analyses(limit: int = 20) -> list[dict]:
+    limit = max(1, min(limit, 100))  # 음수는 SQLite에서 '무제한'이 된다
     with _connect() as conn:
         rows = conn.execute(
             "SELECT id, query, risk_level, result, created_at FROM analyses "

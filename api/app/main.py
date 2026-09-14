@@ -294,6 +294,7 @@ async def chat(
         if key
     ]
     _inflight_add(inflight_keys, +1)
+    cache_generation = db.cache_generation()
 
     async def event_stream():
         start = time.time()
@@ -301,6 +302,7 @@ async def chat(
         usage_handler = UsageMetadataCallbackHandler()
         # 프롬프트의 실명 금지 규칙은 확률적이다. 나가는 모든 텍스트를 코드가 한 번 더 지운다.
         masker = StreamMasker()
+        recorded = False  # 정상·오류 경로에서 지표를 남겼는지
 
         def _token_totals() -> tuple[int, int]:
             usage = usage_handler.usage_metadata or {}
@@ -397,8 +399,9 @@ async def chat(
                 ip_hash=ip_hash,
                 is_admin=is_admin,
             )
+            recorded = True
             if cache_key:
-                db.save_cached_answer(cache_key, analysis_id, result)
+                db.save_cached_answer(cache_key, analysis_id, result, cache_generation)
             # analysis_id는 저장 후에야 정해지므로 응답에만 덧붙인다 (피드백 전송용)
             yield _sse({"type": "result", **result, "analysis_id": analysis_id})
 
@@ -417,10 +420,28 @@ async def chat(
                 is_admin=is_admin,
                 error=f"{type(e).__name__}: {e}",
             )
+            recorded = True
             # 예외 원문(LLM 출력 조각·내부 경로가 섞일 수 있음)은 지표에만 남기고 사용자에겐 일반 문구
             yield _sse({"type": "error", "message": "분석 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요."})
         finally:
             _inflight_add(inflight_keys, -1)
+            if not recorded:
+                # 클라이언트가 끊어 스트림이 중간에 닫혔다. LLM 비용은 이미 발생했으므로
+                # 기록해야 '완료 건수'로 세는 일일 한도를 끊기로 우회할 수 없다.
+                in_tok, out_tok = _token_totals()
+                db.record_metric(
+                    route=merged.get("route"),
+                    risk_level=None,
+                    status="cancelled",
+                    elapsed=round(time.time() - start, 2),
+                    input_tokens=in_tok,
+                    output_tokens=out_tok,
+                    query_preview=query,
+                    visitor_id=visitor_id,
+                    ip_hash=ip_hash,
+                    is_admin=is_admin,
+                    error="client disconnected",
+                )
 
     return StreamingResponse(
         event_stream(),
@@ -452,7 +473,11 @@ async def upload_document(file: UploadFile):
 
 def _index_upload(content: bytes, filename: str) -> tuple[str, int]:
     doc_id, chunks = ingest_pdf(content, filename)
-    db.add_document(doc_id, filename, chunks)
+    try:
+        db.add_document(doc_id, filename, chunks)
+    except Exception:
+        store.delete_doc(doc_id)  # 목록에 없는 청크가 검색에 섞이지 않도록 회수
+        raise
     # 색인이 바뀌면 이전 답변은 낡은 근거일 수 있으므로 캐시를 비운다
     db.clear_cache()
     # 인용 그래프도 색인의 파생물이므로 함께 재생성한다 (약 2초, 낡은 그래프 방지)
@@ -467,9 +492,10 @@ def get_documents():
 
 @app.delete("/api/documents/{doc_id}", dependencies=[admin_only])
 def delete_document(doc_id: str):
+    # 청크를 먼저 지운다. DB 행을 먼저 지우면 청크 삭제가 실패했을 때 재시도가 404가 된다.
+    store.delete_doc(doc_id)
     if not db.delete_document(doc_id):
         raise HTTPException(status_code=404, detail="문서를 찾을 수 없습니다.")
-    store.delete_doc(doc_id)
     db.clear_cache()
     citation_graph.get_graph(rebuild=True)
     return {"deleted": doc_id}
@@ -479,7 +505,7 @@ def delete_document(doc_id: str):
 
 @app.get("/api/history", dependencies=[admin_only])
 def get_history(limit: int = 20):
-    return {"analyses": db.list_analyses(min(limit, 100))}
+    return {"analyses": db.list_analyses(max(1, min(limit, 100)))}
 
 
 @app.get("/api/analyses/{analysis_id}", dependencies=[admin_only])
