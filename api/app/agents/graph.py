@@ -12,6 +12,7 @@ MOCK_MODE에서는 LLM 호출 없이 고정 응답으로 전체 플로우를 검
 
 import asyncio
 import operator
+import os
 from typing import Annotated, TypedDict
 
 from langgraph.graph import END, StateGraph
@@ -31,7 +32,8 @@ from app.config import (
     LLM_TIMEOUT,
     MOCK_MODE,
 )
-from app.rag import store
+from app.privacy import find_private_name, mask_text
+from app.rag import citation_graph, store
 
 # 코퍼스가 커지면서 상위 5개로는 규정 조항이 감사보고서에 밀려나므로,
 # 유형별로 나눠 충분히 확보한다.
@@ -51,6 +53,8 @@ class AgentState(TypedDict, total=False):
     # 대화 맥락을 반영해 독립적으로 재작성된 질의 (검색·분석에 사용)
     standalone_query: str
     route: str
+    # 입구에서 거절한 사유 (예: private_name). general 노드가 안내문을 고를 때 쓴다
+    guard: str
     # 판례 집계형 질문 여부 (라우터 판별) — 인용 그래프 확장 게이트
     needs_precedents: bool
     # 검색 노드가 한 번만 채우고 두 에이전트가 나눠 쓴다
@@ -126,15 +130,37 @@ def _format_history(history: list[dict]) -> str:
         return ""
     lines = ["**이전 대화:**"]
     for item in history[-3:]:
-        lines.append(f"- 질문: {item.get('question', '')}")
-        answer = (item.get("answer") or "")[:500]
+        # 이력은 클라이언트가 보내는 값이다. 거절된 이전 질문의 이름이 여기 남아 있으므로
+        # 마스킹해서 넣는다 — 라우터(LLM)에도 실명이 닿지 않게.
+        lines.append(f"- 질문: {mask_text(item.get('question', ''))}")
+        answer = mask_text((item.get("answer") or "")[:500])
         lines.append(f"  답변 요약: {answer}")
     return "\n".join(lines) + "\n\n"
+
+
+def _refuse_private_name(query: str) -> AgentState:
+    return {
+        "route": "general",
+        "guard": "private_name",
+        "standalone_query": query,
+        "needs_precedents": False,
+    }
 
 
 async def route_node(state: AgentState) -> AgentState:
     query = state["query"]
     history = state.get("history") or []
+
+    # 등록된 실명이 질문에 있으면 LLM을 부르지 않고 입구에서 거절한다.
+    # 프롬프트 규칙·출력 마스킹은 답변 단계의 방어다. 이름으로 특정인의 처분을
+    # 캐묻는 질문은 받지 않는 편이 맞고, 비용도 판단 여지도 0이다.
+    #
+    # 검사 범위: 현재 질문 + 이력의 '답변'. 이전 '질문'은 보지 않는다 — 거절된 턴의
+    # 질문에 이름이 남아 있어, 안내대로 직책으로 고쳐 물어도 또 거절되기 때문이다.
+    # 답변은 서버가 만든 것이라 실명이 있을 수 없으므로, 있으면 클라이언트가 위조한 것이다.
+    # 이력의 이름이 라우터 재작성을 타고 들어오는 경로는 아래 standalone_query 검사가 막는다.
+    if find_private_name(query) or any(find_private_name(h.get("answer", "")) for h in history):
+        return _refuse_private_name(query)
 
     if MOCK_MODE:
         keywords = ("학생회", "규정", "예산", "감사", "회계", "회비", "지원금", "선거")
@@ -161,6 +187,9 @@ async def route_node(state: AgentState) -> AgentState:
         return {"route": "regulation", "standalone_query": query, "needs_precedents": False}
     route = decision.route if decision.route in ("regulation", "general") else "regulation"
     standalone = (decision.standalone_query or "").strip() or query
+    # 재작성이 이력에서 이름을 끌어왔으면("그 사람의 처분은?" → "○○○의 처분") 여기서 막는다
+    if find_private_name(standalone):
+        return _refuse_private_name(query)
     return {
         "route": route,
         "standalone_query": standalone,
@@ -197,12 +226,9 @@ async def retrieve_node(state: AgentState) -> AgentState:
     # 일반 질의에서도 게이트가 98% 열려 전역 상시 적용은 비용(+7원)·지연(+2초)
     # 회귀를 만들므로, 라우터가 '판례 집계형'으로 판별한 질의에만 켠다.
     # GRAPH_EXPANSION 환경변수는 강제 스위치: "1"=항상, "0"=차단(킬 스위치).
-    import os as _os
-
-    flag = _os.getenv("GRAPH_EXPANSION", "")
+    # (호출 시점에 읽는다 — A/B 실행 중 토글할 수 있어야 한다)
+    flag = os.getenv("GRAPH_EXPANSION", "")
     if flag == "1" or (flag != "0" and state.get("needs_precedents")):
-        from app.rag import citation_graph
-
         expanded = await asyncio.to_thread(citation_graph.expand, reg_hits + audit_full)
         for extra in expanded[len(reg_hits) + len(audit_full):]:
             (reg_hits if extra.get("doc_type") == "regulation" else audit_full).append(extra)
@@ -319,12 +345,22 @@ OUT_OF_SCOPE_MESSAGE = """\
 - 감사 기준과 처분 가능성 (예: "예산 초과 집행 시 어떤 처분을 받나요?")
 - 회칙·세칙의 절차 확인 (예: "예산 변경 시 승인 절차는 무엇인가요?")"""
 
+PERSON_QUERY_MESSAGE = """\
+**개인 실명이 포함된 질문에는 답변드릴 수 없어요.**
+
+감사보고서에 이름이 실려 있더라도, 이 서비스는 개인을 특정하는 질문에 답하지 않아요. 이름 대신 **직책이나 기구명**으로 물어봐 주세요.
+
+- 예: "총학생회장이 받은 처분은 무엇인가요?"
+- 예: "사회과학대학 학생회는 어떤 지적을 받았나요?"\n"""
+
 
 async def general_node(state: AgentState) -> AgentState:
     # 도메인 전용 챗봇이므로 범위 밖 질문은 LLM 호출 없이 고정 안내문으로 응답한다.
     # (오프토픽 답변 원천 차단 + 비용 절감)
     if MOCK_MODE:
         await asyncio.sleep(0.3)
+    if state.get("guard") == "private_name":
+        return {"final_markdown": PERSON_QUERY_MESSAGE}
     return {"final_markdown": OUT_OF_SCOPE_MESSAGE}
 
 

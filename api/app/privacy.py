@@ -17,7 +17,8 @@ from app.config import DATA_DIR
 
 _PHONE = re.compile(r"01[016789][-.\s]?\d{3,4}[-.\s]?\d{4}")
 _ACCOUNT = re.compile(r"(?<!\d)\d{3,6}-\d{2,6}-\d{4,8}(?:-\d{1,4})?(?!\d)")
-_EMAIL = re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+")
+# 길이를 제한한다 — 무한정이면 스트림 보류 길이보다 긴 이메일의 앞부분이 먼저 나간다
+_EMAIL = re.compile(r"[\w.+-]{1,64}@[\w-]{1,63}(?:\.[\w-]{1,63}){1,4}")
 
 _PATTERNS: list[tuple[re.Pattern, str]] = [
     (_PHONE, "010-****-****"),
@@ -44,20 +45,41 @@ def _load_names() -> list[str]:
 
 
 PRIVATE_NAMES: list[str] = _load_names()
+# 이름 매칭은 한 곳에서: 글자 사이 공백을 허용해 "홍 길 동" 같은 변형도 같은 이름으로 본다.
+# 검사(find)와 치환(mask)이 다른 기준을 쓰면 검사는 잡고 치환은 놓치는 틈이 생긴다.
+_NAME_PATTERNS: list[re.Pattern] = [
+    re.compile(r"\s*".join(re.escape(ch) for ch in name)) for name in PRIVATE_NAMES
+]
 
-# 스트리밍 중 아직 내보내지 않고 붙들어 두는 꼬리 길이.
-# 어떤 패턴도 이 길이보다 길지 않아야 토큰 경계를 걸친 일치를 놓치지 않는다.
-_HOLD = 32
+# 스트리밍 보류 규칙: 전화·계좌·이메일·실명은 모두 공백을 포함하지 않는다(전화의
+# 구분 공백만 예외이고, 그건 아래 경계 검사가 잡는다). 그러므로 마지막 공백 뒤의
+# 토막은 아직 끝나지 않은 패턴일 수 있어 붙들고, 그 앞은 확정으로 내보낸다.
+# 고정 길이 보류(32·96자)는 정규식이 허용하는 최대 길이보다 짧아 앞부분이 샜다.
+_WS = (" ", "\n", "\t")
+_HOLD_MAX = 512  # 공백 없는 토막이 이보다 길면(URL·표) 앞부분은 내보낸다
+# 전화번호만 공백으로 나뉠 수 있다("010 1234 5678"). 버퍼 끝이 전화번호의 앞부분이면
+# 아직 끝나지 않은 것으로 보고 그 시작점 앞에서 끊는다 (최대 14자 보류).
+_PHONE_PREFIX = re.compile(r"01[016789][-.\s]?\d{0,4}[-.\s]?\d{0,4}$")
 
 
 def _spans(text: str) -> list[tuple[int, int]]:
     spans = [m.span() for pat, _ in _PATTERNS for m in pat.finditer(text)]
-    for name in PRIVATE_NAMES:
-        start = text.find(name)
-        while start != -1:
-            spans.append((start, start + len(name)))
-            start = text.find(name, start + 1)
+    for pat in _NAME_PATTERNS:
+        spans.extend(m.span() for m in pat.finditer(text))
     return spans
+
+
+def find_private_name(text: str) -> str | None:
+    """텍스트에 등록된 실명이 있으면 그 이름을 돌려준다.
+
+    글자 사이 공백 변형("성 보현")도 같은 이름으로 본다 (_NAME_PATTERNS).
+    """
+    if not text:
+        return None
+    for name, pat in zip(PRIVATE_NAMES, _NAME_PATTERNS):
+        if pat.search(text):
+            return name
+    return None
 
 
 def mask_text(text: str) -> str:
@@ -65,8 +87,8 @@ def mask_text(text: str) -> str:
         return text
     for pat, repl in _PATTERNS:
         text = pat.sub(repl, text)
-    for name in PRIVATE_NAMES:
-        text = text.replace(name, NAME_MASK)
+    for pat in _NAME_PATTERNS:
+        text = pat.sub(NAME_MASK, text)
     return text
 
 
@@ -90,10 +112,12 @@ class StreamMasker:
 
     def feed(self, text: str) -> str:
         self._buf += text
-        if len(self._buf) <= _HOLD:
-            return ""
-        cut = len(self._buf) - _HOLD
-        # 경계를 걸친 일치가 있으면 그 시작점까지만 내보낸다
+        # 마지막 공백까지가 확정 구간. 공백 없이 너무 길면 상한만큼만 붙든다.
+        cut = max(self._buf.rfind(ch) for ch in _WS) + 1
+        cut = max(cut, len(self._buf) - _HOLD_MAX)
+        if partial := _PHONE_PREFIX.search(self._buf):
+            cut = min(cut, partial.start())
+        # 경계를 걸친 일치(공백 구분 전화번호 등)가 있으면 그 시작점까지만 내보낸다
         for start, end in _spans(self._buf):
             if start < cut < end:
                 cut = min(cut, start)

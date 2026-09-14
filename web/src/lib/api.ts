@@ -143,8 +143,10 @@ export async function* streamChat(
 ): AsyncGenerator<ChatEvent> {
   const controller = new AbortController();
   const abort = () => controller.abort();
+  if (signal?.aborted) abort(); // 이미 취소된 signal이면 요청을 시작하지 않는다
   signal?.addEventListener("abort", abort);
   let idleTimer: ReturnType<typeof setTimeout> | undefined;
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   const resetIdle = () => {
     clearTimeout(idleTimer);
     idleTimer = setTimeout(abort, STREAM_IDLE_TIMEOUT_MS);
@@ -168,7 +170,7 @@ export async function* streamChat(
       throw new Error(`서버 오류 (${res.status})`);
     }
 
-    const reader = res.body.getReader();
+    reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
 
@@ -199,6 +201,8 @@ export async function* streamChat(
   } finally {
     clearTimeout(idleTimer);
     signal?.removeEventListener("abort", abort);
+    // 소비자가 순회를 중단해도 서버 연결이 남지 않도록 reader를 닫는다
+    reader?.cancel().catch(() => {});
   }
 }
 

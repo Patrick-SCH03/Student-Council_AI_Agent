@@ -19,6 +19,7 @@ from collections import defaultdict
 import networkx as nx
 
 from app.config import DATA_DIR
+from app.rag import store
 
 GRAPH_PATH = DATA_DIR / "citation_graph.json"
 
@@ -58,8 +59,6 @@ def _art_key(no: str, sub: str | None) -> str:
 
 def build_graph() -> nx.DiGraph:
     """색인 전체에서 인용 그래프를 만든다. 호출 시마다 처음부터 다시 만든다."""
-    from app.rag import store
-
     data = store._get_collection().get(include=["documents", "metadatas"])
 
     # 정규화된 문서명 → 실제 파일명 (규정 문서만 참조 대상이 된다)
@@ -100,7 +99,10 @@ def build_graph() -> nx.DiGraph:
                     g.add_edge(art_node, chunk_node, type="contains")
 
             if dtype == "audit":
-                # 명명 위치들을 모아 각 제N조를 가장 가까운 선행 명명에 귀속
+                # 명명 위치들을 모아 각 제N조를 가장 가까운 선행 명명에 귀속.
+                # 이 청크에서 명명이 나오기 전의 조항은 '이전 청크까지의 마지막 명명'을
+                # 따라야 한다 — 같은 청크의 뒤쪽 명명이 앞 조항에 붙으면 안 된다.
+                named_before_chunk = last_named
                 names: list[tuple[int, str]] = []
                 for nm in _NAME.finditer(text):
                     raw = nm.group(0).strip()
@@ -114,7 +116,7 @@ def build_graph() -> nx.DiGraph:
                         last_named = dst
                 for am in _ART_REF.finditer(text):
                     scope = [d for pos, d in names if pos <= am.start()]
-                    dst_doc = scope[-1] if scope else last_named
+                    dst_doc = scope[-1] if scope else named_before_chunk
                     if not dst_doc or dst_doc == src_doc:
                         continue
                     art_node = ("article", dst_doc, _art_key(am.group(1), am.group(2)))
@@ -178,9 +180,9 @@ def get_graph(rebuild: bool = False) -> nx.DiGraph:
     return _graph
 
 
-def _chunk_text(store, doc: str, idx: int) -> dict | None:
+def _chunk_text(doc: str, idx: int) -> dict | None:
+    """(문서, 청크 번호)로 청크 하나를 읽는다. 검색 결과와 같은 형태로 돌려준다."""
     got = store._get_collection().get(
-        ids=[f"{did}:{idx}" for did in [None]] if False else None,
         where={"$and": [{"source_file": doc}, {"chunk_index": idx}]},
         include=["documents", "metadatas"],
         limit=1,
@@ -205,8 +207,6 @@ def expand(hits: list[dict], max_add: int = 10, per_edge: int = 3) -> list[dict]
     - 규정 청크 → 참조하는 다른 조항 원문 (refers)
     인용 빈도가 높은 엣지부터, 전체 상한(max_add) 안에서만 더한다.
     """
-    from app.rag import store
-
     g = get_graph()
     have = {(h["source_file"], h["chunk_index"]) for h in hits}
 
@@ -269,7 +269,7 @@ def expand(hits: list[dict], max_add: int = 10, per_edge: int = 3) -> list[dict]
         _, doc, idx = node
         if (doc, idx) in have:
             continue
-        got = _chunk_text(store, doc, idx)
+        got = _chunk_text(doc, idx)
         if got:
             have.add((doc, idx))
             added.append(got)

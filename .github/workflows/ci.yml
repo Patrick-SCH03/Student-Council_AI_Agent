@@ -29,6 +29,10 @@ jobs:
       - name: Smoke test (mock mode)
         run: python smoke_test.py
 
+      # 점검에서 재현된 결함의 회귀 테스트 — 임시 DATA_DIR·더미 실명, 키 없이 돈다
+      - name: Regression tests (mock mode)
+        run: python tests/check_all.py
+
   web:
     name: Frontend (lint + build)
     runs-on: ubuntu-latest

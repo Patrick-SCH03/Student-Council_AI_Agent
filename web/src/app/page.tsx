@@ -451,6 +451,8 @@ export default function ChatPage() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
+  // 진행 중 요청. '새 대화'가 이걸 끊어야 이전 답이 사라진 말풍선에 꽂히거나 busy가 남지 않는다
+  const abortRef = useRef<AbortController | null>(null);
   const [mockMode, setMockMode] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const idRef = useRef(0);
@@ -493,6 +495,9 @@ export default function ChatPage() {
   }, [messages, busy]);
 
   const clearChat = () => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setBusy(false);
     setMessages([]);
     localStorage.removeItem(STORAGE_KEY);
   };
@@ -517,10 +522,12 @@ export default function ChatPage() {
     for (let i = 0; i < msgs.length - 1; i++) {
       const q = msgs[i];
       const a = msgs[i + 1];
+      // 범위 밖·실명 거절 안내는 대화 맥락이 아니다 — 후속 질문 재작성에 섞이지 않게 뺀다
       if (
         q.role === "user" &&
         a.role === "assistant" &&
-        a.state.result?.final_markdown
+        a.state.result?.final_markdown &&
+        a.state.result.route !== "general"
       ) {
         pairs.push({
           question: q.text,
@@ -538,6 +545,8 @@ export default function ChatPage() {
     setInput("");
 
     const history = buildHistory(messages);
+    const controller = new AbortController();
+    abortRef.current = controller;
     const userId = ++idRef.current;
     const assistantId = ++idRef.current;
     setMessages((prev) => [
@@ -549,7 +558,8 @@ export default function ChatPage() {
     try {
       let tokens = "";
       let flushScheduled = false;
-      for await (const event of streamChat(query, history)) {
+      let finished = false; // result 또는 error 이벤트를 받았는지
+      for await (const event of streamChat(query, history, controller.signal)) {
         if (event.type === "stage") {
           updateAssistant(assistantId, {
             stage: event.label,
@@ -572,12 +582,22 @@ export default function ChatPage() {
             });
           }
         } else if (event.type === "result") {
+          finished = true;
           updateAssistant(assistantId, { result: event, stage: null });
         } else if (event.type === "error") {
+          finished = true;
           updateAssistant(assistantId, { error: event.message, stage: null });
         }
       }
+      // 서버가 result 없이 스트림을 닫으면(상류 중단·프록시 절단) 분석 중 표시가 남는다
+      if (!finished && !controller.signal.aborted) {
+        updateAssistant(assistantId, {
+          error: "응답이 중간에 끊겼어요. 잠시 후 다시 시도해 주세요.",
+          stage: null,
+        });
+      }
     } catch (e) {
+      if (controller.signal.aborted) return; // 새 대화로 취소됨 — 말풍선은 이미 없다
       updateAssistant(assistantId, {
         error:
           e instanceof ChatBlockedError
@@ -589,7 +609,10 @@ export default function ChatPage() {
         stage: null,
       });
     } finally {
-      setBusy(false);
+      if (abortRef.current === controller) {
+        abortRef.current = null;
+        setBusy(false);
+      }
     }
   };
 

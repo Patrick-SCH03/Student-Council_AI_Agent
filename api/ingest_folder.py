@@ -85,7 +85,9 @@ def main() -> None:
         from app.rag import citation_graph
 
         citation_graph.get_graph(rebuild=True)
-        print("인용 그래프 재생성 완료")
+        # 서버 업로드 경로와 같은 이유 — 옛 근거로 만든 답변이 캐시에서 계속 나가면 안 된다
+        cleared = db.clear_cache()
+        print(f"인용 그래프 재생성 완료 · 답변 캐시 {cleared}건 삭제")
 
     print(
         f"\n신규 {added}건, 갱신 {updated}건, 제거 {removed}건, "
