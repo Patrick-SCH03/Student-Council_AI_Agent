@@ -12,6 +12,7 @@ MOCK_MODE에서는 LLM 호출 없이 고정 응답으로 전체 플로우를 검
 
 import asyncio
 import operator
+import os
 from typing import Annotated, TypedDict
 
 from langgraph.graph import END, StateGraph
@@ -32,7 +33,7 @@ from app.config import (
     MOCK_MODE,
 )
 from app.privacy import find_private_name
-from app.rag import store
+from app.rag import citation_graph, store
 
 # 코퍼스가 커지면서 상위 5개로는 규정 조항이 감사보고서에 밀려나므로,
 # 유형별로 나눠 충분히 확보한다.
@@ -211,12 +212,9 @@ async def retrieve_node(state: AgentState) -> AgentState:
     # 일반 질의에서도 게이트가 98% 열려 전역 상시 적용은 비용(+7원)·지연(+2초)
     # 회귀를 만들므로, 라우터가 '판례 집계형'으로 판별한 질의에만 켠다.
     # GRAPH_EXPANSION 환경변수는 강제 스위치: "1"=항상, "0"=차단(킬 스위치).
-    import os as _os
-
-    flag = _os.getenv("GRAPH_EXPANSION", "")
+    # (호출 시점에 읽는다 — A/B 실행 중 토글할 수 있어야 한다)
+    flag = os.getenv("GRAPH_EXPANSION", "")
     if flag == "1" or (flag != "0" and state.get("needs_precedents")):
-        from app.rag import citation_graph
-
         expanded = await asyncio.to_thread(citation_graph.expand, reg_hits + audit_full)
         for extra in expanded[len(reg_hits) + len(audit_full):]:
             (reg_hits if extra.get("doc_type") == "regulation" else audit_full).append(extra)
