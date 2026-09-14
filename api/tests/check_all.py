@@ -90,6 +90,31 @@ def _():
     assert res["route"] == "general" and "실명이 포함된" in res["final_markdown"]
 
 
+@case("띄어 쓴 실명은 마스킹·검사 모두 같은 이름으로 본다 — 위조 이력도 라우터에 닿지 않는다")
+def _():
+    assert privacy.mask_text("홍 길 동 회장과 홍길동") == "○○○ 회장과 ○○○"
+    assert privacy.find_private_name("홍\t길\n동") == "홍길동"
+    import asyncio
+
+    from app.agents import graph as g
+    from app.agents.schemas import RouteDecision
+    seen = {}
+
+    class _Fake:
+        def with_structured_output(self, _schema):
+            return self
+
+        async def ainvoke(self, msgs):
+            seen["prompt"] = "\n".join(m[1] for m in msgs)
+            return RouteDecision(route="regulation", standalone_query="총학생회장의 처분", needs_precedents=False)
+
+    history = [{"question": "홍 길 동 학생회장의 처분은?", "answer": "(범위 밖 안내)"}]
+    with patch.object(g, "MOCK_MODE", False), patch.object(g, "_get_llm", return_value=_Fake()):
+        out = asyncio.run(g.route_node({"query": "그 사람의 처분을 직책 기준으로 설명해줘", "history": history, "citations": []}))
+    assert "길" not in seen["prompt"] and "○○○" in seen["prompt"], seen["prompt"][:200]
+    assert out["route"] == "regulation", "정당한 직책 후속 질문은 통과해야 한다"
+
+
 @case("라우터 재작성(standalone_query)에 실명이 실리면 검색 전에 거절된다")
 def _():
     import asyncio

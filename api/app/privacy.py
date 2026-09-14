@@ -45,6 +45,11 @@ def _load_names() -> list[str]:
 
 
 PRIVATE_NAMES: list[str] = _load_names()
+# 이름 매칭은 한 곳에서: 글자 사이 공백을 허용해 "홍 길 동" 같은 변형도 같은 이름으로 본다.
+# 검사(find)와 치환(mask)이 다른 기준을 쓰면 검사는 잡고 치환은 놓치는 틈이 생긴다.
+_NAME_PATTERNS: list[re.Pattern] = [
+    re.compile(r"\s*".join(re.escape(ch) for ch in name)) for name in PRIVATE_NAMES
+]
 
 # 스트리밍 보류 규칙: 전화·계좌·이메일·실명은 모두 공백을 포함하지 않는다(전화의
 # 구분 공백만 예외이고, 그건 아래 경계 검사가 잡는다). 그러므로 마지막 공백 뒤의
@@ -59,24 +64,20 @@ _PHONE_PREFIX = re.compile(r"01[016789][-.\s]?\d{0,4}[-.\s]?\d{0,4}$")
 
 def _spans(text: str) -> list[tuple[int, int]]:
     spans = [m.span() for pat, _ in _PATTERNS for m in pat.finditer(text)]
-    for name in PRIVATE_NAMES:
-        start = text.find(name)
-        while start != -1:
-            spans.append((start, start + len(name)))
-            start = text.find(name, start + 1)
+    for pat in _NAME_PATTERNS:
+        spans.extend(m.span() for m in pat.finditer(text))
     return spans
 
 
 def find_private_name(text: str) -> str | None:
     """텍스트에 등록된 실명이 있으면 그 이름을 돌려준다.
 
-    "성 보현"처럼 띄어 쓴 변형도 잡기 위해 공백을 지운 사본도 함께 본다.
+    글자 사이 공백 변형("성 보현")도 같은 이름으로 본다 (_NAME_PATTERNS).
     """
     if not text:
         return None
-    compact = re.sub(r"\s+", "", text)
-    for name in PRIVATE_NAMES:
-        if name in text or name in compact:
+    for name, pat in zip(PRIVATE_NAMES, _NAME_PATTERNS):
+        if pat.search(text):
             return name
     return None
 
@@ -86,8 +87,8 @@ def mask_text(text: str) -> str:
         return text
     for pat, repl in _PATTERNS:
         text = pat.sub(repl, text)
-    for name in PRIVATE_NAMES:
-        text = text.replace(name, NAME_MASK)
+    for pat in _NAME_PATTERNS:
+        text = pat.sub(NAME_MASK, text)
     return text
 
 
