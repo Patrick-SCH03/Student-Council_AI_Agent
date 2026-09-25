@@ -146,6 +146,60 @@ def _():
     assert out["route"] == "general" and out.get("guard") == "private_name", out
 
 
+@case("질의 원문도 마스킹해 저장한다 — 분석 이력·지표·CSV에 실명·연락처가 남지 않는다")
+def _():
+    before = db.list_analyses(1)[0]["id"] if db.list_analyses(1) else 0
+    chat_result("홍길동 학생회장 처분 알려줘 010-1234-5678")
+    chat_result("김 테스트 연락처 a@b.com 알려줘")
+    with db._connect() as conn:
+        rows = [r[0] for r in conn.execute("SELECT query FROM analyses WHERE id > ?", (before,))]
+        previews = [r[0] for r in conn.execute("SELECT query_preview FROM metrics ORDER BY id DESC LIMIT 2")]
+        keys = [r[0] for r in conn.execute("SELECT query_key FROM answer_cache")]
+    blob = " ".join(rows + previews + keys) + db.export_metrics_csv()
+    for leaked in ("홍길동", "김 테스트", "김테스트", "010-1234-5678", "a@b.com"):
+        assert leaked not in blob, f"저장본에 원문 노출: {leaked}"
+    assert rows and all("○○○" in r for r in rows), rows
+
+
+@case("실명 없이 연락처만 든 질의도 캐시 키·저장본에 원문이 남지 않는다")
+def _():
+    res = chat_result("학생회비 환불 문의는 010-9876-5432 또는 x.y@inha.edu 로 해도 되나요?")
+    assert res["route"] == "regulation", res["route"]
+    assert "010-9876-5432" not in res["query"] and "x.y@inha.edu" not in res["query"], res["query"]
+    with db._connect() as conn:
+        keys = " ".join(r[0] for r in conn.execute("SELECT query_key FROM answer_cache"))
+        previews = " ".join(r[0] for r in conn.execute("SELECT query_preview FROM metrics ORDER BY id DESC LIMIT 1"))
+    for leaked in ("9876", "x.y@inha.edu", "inha.edu"):
+        assert leaked not in keys and leaked not in previews, f"원문 노출: {leaked}"
+
+
+@case("서명 키가 공개 상수면 피드백을 끈다 — 토큰을 누구나 계산할 수 있으므로")
+def _():
+    with patch.object(main, "FEEDBACK_ENABLED", False):
+        res = chat_result("학생회비 서명 키 폴백 테스트")
+        assert res.get("feedback_token") is None, "공개 키로 서명을 발급했다"
+        forged = main._feedback_token(res["analysis_id"])
+        r = client.post("/api/feedback", json={"analysis_id": res["analysis_id"], "helpful": True, "token": forged})
+        assert r.status_code == 503, r.status_code
+
+
+@case("원문 마스킹 이전에 쌓인 행을 소급해 지운다 (멱등)")
+def _():
+    with db._connect() as conn:
+        conn.execute("INSERT INTO analyses (query, risk_level, result, created_at) VALUES (?, ?, ?, ?)",
+                     ("홍길동 처분", None, json.dumps({"query": "홍길동 처분"}, ensure_ascii=False), "2026-09-14T00:00:00+00:00"))
+        conn.execute("INSERT INTO metrics (ts, route, status, elapsed, input_tokens, output_tokens, query_preview) "
+                     "VALUES (?, ?, ?, ?, ?, ?, ?)", ("2026-09-14T00:00:00+00:00", "general", "ok", 0.1, 0, 0, "홍길동 처분"))
+        conn.execute("INSERT INTO answer_cache (query_key, ts, analysis_id, result, hits) VALUES (?, ?, ?, ?, 0)",
+                     ("홍길동처분", "2026-09-14T00:00:00+00:00", 1, "{}"))
+    first = db.mask_stored_text()
+    assert first["analyses"] >= 1 and first["metrics"] >= 1 and first["answer_cache"] >= 1, first
+    with db._connect() as conn:
+        dump = " ".join(str(v) for t in ("analyses", "metrics", "answer_cache") for r in conn.execute(f"SELECT * FROM {t}") for v in r)
+    assert "홍길동" not in dump, "소급 마스킹 뒤에도 원문이 남았다"
+    assert db.mask_stored_text() == {"analyses": 0, "metrics": 0, "answer_cache": 0}, "두 번째 실행은 0건이어야 한다"
+
+
 @case("캐시 키가 소수점을 지워 다른 질문을 합치지 않는다 (1.5 ≠ 15)")
 def _():
     assert db.normalize_query("예산 1.5 퍼센트") != db.normalize_query("예산 15 퍼센트")
@@ -183,15 +237,37 @@ def _():
 
 @case("피드백은 처음 남긴 방문자만 바꿀 수 있다 (analysis_id는 추측 가능)")
 def _():
-    aid = chat_result("학생회비 사용 가능 여부 피드백 테스트")["analysis_id"]
-    client.post("/api/feedback", json={"analysis_id": aid, "helpful": True, "visitor_id": "visitor-A"})
-    client.post("/api/feedback", json={"analysis_id": aid, "helpful": False, "visitor_id": "visitor-B"})
+    res = chat_result("학생회비 사용 가능 여부 피드백 테스트")
+    aid, tok = res["analysis_id"], res["feedback_token"]
+    client.post("/api/feedback", json={"analysis_id": aid, "helpful": True, "visitor_id": "visitor-A", "token": tok})
+    client.post("/api/feedback", json={"analysis_id": aid, "helpful": False, "visitor_id": "visitor-B", "token": tok})
     with db._connect() as conn:
         row = dict(conn.execute("SELECT helpful, visitor_id FROM feedback WHERE analysis_id=?", (aid,)).fetchone())
     assert row == {"helpful": 1, "visitor_id": "visitor-A"}, row
-    client.post("/api/feedback", json={"analysis_id": aid, "helpful": False, "visitor_id": "visitor-A"})
+    client.post("/api/feedback", json={"analysis_id": aid, "helpful": False, "visitor_id": "visitor-A", "token": tok})
     with db._connect() as conn:
         assert conn.execute("SELECT helpful FROM feedback WHERE analysis_id=?", (aid,)).fetchone()[0] == 0
+
+
+@case("서명 없는 피드백은 거절된다 — 아직 평가 없는 답변을 남이 선점할 수 없다")
+def _():
+    aid = chat_result("학생회비 서명 토큰 테스트")["analysis_id"]
+    bad = {"analysis_id": aid, "helpful": False, "visitor_id": "attacker"}
+    assert client.post("/api/feedback", json=bad).status_code == 422, "토큰 없이 통과했다"
+    assert client.post("/api/feedback", json={**bad, "token": "0" * 32}).status_code == 403
+    other = main._feedback_token(aid + 1)
+    assert client.post("/api/feedback", json={**bad, "token": other}).status_code == 403, "다른 답변의 토큰이 통했다"
+    with db._connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM feedback WHERE analysis_id=?", (aid,)).fetchone()[0] == 0
+
+
+@case("사용자가 창을 닫아 중단된 요청은 대시보드 오류로 세지 않는다")
+def _():
+    before = client.get("/api/stats", headers=AUTH).json()["totals"]["errors"]
+    db.record_metric(route="regulation", risk_level=None, status="cancelled", elapsed=1.0,
+                     input_tokens=1, output_tokens=1, query_preview="q", error="client disconnected")
+    after = client.get("/api/stats", headers=AUTH).json()["totals"]["errors"]
+    assert after == before, (before, after)
 
 
 @case("/api/history의 limit은 1~100으로 고정된다 (음수는 SQLite 무제한)")

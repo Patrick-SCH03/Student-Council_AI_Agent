@@ -51,7 +51,7 @@ export async function adminFetch(path: string): Promise<Response> {
   });
   if (res.status === 401 || res.status === 503) {
     const body = await res.json().catch(() => null);
-    throw new AuthError(body?.detail ?? "관리자 인증이 필요합니다.");
+    throw new AuthError(body?.detail ?? "관리자 인증이 필요해요.");
   }
   return res;
 }
@@ -85,23 +85,28 @@ export type ChatResult = {
   citations: Citation[];
   elapsed: number;
   analysis_id: number | null;
+  // 이 답변을 평가할 수 있다는 서버 서명 (옛 저장 답변에는 없다)
+  feedback_token?: string;
   cached?: boolean;
 };
 
-/** 답변 만족도 전송 (실패해도 사용자 흐름을 막지 않음) */
+/** 답변 만족도 전송. 실패하면 던져서 호출 쪽이 재시도를 안내하게 한다. */
 export async function sendFeedback(
   analysisId: number,
   helpful: boolean,
+  token: string,
 ): Promise<void> {
-  await fetch(`${API_BASE}/api/feedback`, {
+  const res = await fetch(`${API_BASE}/api/feedback`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       analysis_id: analysisId,
       helpful,
       visitor_id: getVisitorId(),
+      token,
     }),
   });
+  if (!res.ok) throw new Error(`피드백 전송 실패 (${res.status})`);
 }
 
 export type ChatEvent =
@@ -124,6 +129,7 @@ export type HistoryItem = { question: string; answer: string };
 
 export type HealthInfo = {
   status: string;
+  version?: string;
   mock_mode: boolean;
   model: string;
   indexed_chunks: number;
@@ -163,7 +169,7 @@ export async function* streamChat(
     if (res.status === 429) {
       const body = await res.json().catch(() => null);
       throw new ChatBlockedError(
-        body?.detail ?? "오늘 이용 한도에 도달했습니다. 내일 다시 이용해주세요.",
+        body?.detail ?? "오늘 이용 한도에 도달했어요. 내일 다시 이용해 주세요.",
       );
     }
     if (!res.ok || !res.body) {
@@ -195,7 +201,7 @@ export async function* streamChat(
     }
   } catch (e) {
     if (controller.signal.aborted && !signal?.aborted) {
-      throw new Error("응답이 지연되어 연결을 종료했습니다. 잠시 후 다시 시도해주세요.");
+      throw new Error("응답이 늦어져 연결을 끊었어요. 잠시 후 다시 시도해 주세요.");
     }
     throw e;
   } finally {
@@ -220,7 +226,7 @@ export async function clearAnswerCache(): Promise<{ cleared: number }> {
     method: "POST",
     headers: token ? { Authorization: `Bearer ${token}` } : {},
   });
-  if (!res.ok) throw new Error("캐시 비우기에 실패했습니다.");
+  if (!res.ok) throw new Error("캐시를 비우지 못했어요.");
   return res.json();
 }
 
@@ -243,15 +249,15 @@ export async function updateLimits(
     body: JSON.stringify(values),
   });
   if (res.status === 401 || res.status === 503) {
-    throw new AuthError("관리자 인증이 필요합니다.");
+    throw new AuthError("관리자 인증이 필요해요.");
   }
-  if (!res.ok) throw new Error("저장에 실패했습니다.");
+  if (!res.ok) throw new Error("저장하지 못했어요.");
   return res.json();
 }
 
 export async function fetchHealth(): Promise<HealthInfo> {
   const res = await fetch(`${API_BASE}/api/health`);
-  if (!res.ok) throw new Error("백엔드에 연결할 수 없습니다.");
+  if (!res.ok) throw new Error("백엔드에 연결할 수 없어요.");
   return res.json();
 }
 

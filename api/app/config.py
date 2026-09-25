@@ -10,8 +10,8 @@ load_dotenv()
 GEMINI_API_KEY: str | None = (
     os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or None
 )
-# 릴리스 태그(v2.6.0)와 같이 올린다. /api/health로 배포본이 어떤 버전인지 확인한다.
-APP_VERSION = "2.6.0"
+# 릴리스 태그(v2.7.0)와 같이 올린다. /api/health로 배포본이 어떤 버전인지 확인한다.
+APP_VERSION = "2.7.0"
 
 GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-3.7-flash")
 # 라우터는 분류 + 한 문장 재작성만 하므로 경량 모델을 쓴다.
@@ -49,6 +49,9 @@ ADMIN_TOKEN: str | None = os.getenv("ADMIN_TOKEN") or None
 
 # IP 원문은 저장하지 않고 이 값을 섞은 해시만 남긴다.
 IP_HASH_SALT: str = os.getenv("IP_HASH_SALT") or ADMIN_TOKEN or "inha-sc-local"
+# 위 값이 공개 상수로 떨어졌는지. 그 상태로 서명을 만들면 누구나 계산할 수 있어
+# 서명이 필요한 기능(피드백)은 끈다 — 관리자 API의 fail-closed와 같은 원칙.
+SIGNING_KEY_IS_PUBLIC: bool = not (os.getenv("IP_HASH_SALT") or ADMIN_TOKEN)
 
 # 비용 추정 단가 (USD / 1M 토큰).
 # gemini-3.7-flash 도입 할인가로, 2027-01-01부터 1.50 / 7.50으로 환원된다.

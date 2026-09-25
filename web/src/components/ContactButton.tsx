@@ -3,7 +3,7 @@
 // 오류 신고·문의 버튼: mailto는 기본 메일 앱이 없으면 무반응이므로
 // 클릭 시 주소 복사 팝오버를 제공한다.
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 
 const EMAIL = "wwoo5241@inha.edu";
 
@@ -11,14 +11,27 @@ export default function ContactButton() {
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const panelId = useId();
 
   useEffect(() => {
     if (!open) return;
     const onClick = (e: MouseEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
     };
+    // 키보드 사용자가 팝오버를 닫고 원래 버튼으로 돌아올 수 있게
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setOpen(false);
+        buttonRef.current?.focus();
+      }
+    };
     document.addEventListener("mousedown", onClick);
-    return () => document.removeEventListener("mousedown", onClick);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onClick);
+      document.removeEventListener("keydown", onKey);
+    };
   }, [open]);
 
   const copy = async () => {
@@ -34,8 +47,11 @@ export default function ContactButton() {
   return (
     <div className="relative" ref={ref}>
       <button
+        ref={buttonRef}
         type="button"
         onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        aria-controls={panelId}
         className="flex items-center gap-1.5 rounded-full border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-500 transition hover:border-indigo-300 hover:text-indigo-600"
       >
         <svg
@@ -55,7 +71,7 @@ export default function ContactButton() {
       </button>
 
       {open && (
-        <div className="absolute right-0 top-full z-20 mt-2 w-64 rounded-2xl border border-slate-200 bg-white p-4 shadow-[0px_12px_16px_-4px_rgba(16,24,40,0.12),0px_4px_6px_-2px_rgba(16,24,40,0.05)]">
+        <div id={panelId} className="absolute right-0 top-full z-20 mt-2 w-64 rounded-2xl border border-slate-200 bg-white p-4 shadow-[0px_12px_16px_-4px_rgba(16,24,40,0.12),0px_4px_6px_-2px_rgba(16,24,40,0.05)]">
           <p className="text-xs font-bold text-slate-800">
             오류나 개선 의견을 보내주세요
           </p>

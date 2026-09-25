@@ -17,4 +17,7 @@ body {
   color: var(--foreground);
   font-family: var(--font-jakarta), "Plus Jakarta Sans", sans-serif;
   letter-spacing: -0.007em;
+  /* 한국어가 '하나 / 요?'처럼 단어 중간에서 끊기지 않게 어절 단위로 줄바꿈한다.
+     공백 없는 긴 토큰(URL 등)은 말풍선·답변 쪽에서 overflow-wrap으로 따로 끊는다. */
+  word-break: keep-all;
 }
