@@ -20,6 +20,7 @@ from app.agents.graph import content_to_text, graph
 from app.agents.schemas import overall_risk
 from app.config import (
     ADMIN_TOKEN,
+    APP_VERSION,
     CORS_ORIGINS,
     DEFAULT_LIMITS,
     GEMINI_MODEL,
@@ -40,7 +41,7 @@ MAX_QUERY_LENGTH = 1000
 
 app = FastAPI(
     title="학생회 규정 AI 어시스턴트 API",
-    version="2.0.0",
+    version=APP_VERSION,
     # 자동 문서는 관리자 API 표면을 그대로 드러내므로 목업(로컬)에서만 연다
     docs_url="/docs" if MOCK_MODE else None,
     redoc_url="/redoc" if MOCK_MODE else None,
@@ -144,6 +145,7 @@ def is_admin_request(authorization: str | None) -> bool:
 def health():
     return {
         "status": "ok",
+        "version": APP_VERSION,
         "mock_mode": MOCK_MODE,
         "admin_protected": bool(ADMIN_TOKEN),
         "model": GEMINI_MODEL,

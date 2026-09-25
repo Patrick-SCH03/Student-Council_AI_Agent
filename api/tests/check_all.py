@@ -64,6 +64,18 @@ def chat_result(query: str, **extra) -> dict:
     raise AssertionError("result 이벤트 없음")
 
 
+@case("/api/health가 배포 버전을 알려준다 (릴리스 태그와 같은 SemVer)")
+def _():
+    import re
+
+    from app.config import APP_VERSION
+
+    body = client.get("/api/health").json()
+    assert body.get("version") == APP_VERSION, body
+    assert re.fullmatch(r"\d+\.\d+\.\d+", APP_VERSION), APP_VERSION
+    assert main.app.version == APP_VERSION, main.app.version
+
+
 @case("실명이 든 질문은 LLM 없이 입구에서 거절 (띄어쓰기 변형 포함)")
 def _():
     for q in ("홍길동 학생회장이 받은 처분 알려줘", "홍 길동 처분 내역"):
