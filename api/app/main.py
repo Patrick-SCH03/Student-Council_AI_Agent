@@ -31,9 +31,10 @@ from app.config import (
     PRICE_INPUT_PER_1M,
     PRICE_OUTPUT_PER_1M,
     RETENTION_DAYS,
+    SIGNING_KEY_IS_PUBLIC,
     USD_KRW,
 )
-from app.privacy import PRIVATE_NAMES, StreamMasker, find_private_name, mask_obj
+from app.privacy import PRIVATE_NAMES, StreamMasker, mask_obj, mask_text
 from app.rag import citation_graph, store
 from app.rag.ingest import IngestError, ingest_pdf
 
@@ -105,6 +106,10 @@ class ChatRequest(BaseModel):
         if not value:
             raise ValueError("질문을 입력해 주세요.")
         return value
+
+
+# 서명 키가 공개 상수면 토큰을 누구나 계산할 수 있다 — 그때는 피드백을 받지 않는다
+FEEDBACK_ENABLED = not SIGNING_KEY_IS_PUBLIC
 
 
 def _feedback_token(analysis_id: int) -> str:
@@ -272,9 +277,9 @@ async def chat(
         _enforce_daily_limit(visitor_id, ip_hash)
 
     # 후속 질문이 아닌 단독 질문만 캐시 대상 (맥락에 따라 답이 달라지므로)
-    # 실명이 든 질의는 캐시하지 않는다 — 캐시 키가 곧 질의 원문이라 이름이 저장된다.
-    # (입구 거절이라 LLM 비용도 없어 캐시할 이유가 없다)
-    cache_key = db.normalize_query(query) if not history and not find_private_name(query) else None
+    # 마스킹 대상(실명·전화·계좌·이메일)이 든 질의는 캐시하지 않는다 — 캐시 키가 곧
+    # 질의 원문이라 그대로 저장된다. 실명만 검사하면 연락처가 든 질의가 새어 나간다.
+    cache_key = db.normalize_query(query) if not history and mask_text(query) == query else None
     if cache_key:
         limits = db.get_settings(DEFAULT_LIMITS)
         cached = db.get_cached_answer(cache_key, limits["cache_ttl_hours"])
@@ -296,7 +301,7 @@ async def chat(
                     is_admin=is_admin,
                 )
                 payload = {"type": "result", **mask_obj(cached), "cached": True}
-                if cached.get("analysis_id"):
+                if cached.get("analysis_id") and FEEDBACK_ENABLED:
                     payload["feedback_token"] = _feedback_token(cached["analysis_id"])
                 yield _sse(payload)
 
@@ -425,7 +430,7 @@ async def chat(
                 "type": "result",
                 **result,
                 "analysis_id": analysis_id,
-                "feedback_token": _feedback_token(analysis_id),
+                "feedback_token": _feedback_token(analysis_id) if FEEDBACK_ENABLED else None,
             })
 
         except Exception as e:  # noqa: BLE001 - 스트림 내 오류는 이벤트로 전달
@@ -550,6 +555,8 @@ class FeedbackRequest(BaseModel):
 @app.post("/api/feedback")
 def submit_feedback(request: FeedbackRequest):
     """답변 만족도 수집 (공개 — 사용자가 누르는 버튼)."""
+    if not FEEDBACK_ENABLED:
+        raise HTTPException(status_code=503, detail="서명 키가 설정되지 않아 피드백을 받지 않아요.")
     expected = _feedback_token(request.analysis_id)
     if not secrets.compare_digest(request.token.encode(), expected.encode()):
         raise HTTPException(status_code=403, detail="이 답변을 평가할 수 없어요.")
