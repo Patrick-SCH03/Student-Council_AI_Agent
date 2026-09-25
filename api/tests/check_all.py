@@ -7,6 +7,7 @@
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 
@@ -377,6 +378,34 @@ def _():
     with db._connect() as conn:
         start = conn.execute("SELECT strftime('%Y-%m-%dT%H:%M:%S', date('now', '+9 hours'), '-9 hours')").fetchone()[0]
     assert start.endswith("T15:00:00"), start  # KST 00:00 == UTC 15:00 (전날)
+
+
+@case("smoke는 두 외부 키와 DATA_DIR이 주입돼도 목업과 임시 폴더만 사용한다")
+def _():
+    with tempfile.TemporaryDirectory(prefix="smoke-watch-", dir=_SCRATCH) as watch_dir:
+        env = os.environ.copy()
+        env.update(
+            GEMINI_API_KEY="dummy-not-a-real-key",
+            GOOGLE_API_KEY="dummy-not-a-real-key",
+            DATA_DIR=watch_dir,
+            PYTHONIOENCODING="utf-8",
+        )
+        api_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        result = subprocess.run(
+            [sys.executable, os.path.join(api_dir, "smoke_test.py")],
+            cwd=api_dir,
+            env=env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        assert result.returncode == 0, f"smoke exit {result.returncode}:\n{result.stdout}\n{result.stderr}"
+        assert os.listdir(watch_dir) == [], f"injected DATA_DIR was modified: {os.listdir(watch_dir)}"
+        scratch_lines = [line for line in result.stdout.splitlines() if line.startswith("MOCK_MODE=True; isolated DATA_DIR: ")]
+        assert len(scratch_lines) == 1, result.stdout
+        scratch_dir = scratch_lines[0].split("DATA_DIR: ", 1)[1]
+        assert not os.path.exists(scratch_dir), f"smoke DATA_DIR was left behind: {scratch_dir}"
+        assert "ALL SMOKE TESTS PASSED" in result.stdout, result.stdout
 
 
 failed = [(n, why) for n, why in _results if why]
