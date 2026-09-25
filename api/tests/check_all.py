@@ -215,15 +215,37 @@ def _():
 
 @case("피드백은 처음 남긴 방문자만 바꿀 수 있다 (analysis_id는 추측 가능)")
 def _():
-    aid = chat_result("학생회비 사용 가능 여부 피드백 테스트")["analysis_id"]
-    client.post("/api/feedback", json={"analysis_id": aid, "helpful": True, "visitor_id": "visitor-A"})
-    client.post("/api/feedback", json={"analysis_id": aid, "helpful": False, "visitor_id": "visitor-B"})
+    res = chat_result("학생회비 사용 가능 여부 피드백 테스트")
+    aid, tok = res["analysis_id"], res["feedback_token"]
+    client.post("/api/feedback", json={"analysis_id": aid, "helpful": True, "visitor_id": "visitor-A", "token": tok})
+    client.post("/api/feedback", json={"analysis_id": aid, "helpful": False, "visitor_id": "visitor-B", "token": tok})
     with db._connect() as conn:
         row = dict(conn.execute("SELECT helpful, visitor_id FROM feedback WHERE analysis_id=?", (aid,)).fetchone())
     assert row == {"helpful": 1, "visitor_id": "visitor-A"}, row
-    client.post("/api/feedback", json={"analysis_id": aid, "helpful": False, "visitor_id": "visitor-A"})
+    client.post("/api/feedback", json={"analysis_id": aid, "helpful": False, "visitor_id": "visitor-A", "token": tok})
     with db._connect() as conn:
         assert conn.execute("SELECT helpful FROM feedback WHERE analysis_id=?", (aid,)).fetchone()[0] == 0
+
+
+@case("서명 없는 피드백은 거절된다 — 아직 평가 없는 답변을 남이 선점할 수 없다")
+def _():
+    aid = chat_result("학생회비 서명 토큰 테스트")["analysis_id"]
+    bad = {"analysis_id": aid, "helpful": False, "visitor_id": "attacker"}
+    assert client.post("/api/feedback", json=bad).status_code == 422, "토큰 없이 통과했다"
+    assert client.post("/api/feedback", json={**bad, "token": "0" * 32}).status_code == 403
+    other = main._feedback_token(aid + 1)
+    assert client.post("/api/feedback", json={**bad, "token": other}).status_code == 403, "다른 답변의 토큰이 통했다"
+    with db._connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM feedback WHERE analysis_id=?", (aid,)).fetchone()[0] == 0
+
+
+@case("사용자가 창을 닫아 중단된 요청은 대시보드 오류로 세지 않는다")
+def _():
+    before = client.get("/api/stats", headers=AUTH).json()["totals"]["errors"]
+    db.record_metric(route="regulation", risk_level=None, status="cancelled", elapsed=1.0,
+                     input_tokens=1, output_tokens=1, query_preview="q", error="client disconnected")
+    after = client.get("/api/stats", headers=AUTH).json()["totals"]["errors"]
+    assert after == before, (before, after)
 
 
 @case("/api/history의 limit은 1~100으로 고정된다 (음수는 SQLite 무제한)")

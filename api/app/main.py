@@ -2,6 +2,7 @@
 
 import asyncio
 import hashlib
+import hmac
 import json
 import re
 import secrets
@@ -106,6 +107,16 @@ class ChatRequest(BaseModel):
         return value
 
 
+def _feedback_token(analysis_id: int) -> str:
+    """답변을 실제로 받은 쪽만 평가할 수 있게 하는 서명.
+
+    analysis_id는 순번이라 누구나 추측할 수 있다. 서명 없이 받으면 아직 평가가
+    없는 답변을 남이 먼저 차지할 수 있다 (선점). 결과 이벤트와 함께 내려준다.
+    """
+    msg = f"feedback:{analysis_id}".encode()
+    return hmac.new(IP_HASH_SALT.encode(), msg, hashlib.sha256).hexdigest()[:32]
+
+
 def _sse(payload: dict) -> str:
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
@@ -119,12 +130,12 @@ def require_admin(authorization: str | None = Header(default=None)) -> None:
     if not ADMIN_TOKEN:
         raise HTTPException(
             status_code=503,
-            detail="ADMIN_TOKEN이 설정되지 않아 관리자 API가 비활성화되었습니다.",
+            detail="ADMIN_TOKEN이 설정되지 않아 관리자 API를 열지 않았어요.",
         )
     expected = f"Bearer {ADMIN_TOKEN}"
     # 바이트로 비교한다. 문자열 비교는 비ASCII 헤더에서 TypeError → 500이 된다.
     if not authorization or not secrets.compare_digest(authorization.encode(), expected.encode()):
-        raise HTTPException(status_code=401, detail="관리자 인증이 필요합니다.")
+        raise HTTPException(status_code=401, detail="관리자 인증이 필요해요.")
 
 
 admin_only = Depends(require_admin)
@@ -216,7 +227,7 @@ def _enforce_daily_limit(visitor_id: str | None, ip_hash: str | None = None) -> 
     """일일 질의 상한 확인. 초과 시 429로 차단한다 (0 = 무제한)."""
     if _inflight.get("total", 0) >= MAX_INFLIGHT_TOTAL:
         raise HTTPException(
-            status_code=429, detail="지금 요청이 몰려 있습니다. 잠시 후 다시 시도해주세요."
+            status_code=429, detail="지금 요청이 몰려 있어요. 잠시 후 다시 시도해 주세요."
         )
 
     limits = db.get_settings(DEFAULT_LIMITS)
@@ -226,7 +237,7 @@ def _enforce_daily_limit(visitor_id: str | None, ip_hash: str | None = None) -> 
     if per_user > 0 and visitor_id and used_by_user >= per_user:
         raise HTTPException(
             status_code=429,
-            detail=f"오늘 사용 가능한 질문 횟수({per_user}회)를 모두 사용했습니다. 내일 다시 이용해주세요.",
+            detail=f"오늘 질문할 수 있는 횟수({per_user}회)를 모두 썼어요. 내일 다시 이용해 주세요.",
         )
 
     # visitor_id는 브라우저 저장소를 비우면 초기화되므로 IP 기준으로 한 번 더 막는다
@@ -235,14 +246,14 @@ def _enforce_daily_limit(visitor_id: str | None, ip_hash: str | None = None) -> 
     if per_ip > 0 and ip_hash and used_by_ip >= per_ip:
         raise HTTPException(
             status_code=429,
-            detail="같은 네트워크에서 오늘 이용 가능한 횟수를 모두 사용했습니다. 내일 다시 이용해주세요.",
+            detail="같은 네트워크에서 오늘 이용할 수 있는 횟수를 모두 썼어요. 내일 다시 이용해 주세요.",
         )
 
     total = limits["daily_limit_total"]
     if total > 0 and db.count_today() + _inflight.get("total", 0) >= total:
         raise HTTPException(
             status_code=429,
-            detail="오늘 전체 이용 한도에 도달했습니다. 내일 다시 이용해주세요.",
+            detail="오늘 전체 이용 한도에 도달했어요. 내일 다시 이용해 주세요.",
         )
 
 
@@ -284,7 +295,10 @@ async def chat(
                     ip_hash=ip_hash,
                     is_admin=is_admin,
                 )
-                yield _sse({"type": "result", **mask_obj(cached), "cached": True})
+                payload = {"type": "result", **mask_obj(cached), "cached": True}
+                if cached.get("analysis_id"):
+                    payload["feedback_token"] = _feedback_token(cached["analysis_id"])
+                yield _sse(payload)
 
             return StreamingResponse(
                 cached_stream(),
@@ -407,7 +421,12 @@ async def chat(
             if cache_key:
                 db.save_cached_answer(cache_key, analysis_id, result, cache_generation)
             # analysis_id는 저장 후에야 정해지므로 응답에만 덧붙인다 (피드백 전송용)
-            yield _sse({"type": "result", **result, "analysis_id": analysis_id})
+            yield _sse({
+                "type": "result",
+                **result,
+                "analysis_id": analysis_id,
+                "feedback_token": _feedback_token(analysis_id),
+            })
 
         except Exception as e:  # noqa: BLE001 - 스트림 내 오류는 이벤트로 전달
             in_tok, out_tok = _token_totals()
@@ -426,7 +445,7 @@ async def chat(
             )
             recorded = True
             # 예외 원문(LLM 출력 조각·내부 경로가 섞일 수 있음)은 지표에만 남기고 사용자에겐 일반 문구
-            yield _sse({"type": "error", "message": "분석 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요."})
+            yield _sse({"type": "error", "message": "분석 중 오류가 생겼어요. 잠시 후 다시 시도해 주세요."})
         finally:
             _inflight_add(inflight_keys, -1)
             if not recorded:
@@ -460,11 +479,11 @@ async def chat(
 @app.post("/api/documents", dependencies=[admin_only])
 async def upload_document(file: UploadFile):
     if not (file.filename or "").lower().endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="PDF 파일만 업로드할 수 있습니다.")
+        raise HTTPException(status_code=400, detail="PDF 파일만 올릴 수 있어요.")
 
     content = await file.read()
     if len(content) > MAX_UPLOAD_BYTES:
-        raise HTTPException(status_code=413, detail="파일이 너무 큽니다 (최대 20MB).")
+        raise HTTPException(status_code=413, detail="파일이 너무 커요 (최대 20MB).")
 
     # OCR·임베딩·그래프 재구축은 수 분이 걸리는 동기 작업이다. 이벤트 루프에서
     # 돌리면 그동안 모든 채팅 스트림이 멈추므로 스레드로 보낸다.
@@ -499,7 +518,7 @@ def delete_document(doc_id: str):
     # 청크를 먼저 지운다. DB 행을 먼저 지우면 청크 삭제가 실패했을 때 재시도가 404가 된다.
     store.delete_doc(doc_id)
     if not db.delete_document(doc_id):
-        raise HTTPException(status_code=404, detail="문서를 찾을 수 없습니다.")
+        raise HTTPException(status_code=404, detail="문서를 찾을 수 없어요.")
     db.clear_cache()
     citation_graph.get_graph(rebuild=True)
     return {"deleted": doc_id}
@@ -516,7 +535,7 @@ def get_history(limit: int = 20):
 def get_analysis(analysis_id: int):
     item = db.get_analysis(analysis_id)
     if not item:
-        raise HTTPException(status_code=404, detail="분석 기록을 찾을 수 없습니다.")
+        raise HTTPException(status_code=404, detail="분석 기록을 찾을 수 없어요.")
     return item
 
 
@@ -524,13 +543,18 @@ class FeedbackRequest(BaseModel):
     analysis_id: int = Field(ge=1)
     helpful: bool
     visitor_id: str | None = Field(default=None, max_length=64)
+    # 결과 이벤트로 받은 서명 — 답변을 받은 사람만 평가할 수 있다
+    token: str = Field(min_length=16, max_length=64)
 
 
 @app.post("/api/feedback")
 def submit_feedback(request: FeedbackRequest):
     """답변 만족도 수집 (공개 — 사용자가 누르는 버튼)."""
+    expected = _feedback_token(request.analysis_id)
+    if not secrets.compare_digest(request.token.encode(), expected.encode()):
+        raise HTTPException(status_code=403, detail="이 답변을 평가할 수 없어요.")
     if not db.get_analysis(request.analysis_id):
-        raise HTTPException(status_code=404, detail="분석 기록을 찾을 수 없습니다.")
+        raise HTTPException(status_code=404, detail="분석 기록을 찾을 수 없어요.")
     db.add_feedback(request.analysis_id, request.helpful, request.visitor_id)
     return {"ok": True}
 

@@ -12,5 +12,7 @@ langchain-text-splitters>=1.0
 
 # --- RAG ---
 chromadb>=1.0
-pypdf>=5.0
+# 6.16.1 미만에 PDF 파싱 DoS 권고 12건 (무한 루프·메모리 폭증). 하한을 올리면 배포 빌드의
+# pip 설치 캐시도 무효화돼, 첫 빌드 때 받은 옛 버전이 계속 쓰이는 일을 막는다.
+pypdf>=6.16.1
 networkx>=3.0
