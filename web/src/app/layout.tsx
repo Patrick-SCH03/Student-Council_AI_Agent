@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import localFont from "next/font/local";
 import Image from "next/image";
 import Link from "next/link";
@@ -18,10 +18,30 @@ const jakarta = localFont({
   display: "swap",
 });
 
+const SITE_URL = "https://ai-agent-patrick-16be.vercel.app";
+const DESCRIPTION =
+  "학생회 회칙·세칙·감사보고서를 근거로 규정 위반 여부와 감사 처분 가능성을 알려주는 AI예요.";
+
 export const metadata: Metadata = {
+  metadataBase: new URL(SITE_URL),
   title: "학생회 규정 AI 어시스턴트",
-  description:
-    "학생회 규정·재정·감사 질문을 AI 멀티에이전트가 문서 기반으로 분석합니다.",
+  description: DESCRIPTION,
+  // 카카오톡·메신저에 링크를 붙였을 때 보이는 미리보기
+  openGraph: {
+    type: "website",
+    url: "/",
+    siteName: "학생회 규정 AI",
+    title: "학생회 규정 AI 어시스턴트",
+    description: DESCRIPTION,
+    locale: "ko_KR",
+    images: [{ url: "/emblem.png", width: 304, height: 304, alt: "인하대학교 마크" }],
+  },
+  twitter: { card: "summary", title: "학생회 규정 AI 어시스턴트", description: DESCRIPTION },
+};
+
+// 모바일 브라우저 주소창 색을 흰 헤더와 맞춘다
+export const viewport: Viewport = {
+  themeColor: "#ffffff",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

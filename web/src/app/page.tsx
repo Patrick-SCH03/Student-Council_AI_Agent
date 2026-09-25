@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useId, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -105,25 +105,35 @@ const paths = {
   ),
 };
 
-function FeedbackButtons({ analysisId }: { analysisId: number }) {
-  const [sent, setSent] = useState<boolean | null>(null);
+function FeedbackButtons({ analysisId, token }: { analysisId: number; token: string }) {
+  // 전송이 끝난 뒤에만 감사 표시를 한다. 먼저 바꾸면 실패해도 성공처럼 보이고 재시도할 길이 없다.
+  const [status, setStatus] = useState<"idle" | "sending" | "done" | "failed">("idle");
+  const [helpfulSent, setHelpfulSent] = useState(true);
 
-  const submit = (helpful: boolean) => {
-    setSent(helpful); // 낙관적 반영 — 전송 실패해도 사용자 흐름을 막지 않는다
-    sendFeedback(analysisId, helpful).catch(() => {});
+  const submit = async (helpful: boolean) => {
+    setStatus("sending");
+    setHelpfulSent(helpful);
+    try {
+      await sendFeedback(analysisId, helpful, token);
+      setStatus("done");
+    } catch {
+      setStatus("failed");
+    }
   };
 
-  if (sent !== null) {
+  if (status === "done") {
     return (
-      <span className="text-xs font-medium text-slate-400">
-        {sent ? "의견 감사합니다" : "의견 감사합니다. 개선에 참고하겠습니다"}
+      <span role="status" className="text-xs font-medium text-slate-500">
+        {helpfulSent ? "의견 감사해요" : "의견 감사해요. 개선에 참고할게요"}
       </span>
     );
   }
 
   return (
     <div className="flex items-center gap-1.5">
-      <span className="text-xs font-medium text-slate-400">도움이 되었나요?</span>
+      <span role={status === "failed" ? "alert" : undefined} className="text-xs font-medium text-slate-500">
+        {status === "failed" ? "전송하지 못했어요 · 다시 눌러 주세요" : "도움이 되었나요?"}
+      </span>
       {[
         { helpful: true, icon: paths.thumbUp, label: "도움됨" },
         { helpful: false, icon: paths.thumbDown, label: "부족함" },
@@ -132,9 +142,10 @@ function FeedbackButtons({ analysisId }: { analysisId: number }) {
           key={b.label}
           type="button"
           onClick={() => submit(b.helpful)}
+          disabled={status === "sending"}
           aria-label={b.label}
           title={b.label}
-          className="rounded-full border border-slate-200 p-1.5 text-slate-400 transition hover:border-indigo-300 hover:text-indigo-600"
+          className="rounded-full border border-slate-200 p-1.5 text-slate-500 transition hover:border-indigo-300 hover:text-indigo-600 disabled:opacity-50"
         >
           <Icon path={b.icon} className="h-3.5 w-3.5" />
         </button>
@@ -174,9 +185,9 @@ const emptyAssistant = (): AssistantState => ({
 function RiskBadge({ level }: { level: string | null }) {
   if (!level) return null;
   const styles: Record<string, string> = {
-    높음: "bg-rose-50 text-rose-600 ring-rose-200",
-    보통: "bg-amber-50 text-amber-600 ring-amber-200",
-    낮음: "bg-green-50 text-green-600 ring-green-200",
+    높음: "bg-rose-50 text-rose-700 ring-rose-200",
+    보통: "bg-amber-50 text-amber-700 ring-amber-200",
+    낮음: "bg-green-50 text-green-700 ring-green-200",
   };
   return (
     <span
@@ -193,25 +204,27 @@ function RiskBadge({ level }: { level: string | null }) {
 // 한글에는 이탤릭 자족이 없어 브라우저가 글자를 기계적으로 기울인다.
 // 획 균형이 무너져 다른 서체처럼 보이므로, 강조는 기울임 대신 옅은 색으로 준다.
 const MARKDOWN_STYLE =
-  "max-w-none text-[15px] leading-[1.7] text-slate-700 [&_h3]:mt-5 [&_h3]:mb-1.5 [&_h3]:text-[15px] [&_h3]:font-bold [&_h3]:text-slate-900 [&_p]:my-1.5 [&_ul]:my-1.5 [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:my-1.5 [&_ol]:list-decimal [&_ol]:pl-5 [&_blockquote]:border-l-2 [&_blockquote]:border-indigo-200 [&_blockquote]:pl-3 [&_blockquote]:text-slate-500 [&_strong]:font-bold [&_strong]:text-slate-900 [&_em]:not-italic [&_em]:text-slate-500";
+  "max-w-none text-[15px] leading-[1.7] text-slate-700 [&_h3]:mt-5 [&_h3]:mb-1.5 [&_h3]:text-[15px] [&_h3]:font-bold [&_h3]:text-slate-900 [&_p]:my-1.5 [&_ul]:my-1.5 [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:my-1.5 [&_ol]:list-decimal [&_ol]:pl-5 [&_blockquote]:border-l-2 [&_blockquote]:border-indigo-200 [&_blockquote]:pl-3 [&_blockquote]:text-slate-500 [&_strong]:font-bold [&_strong]:text-slate-900 [&_em]:not-italic [&_em]:text-slate-500 [overflow-wrap:anywhere] [&_a]:font-medium [&_a]:text-indigo-700 [&_a]:underline [&_a]:underline-offset-2 [&_pre]:my-2 [&_pre]:overflow-x-auto [&_pre]:rounded-lg [&_pre]:bg-slate-50 [&_pre]:p-3 [&_pre]:text-[13px] [&_table]:my-2 [&_table]:block [&_table]:max-w-full [&_table]:overflow-x-auto [&_th]:border [&_th]:border-slate-200 [&_th]:bg-slate-50 [&_th]:px-2 [&_th]:py-1 [&_td]:border [&_td]:border-slate-200 [&_td]:px-2 [&_td]:py-1";
 
-function Markdown({ text }: { text: string }) {
+// 입력창 타이핑·스트리밍 때 페이지 전체가 다시 그려져도, 글이 같으면 다시 파싱하지 않는다
+const Markdown = memo(function Markdown({ text }: { text: string }) {
   return (
     <div className={MARKDOWN_STYLE}>
       <ReactMarkdown remarkPlugins={[remarkGfm]} disallowedElements={["img"]} unwrapDisallowed>{text}</ReactMarkdown>
     </div>
   );
-}
+});
 
 function CitationChips({ citations }: { citations: Citation[] }) {
   const [openIdx, setOpenIdx] = useState<number | null>(null);
+  const snippetId = useId();
   const unique = [
     ...new Map(citations.map((c) => [c.source_file, c])).values(),
   ];
   if (unique.length === 0) return null;
   return (
     <div className="mt-5">
-      <p className="mb-2 text-[11px] font-bold uppercase tracking-wide text-slate-400">
+      <p className="mb-2 text-[11px] font-bold uppercase tracking-wide text-slate-500">
         근거 문서
       </p>
       <div className="flex flex-wrap gap-1.5">
@@ -220,6 +233,8 @@ function CitationChips({ citations }: { citations: Citation[] }) {
             key={i}
             type="button"
             onClick={() => setOpenIdx(openIdx === i ? null : i)}
+            aria-expanded={openIdx === i}
+            aria-controls={snippetId}
             className={`inline-flex max-w-full items-center gap-1.5 truncate rounded-full px-3 py-1.5 text-xs font-medium transition ${
               openIdx === i
                 ? "bg-indigo-600 text-white"
@@ -232,7 +247,7 @@ function CitationChips({ citations }: { citations: Citation[] }) {
         ))}
       </div>
       {openIdx !== null && unique[openIdx] && (
-        <div className="mt-2 rounded-xl border border-indigo-100 bg-indigo-50/50 px-4 py-3 text-[13px] leading-relaxed text-slate-600">
+        <div id={snippetId} className="mt-2 rounded-xl border border-indigo-100 bg-indigo-50/50 px-4 py-3 text-[13px] leading-relaxed text-slate-600 [overflow-wrap:anywhere]">
           {unique[openIdx].snippet}
         </div>
       )}
@@ -265,7 +280,7 @@ function AgentDetail({
         </span>
         <Icon
           path={paths.chevron}
-          className="h-4 w-4 text-slate-400 transition-transform group-open:rotate-90"
+          className="h-4 w-4 text-slate-500 transition-transform group-open:rotate-90 motion-reduce:transition-none"
         />
       </summary>
       <div className="border-t border-slate-200 px-4 py-3 text-sm">{children}</div>
@@ -315,8 +330,9 @@ function AssistantBubble({
       >
         {error ? (
           <p
+            role="alert"
             className={`flex items-center gap-2 text-sm ${
-              blocked ? "font-medium text-amber-700" : "text-rose-600"
+              blocked ? "font-medium text-amber-700" : "text-rose-700"
             }`}
           >
             <Icon path={paths.alert} className="h-4 w-4" />
@@ -326,9 +342,10 @@ function AssistantBubble({
           <>
             {!result && stage && (
               <div className="mb-2 flex items-center gap-2 text-sm font-medium text-slate-500">
-                <span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-indigo-200 border-t-indigo-600" />
+                <span aria-hidden className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-indigo-200 border-t-indigo-600 motion-reduce:animate-none" />
                 {stage}
-                <span className="text-xs text-slate-400">보통 30–40초</span>
+                {/* 배포본 규정 질의 응답 중앙값 9.9초 · p90 13초 (2026-09 실측) */}
+                <span className="text-xs text-slate-500">보통 10초 안팎</span>
               </div>
             )}
 
@@ -343,10 +360,10 @@ function AssistantBubble({
                     key={step.label}
                     className={`inline-flex items-center gap-1 rounded-full px-3 py-1 ring-1 ${
                       step.done
-                        ? "bg-green-50 text-green-600 ring-green-200"
+                        ? "bg-green-50 text-green-700 ring-green-200"
                         : "active" in step && step.active
-                          ? "bg-indigo-50 text-indigo-600 ring-indigo-200"
-                          : "bg-slate-50 text-slate-400 ring-slate-200"
+                          ? "bg-indigo-50 text-indigo-700 ring-indigo-200"
+                          : "bg-slate-50 text-slate-500 ring-slate-200"
                     }`}
                   >
                     {step.done && <Icon path={paths.check} className="h-3 w-3" />}
@@ -397,7 +414,7 @@ function AssistantBubble({
 
             {result && isLast && (result.followups?.length ?? 0) > 0 && (
               <div className="mt-5 flex flex-col items-start gap-1.5">
-                <p className="text-[11px] font-bold uppercase tracking-wide text-slate-400">
+                <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">
                   이어서 물어보기
                 </p>
                 {result.followups.map((q) => (
@@ -428,11 +445,12 @@ function AssistantBubble({
                   {copied ? "복사됨" : "답변 복사"}
                 </button>
 
-                {result.analysis_id && (
-                  <FeedbackButtons analysisId={result.analysis_id} />
+                {/* 서명이 없는 옛 저장 답변은 평가할 수 없다 */}
+                {result.analysis_id && result.feedback_token && (
+                  <FeedbackButtons analysisId={result.analysis_id} token={result.feedback_token} />
                 )}
 
-                <span className="ml-auto inline-flex items-center gap-1 text-xs font-medium text-slate-400">
+                <span className="ml-auto inline-flex items-center gap-1 text-xs font-medium text-slate-500">
                   <Icon path={paths.clock} className="h-3.5 w-3.5" />
                   {result.cached ? "이전 답변" : `${result.elapsed.toFixed(1)}초`}
                 </span>
@@ -446,6 +464,25 @@ function AssistantBubble({
 }
 
 const STORAGE_KEY = "regulation-chat-v1";
+// 공용 PC에서 다음 사용자가 지난 대화를 보지 않도록 오래된 대화는 복원하지 않는다
+const STORAGE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+type SavedChat = { v: 2; savedAt: number; messages: Message[] };
+
+/** 저장할 대화만 고른다: 답변이 완료된 규정 질의 쌍.
+ *  범위 밖·실명 거절(route=general)과 오류 턴은 뺀다 — 서버가 거절한 실명 질문이
+ *  브라우저에 원문으로 남는 일을 막는다. */
+function persistable(msgs: Message[]): Message[] {
+  const out: Message[] = [];
+  for (let i = 0; i < msgs.length - 1; i++) {
+    const q = msgs[i];
+    const a = msgs[i + 1];
+    if (q.role !== "user" || a.role !== "assistant") continue;
+    if (a.state.result && a.state.result.route !== "general") out.push(q, a);
+    i++;
+  }
+  return out;
+}
 
 export default function ChatPage() {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -454,8 +491,12 @@ export default function ChatPage() {
   // 진행 중 요청. '새 대화'가 이걸 끊어야 이전 답이 사라진 말풍선에 꽂히거나 busy가 남지 않는다
   const abortRef = useRef<AbortController | null>(null);
   const [mockMode, setMockMode] = useState(false);
+  // 화면낭독기에 진행·완료를 알리는 문구 (토큰마다가 아니라 단계가 바뀔 때만)
+  const [announce, setAnnounce] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
   const idRef = useRef(0);
+  // 사용자가 위로 올려 이전 답변을 읽는 중이면 자동으로 끌어내리지 않는다
+  const followRef = useRef(true);
 
   useEffect(() => {
     fetchHealth()
@@ -469,8 +510,17 @@ export default function ChatPage() {
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
       if (!saved) return;
-      const parsed = JSON.parse(saved) as Message[];
-      if (!Array.isArray(parsed) || parsed.length === 0) return;
+      const raw = JSON.parse(saved) as SavedChat | Message[];
+      // 옛 형식(배열)은 저장 시각이 없어 한 번만 거르고 새 형식으로 다시 저장된다
+      if (!Array.isArray(raw) && Date.now() - raw.savedAt > STORAGE_TTL_MS) {
+        localStorage.removeItem(STORAGE_KEY);
+        return;
+      }
+      const parsed = persistable(Array.isArray(raw) ? raw : raw.messages);
+      if (parsed.length === 0) {
+        localStorage.removeItem(STORAGE_KEY);
+        return;
+      }
       // eslint-disable-next-line react-hooks/set-state-in-effect -- 하이드레이션 안전을 위한 마운트 후 복원
       setMessages(parsed);
       idRef.current = Math.max(...parsed.map((m) => m.id), 0);
@@ -483,11 +533,12 @@ export default function ChatPage() {
   useEffect(() => {
     if (busy) return;
     try {
-      const done = messages.filter(
-        (m) => m.role === "user" || m.state.result || m.state.error,
-      );
+      const done = persistable(messages);
       if (done.length > 0) {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(done.slice(-20)));
+        const payload: SavedChat = { v: 2, savedAt: Date.now(), messages: done.slice(-20) };
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+      } else if (messages.length > 0) {
+        localStorage.removeItem(STORAGE_KEY);
       }
     } catch {
       // 저장 실패(용량 초과 등)는 무시
@@ -502,8 +553,31 @@ export default function ChatPage() {
     localStorage.removeItem(STORAGE_KEY);
   };
 
+  // 사용자가 직접 스크롤했을 때만 '따라가기'를 다시 판단한다. 코드가 일으킨 부드러운
+  // 스크롤 도중의 위치로 판단하면 긴 답변 중간에 따라가기가 풀린다.
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    const check = () =>
+      setTimeout(() => {
+        followRef.current =
+          window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 160;
+      }, 120);
+    const onKey = (e: KeyboardEvent) => {
+      if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(e.key)) check();
+    };
+    window.addEventListener("wheel", check, { passive: true });
+    window.addEventListener("touchmove", check, { passive: true });
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("wheel", check);
+      window.removeEventListener("touchmove", check);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!followRef.current) return;
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    bottomRef.current?.scrollIntoView({ behavior: reduce ? "auto" : "smooth" });
   }, [messages]);
 
   const updateAssistant = (id: number, patch: Partial<AssistantState>) => {
@@ -547,6 +621,8 @@ export default function ChatPage() {
     const history = buildHistory(messages);
     const controller = new AbortController();
     abortRef.current = controller;
+    followRef.current = true; // 방금 보낸 질문의 답은 따라간다
+    setAnnounce("질문을 보냈어요. 분석 중이에요.");
     const userId = ++idRef.current;
     const assistantId = ++idRef.current;
     setMessages((prev) => [
@@ -561,6 +637,7 @@ export default function ChatPage() {
       let finished = false; // result 또는 error 이벤트를 받았는지
       for await (const event of streamChat(query, history, controller.signal)) {
         if (event.type === "stage") {
+          setAnnounce(event.label);
           updateAssistant(assistantId, {
             stage: event.label,
             ...(event.route ? { route: event.route } : {}),
@@ -583,6 +660,11 @@ export default function ChatPage() {
           }
         } else if (event.type === "result") {
           finished = true;
+          setAnnounce(
+            event.route === "general"
+              ? "안내를 받았어요."
+              : `답변이 도착했어요.${event.risk_level ? ` 위험도 ${event.risk_level}.` : ""}`,
+          );
           updateAssistant(assistantId, { result: event, stage: null });
         } else if (event.type === "error") {
           finished = true;
@@ -604,7 +686,7 @@ export default function ChatPage() {
             ? e.message
             : e instanceof Error
               ? e.message
-              : "알 수 없는 오류",
+              : "알 수 없는 오류가 생겼어요.",
         blocked: e instanceof ChatBlockedError,
         stage: null,
       });
@@ -622,10 +704,17 @@ export default function ChatPage() {
         <div className="mb-4 flex items-center gap-2 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-2.5 text-sm font-medium text-amber-700">
           <Icon path={paths.alert} className="h-4 w-4" />
           <span>
-            GEMINI_API_KEY가 설정되지 않아 <b>목업 모드</b>로 동작 중입니다.
+            API 키(GEMINI_API_KEY)가 없어 <b>목업 모드</b>로 동작 중이에요.
           </span>
         </div>
       )}
+
+      <div className="sr-only" role="status" aria-live="polite">
+        {announce}
+      </div>
+
+      {/* 대화가 시작돼도 페이지 제목은 남아 있어야 헤딩으로 이동할 수 있다 */}
+      {messages.length > 0 && <h1 className="sr-only">학생회 규정 AI 어시스턴트</h1>}
 
       {messages.length > 0 && (
         <div className="mb-3 flex justify-end">
@@ -650,7 +739,7 @@ export default function ChatPage() {
               무엇을 도와드릴까요?
             </h1>
             <p className="mt-2 text-[15px] font-medium text-slate-500">
-              규정 검토 · 감사 분석 · 종합 권고를 AI 에이전트가 병렬로 수행합니다
+              규정 검토 · 감사 분석 · 종합 권고를 AI 에이전트가 동시에 분석해요
             </p>
             <div className="mx-auto mt-9 grid max-w-xl gap-2.5 sm:grid-cols-2">
               {EXAMPLES.map((ex) => (
@@ -673,7 +762,7 @@ export default function ChatPage() {
         {messages.map((m) =>
           m.role === "user" ? (
             <div key={m.id} className="flex justify-end">
-              <div className="max-w-[85%] rounded-2xl rounded-br-md bg-indigo-600 px-4 py-3 text-[15px] font-medium leading-snug text-white">
+              <div className="max-w-[85%] whitespace-pre-wrap rounded-2xl rounded-br-md bg-indigo-600 px-4 py-3 text-[15px] font-medium leading-snug text-white [overflow-wrap:anywhere]">
                 {m.text}
               </div>
             </div>
@@ -696,14 +785,15 @@ export default function ChatPage() {
             e.preventDefault();
             send(input);
           }}
-          className={`flex items-center gap-2 rounded-[24px] border border-slate-200 bg-white p-2 pl-5 transition focus-within:border-indigo-300 ${CARD_SHADOW}`}
+          className={`flex items-center gap-2 rounded-[24px] border border-slate-200 bg-white p-2 pl-5 transition focus-within:border-indigo-500 focus-within:ring-2 focus-within:ring-indigo-500/20 ${CARD_SHADOW}`}
         >
           <input
             value={input}
             onChange={(e) => setInput(e.target.value)}
+            aria-label="질문 입력"
             placeholder="학생회 규정·재정·감사에 대해 물어보세요"
             maxLength={1000}
-            className="min-w-0 flex-1 bg-transparent py-2.5 text-[15px] font-medium text-slate-700 placeholder-slate-400 outline-none"
+            className="min-w-0 flex-1 bg-transparent py-2.5 text-[15px] font-medium text-slate-700 placeholder-slate-500 outline-none"
           />
           <button
             type="submit"
@@ -712,14 +802,14 @@ export default function ChatPage() {
             className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-indigo-600 text-white transition hover:bg-indigo-700 disabled:opacity-40"
           >
             {busy ? (
-              <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-indigo-300 border-t-white" />
+              <span aria-hidden className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-indigo-300 border-t-white motion-reduce:animate-none" />
             ) : (
               <Icon path={paths.send} className="h-5 w-5" />
             )}
           </button>
         </form>
-        <p className="mt-2.5 text-center text-xs font-medium text-slate-400">
-          AI 분석은 참고용입니다. 최종 판단은 감사위원회 및 관련 규정을 따릅니다.
+        <p className="mt-2.5 text-center text-xs font-medium text-slate-500">
+          AI 분석은 참고용이에요. 최종 판단은 감사위원회와 관련 규정을 따라 주세요.
         </p>
       </div>
     </div>
