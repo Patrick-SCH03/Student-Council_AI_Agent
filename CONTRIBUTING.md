@@ -52,15 +52,15 @@ fix: 본문이 이미지인 PDF가 스캔본 판정을 우회하던 문제 해�
 | **api** | 의존성 설치 → 스모크 테스트 (벡터 스토어 · 그래프 병렬 실행 · 라우팅) |
 | **web** | 의존성 설치 → ESLint → 프로덕션 빌드 |
 
-백엔드 스모크 테스트는 **API 키 없이 동작하는 목업 모드**로 실행되므로 CI에 시크릿이 필요 없습니다.
+백엔드 스모크 테스트와 회귀 테스트는 **목업 모드를 스스로 강제**합니다(키를 비우고 임시 `DATA_DIR` 사용). 그래서 CI에 시크릿이 필요 없고, 로컬 `api/.env`에 실제 키가 있어도 과금이나 실제 색인 변경이 없습니다.
 
 ## 로컬 검증
 
 push 전에 아래를 실행합니다.
 
 ```bash
-# 백엔드
-cd api && python smoke_test.py
+# 백엔드 (둘 다 강제 목업, 무료)
+cd api && python smoke_test.py && python tests/check_all.py
 
 # 프론트엔드
 cd web && npm run lint && npm run build

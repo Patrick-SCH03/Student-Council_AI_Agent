@@ -13,8 +13,8 @@
 
 | 작업 | 비용 | 비고 |
 |---|---|---|
-| `smoke_test.py`(목업) · `tests/check_all.py` · lint · build | 무료 | 기본 검증 수단 |
-| `evaluate.py --retrieval` / `--multihop` | 거의 무료 | 질의 임베딩만 호출 (LLM 미호출) |
+| `smoke_test.py` · `tests/check_all.py` · lint · build | 무료 | 기본 검증 수단. 두 파이썬 스크립트는 키를 비우고 임시 `DATA_DIR`로 강제 목업 (`api/.env`에 키가 있어도) |
+| `evaluate.py --retrieval` / `--multihop` | 거의 무료 | **실제 로컬 색인** + Gemini 질의 임베딩 호출 (LLM 미호출). `api/data/`가 없으면 만들고 인용 그래프도 생성할 수 있다 |
 | `evaluate.py --case <id>` | 건당 ~35원 | 프롬프트 일부 변경 시 1~3건만 |
 | `evaluate.py` 전체 50건 | ~1,750원 | 배포 직전 1회만, 로컬·원격 중 **한쪽만** |
 | 문서 재색인 (OCR 포함) | ~750원 | OCR 캐시 덕에 프롬프트를 안 바꾸면 재호출 없음 |
@@ -25,10 +25,10 @@
 
 ```bash
 cd api
-.venv/Scripts/python.exe smoke_test.py              # 목업 스모크 (CI와 동일)
-.venv/Scripts/python.exe tests/check_all.py         # 회귀 테스트 25건 (키·서버 없이, CI와 동일)
-.venv/Scripts/python.exe evaluate.py --retrieval    # 검색 지표(MRR·순위), LLM 미호출
-.venv/Scripts/python.exe evaluate.py --multihop     # 인용 그래프 A/B(판례 커버리지), LLM 미호출
+.venv/Scripts/python.exe smoke_test.py              # 강제 목업 스모크 (임시 DATA_DIR, CI와 동일)
+.venv/Scripts/python.exe tests/check_all.py         # 회귀 테스트 26건 (키·서버 없이, CI와 동일)
+.venv/Scripts/python.exe evaluate.py --retrieval    # 검색 지표(MRR·순위), 실제 색인·임베딩, LLM 미호출
+.venv/Scripts/python.exe evaluate.py --multihop     # 인용 그래프 A/B(판례 커버리지), 실제 색인·임베딩, LLM 미호출
 .venv/Scripts/python.exe ingest_folder.py           # documents/ ↔ 로컬 색인 동기화
 .venv/Scripts/python.exe upload_to_remote.py <배포URL>  # 배포 서버로 업로드 (기존 파일 건너뜀)
 cd web && npm run lint && npm run build
@@ -38,6 +38,7 @@ Windows 주의: 인터프리터는 `api/.venv/Scripts/python.exe`, 한글 출력
 
 ## 함정 (실제로 겪은 것)
 
+- **"목업" 스크립트는 키를 직접 비워야 목업이다.** `config.py`가 import 시 `api/.env`를 읽으므로, 환경변수만 없는 상태로는 로컬 실키가 잡혀 실제 과금·실제 색인 변경이 일어난다. 2026-09-26까지 `smoke_test.py`가 이 상태였다(CI는 키가 없어 몰랐음). 새 검증 스크립트는 `GEMINI_API_KEY`·`GOOGLE_API_KEY`를 `""`로, `DATA_DIR`을 임시 폴더로 **app import 전에** 강제하고, `MOCK_MODE`가 아니면 즉시 종료한다.
 - **검색 관련 회귀는 배포본에서 확인한다.** OCR이 비결정적이라 로컬/원격 청크 경계가 달라 로컬만 통과한 적이 있다. 지금은 `data/ocr_cache`로 고정 — 캐시 키가 파일해시+프롬프트라 `_OCR_PROMPT`를 바꾸면 전체 재추출 비용이 발생한다.
 - **원격 평가 전 답변 캐시를 비운다** (`POST /api/cache/clear`). 안 비우면 캐시가 0.3초에 응답해 새 코드가 검증되지 않는다. 문서 추가·삭제 시엔 자동으로 비워진다.
 - 관리자 API 인증: `Authorization: Bearer <ADMIN_TOKEN>` (`api/.env`). settings 변경은 **PUT** (POST는 405). `/docs`·`/openapi.json`은 운영에서 꺼져 있다 (목업 모드에서만 열림).
