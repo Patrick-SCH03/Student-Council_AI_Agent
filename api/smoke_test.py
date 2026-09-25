@@ -2,6 +2,10 @@
 
 import asyncio
 import os
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
 
 # 실명 목록은 저장소에 없다. 입구 거절은 더미 이름으로 검증한다 (app 모듈 import 전에 설정).
 os.environ.setdefault("PRIVATE_NAMES", "홍길동")
@@ -45,8 +49,42 @@ async def main():
 
     store.delete_doc("testdoc")
     assert store.chunk_count() == baseline, "delete_doc 실패"
+
+
+def _run_child():
+    try:
+        from app import config
+
+        if config.MOCK_MODE is not True:
+            raise RuntimeError("smoke test refused to run: MOCK_MODE is not True")
+        print("MOCK_MODE=True; isolated DATA_DIR:", config.DATA_DIR)
+        asyncio.run(main())
+    finally:
+        store_module = sys.modules.get("app.rag.store")
+        chroma_client = getattr(store_module, "_client", None)
+        if chroma_client is not None:
+            chroma_client.close()
+
+
+def _run_isolated():
+    scratch = tempfile.TemporaryDirectory(prefix="smoke-test-")
+    child_env = os.environ.copy()
+    child_env.update(GEMINI_API_KEY="", GOOGLE_API_KEY="", DATA_DIR=scratch.name)
+
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", "from smoke_test import _run_child; _run_child()"],
+            cwd=Path(__file__).resolve().parent,
+            env=child_env,
+        )
+        if result.returncode != 0:
+            raise SystemExit(result.returncode)
+    finally:
+        scratch.cleanup()
+        if os.path.exists(scratch.name):
+            raise RuntimeError(f"smoke test DATA_DIR was not removed: {scratch.name}")
     print("ALL SMOKE TESTS PASSED")
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    _run_isolated()
