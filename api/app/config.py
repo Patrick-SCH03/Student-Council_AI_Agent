@@ -10,8 +10,8 @@ load_dotenv()
 GEMINI_API_KEY: str | None = (
     os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or None
 )
-# 릴리스 태그(v2.6.0)와 같이 올린다. /api/health로 배포본이 어떤 버전인지 확인한다.
-APP_VERSION = "2.6.0"
+# 릴리스 태그(v2.7.0)와 같이 올린다. /api/health로 배포본이 어떤 버전인지 확인한다.
+APP_VERSION = "2.7.0"
 
 GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-3.7-flash")
 # 라우터는 분류 + 한 문장 재작성만 하므로 경량 모델을 쓴다.
