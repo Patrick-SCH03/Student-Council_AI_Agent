@@ -60,10 +60,11 @@ def _run_child():
         print("MOCK_MODE=True; isolated DATA_DIR:", config.DATA_DIR)
         asyncio.run(main())
     finally:
+        # chromadb 1.0~1.3 에는 close() 가 없다(requirements 는 >=1.0). 잠금은 자식 프로세스 종료로 풀리므로 있을 때만 닫는다.
         store_module = sys.modules.get("app.rag.store")
-        chroma_client = getattr(store_module, "_client", None)
-        if chroma_client is not None:
-            chroma_client.close()
+        close = getattr(getattr(store_module, "_client", None), "close", None)
+        if callable(close):
+            close()
 
 
 def _run_isolated():
