@@ -168,7 +168,8 @@ type AssistantState = {
 };
 
 type Message =
-  | { id: number; role: "user"; text: string }
+  // at: 질문한 시각 — 브라우저 저장본을 턴 단위로 만료시킨다
+  | { id: number; role: "user"; text: string; at?: number }
   | { id: number; role: "assistant"; state: AssistantState };
 
 const emptyAssistant = (): AssistantState => ({
@@ -464,22 +465,28 @@ function AssistantBubble({
 }
 
 const STORAGE_KEY = "regulation-chat-v1";
-// 공용 PC에서 다음 사용자가 지난 대화를 보지 않도록 오래된 대화는 복원하지 않는다
+// 공용 PC에서 다음 사용자가 지난 대화를 보지 않도록, 질문한 지 7일 지난 턴은 복원하지 않는다.
+// 만료는 턴마다 질문 시각으로 판단한다 — 저장 시각으로 판단하면 복원할 때마다 갱신돼
+// 읽기만 해도 보존 기간이 끝없이 늘어난다.
 const STORAGE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
-type SavedChat = { v: 2; savedAt: number; messages: Message[] };
+type SavedChat = { v: 2; messages: Message[] };
 
-/** 저장할 대화만 고른다: 답변이 완료된 규정 질의 쌍.
- *  범위 밖·실명 거절(route=general)과 오류 턴은 뺀다 — 서버가 거절한 실명 질문이
- *  브라우저에 원문으로 남는 일을 막는다. */
-function persistable(msgs: Message[]): Message[] {
+/** 저장할 대화만 고른다: 7일 안에 질문한, 답변이 완료된 규정 질의 쌍.
+ *  - 범위 밖·실명 거절(route=general)과 오류 턴은 뺀다
+ *  - 질문 원문 대신 서버가 마스킹한 질문(result.query)을 저장한다 — 실명이 아니어도
+ *    전화번호·이메일이 든 질문이 브라우저에 그대로 남지 않도록 */
+function persistable(msgs: Message[], now: number): Message[] {
   const out: Message[] = [];
   for (let i = 0; i < msgs.length - 1; i++) {
     const q = msgs[i];
     const a = msgs[i + 1];
     if (q.role !== "user" || a.role !== "assistant") continue;
-    if (a.state.result && a.state.result.route !== "general") out.push(q, a);
     i++;
+    const result = a.state.result;
+    if (!result || result.route === "general") continue;
+    if (!q.at || now - q.at > STORAGE_TTL_MS) continue;
+    out.push({ ...q, text: result.query || q.text }, a);
   }
   return out;
 }
@@ -511,12 +518,8 @@ export default function ChatPage() {
       const saved = localStorage.getItem(STORAGE_KEY);
       if (!saved) return;
       const raw = JSON.parse(saved) as SavedChat | Message[];
-      // 옛 형식(배열)은 저장 시각이 없어 한 번만 거르고 새 형식으로 다시 저장된다
-      if (!Array.isArray(raw) && Date.now() - raw.savedAt > STORAGE_TTL_MS) {
-        localStorage.removeItem(STORAGE_KEY);
-        return;
-      }
-      const parsed = persistable(Array.isArray(raw) ? raw : raw.messages);
+      // 옛 형식(배열)은 질문 시각이 없어 만료를 판단할 수 없다 — 복원하지 않고 지운다
+      const parsed = Array.isArray(raw) ? [] : persistable(raw.messages ?? [], Date.now());
       if (parsed.length === 0) {
         localStorage.removeItem(STORAGE_KEY);
         return;
@@ -533,9 +536,9 @@ export default function ChatPage() {
   useEffect(() => {
     if (busy) return;
     try {
-      const done = persistable(messages);
+      const done = persistable(messages, Date.now());
       if (done.length > 0) {
-        const payload: SavedChat = { v: 2, savedAt: Date.now(), messages: done.slice(-20) };
+        const payload: SavedChat = { v: 2, messages: done.slice(-20) };
         localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
       } else if (messages.length > 0) {
         localStorage.removeItem(STORAGE_KEY);
@@ -627,7 +630,7 @@ export default function ChatPage() {
     const assistantId = ++idRef.current;
     setMessages((prev) => [
       ...prev,
-      { id: userId, role: "user", text: query },
+      { id: userId, role: "user", text: query, at: Date.now() },
       { id: assistantId, role: "assistant", state: emptyAssistant() },
     ]);
 

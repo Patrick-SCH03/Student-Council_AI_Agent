@@ -161,6 +161,28 @@ def _():
     assert rows and all("○○○" in r for r in rows), rows
 
 
+@case("실명 없이 연락처만 든 질의도 캐시 키·저장본에 원문이 남지 않는다")
+def _():
+    res = chat_result("학생회비 환불 문의는 010-9876-5432 또는 x.y@inha.edu 로 해도 되나요?")
+    assert res["route"] == "regulation", res["route"]
+    assert "010-9876-5432" not in res["query"] and "x.y@inha.edu" not in res["query"], res["query"]
+    with db._connect() as conn:
+        keys = " ".join(r[0] for r in conn.execute("SELECT query_key FROM answer_cache"))
+        previews = " ".join(r[0] for r in conn.execute("SELECT query_preview FROM metrics ORDER BY id DESC LIMIT 1"))
+    for leaked in ("9876", "x.y@inha.edu", "inha.edu"):
+        assert leaked not in keys and leaked not in previews, f"원문 노출: {leaked}"
+
+
+@case("서명 키가 공개 상수면 피드백을 끈다 — 토큰을 누구나 계산할 수 있으므로")
+def _():
+    with patch.object(main, "FEEDBACK_ENABLED", False):
+        res = chat_result("학생회비 서명 키 폴백 테스트")
+        assert res.get("feedback_token") is None, "공개 키로 서명을 발급했다"
+        forged = main._feedback_token(res["analysis_id"])
+        r = client.post("/api/feedback", json={"analysis_id": res["analysis_id"], "helpful": True, "token": forged})
+        assert r.status_code == 503, r.status_code
+
+
 @case("원문 마스킹 이전에 쌓인 행을 소급해 지운다 (멱등)")
 def _():
     with db._connect() as conn:
