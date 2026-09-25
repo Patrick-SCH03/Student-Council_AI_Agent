@@ -32,7 +32,7 @@ from app.config import (
     RETENTION_DAYS,
     USD_KRW,
 )
-from app.privacy import PRIVATE_NAMES, StreamMasker, mask_obj
+from app.privacy import PRIVATE_NAMES, StreamMasker, find_private_name, mask_obj
 from app.rag import citation_graph, store
 from app.rag.ingest import IngestError, ingest_pdf
 
@@ -261,7 +261,9 @@ async def chat(
         _enforce_daily_limit(visitor_id, ip_hash)
 
     # 후속 질문이 아닌 단독 질문만 캐시 대상 (맥락에 따라 답이 달라지므로)
-    cache_key = db.normalize_query(query) if not history else None
+    # 실명이 든 질의는 캐시하지 않는다 — 캐시 키가 곧 질의 원문이라 이름이 저장된다.
+    # (입구 거절이라 LLM 비용도 없어 캐시할 이유가 없다)
+    cache_key = db.normalize_query(query) if not history and not find_private_name(query) else None
     if cache_key:
         limits = db.get_settings(DEFAULT_LIMITS)
         cached = db.get_cached_answer(cache_key, limits["cache_ttl_hours"])
@@ -649,3 +651,5 @@ def get_stats(days: int = 14):
 
 # 보존 기간이 지난 기록은 기동 시 정리한다 (지표·방문·분석·오래된 답변 캐시)
 db.purge_old(RETENTION_DAYS)
+# 원문 마스킹 이전에 쌓인 행을 소급해 지운다 (멱등 — 바뀔 행이 없으면 0건)
+db.mask_stored_text()

@@ -10,6 +10,7 @@ import threading
 from datetime import datetime, timezone
 
 from app.config import SQLITE_PATH
+from app.privacy import find_private_name, mask_obj, mask_text
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS documents (
@@ -131,10 +132,11 @@ def delete_document(doc_id: str) -> bool:
 # ---------------------------------------------------------------- analyses
 
 def add_analysis(query: str, risk_level: str | None, result: dict) -> int:
+    # 질의 원문도 답변과 같은 기준으로 지운다. 관리자 로그·CSV에 실명·연락처가 남지 않게.
     with _connect() as conn:
         cur = conn.execute(
             "INSERT INTO analyses (query, risk_level, result, created_at) VALUES (?, ?, ?, ?)",
-            (query, risk_level, json.dumps(result, ensure_ascii=False), _now()),
+            (mask_text(query), risk_level, json.dumps(mask_obj(result), ensure_ascii=False), _now()),
         )
     return cur.lastrowid
 
@@ -160,8 +162,9 @@ def record_metric(
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 _now(), route, risk_level, status, elapsed, input_tokens, output_tokens,
-                query_preview[:500], analysis_id, visitor_id, ip_hash, int(is_admin),
-                (error or None) and error[:300],
+                # 자르기 전에 마스킹한다 — 잘린 경계에 걸친 이름·번호가 남지 않도록
+                mask_text(query_preview)[:500], analysis_id, visitor_id, ip_hash, int(is_admin),
+                (error or None) and mask_text(error)[:300],
             ),
         )
 
@@ -506,3 +509,33 @@ def purge_old(days: int) -> dict[str, int]:
             "DELETE FROM answer_cache WHERE datetime(ts) < datetime('now', '-7 days')"
         ).rowcount
     return removed
+
+
+def mask_stored_text() -> dict[str, int]:
+    """이미 저장된 질의 원문·결과·오류 문구를 소급해 마스킹한다 (멱등).
+
+    원문 마스킹을 넣기 전에 쌓인 행에는 실명이 든 질의가 그대로 있다. 바뀌는 행만
+    갱신하므로 두 번째 실행부터는 0건이다. 실명이 든 캐시 키는 아예 지운다.
+    """
+    changed = {"analyses": 0, "metrics": 0, "answer_cache": 0}
+    with _connect() as conn:
+        for row in conn.execute("SELECT id, query, result FROM analyses").fetchall():
+            query = mask_text(row["query"] or "")
+            try:
+                result = json.dumps(mask_obj(json.loads(row["result"])), ensure_ascii=False)
+            except (TypeError, ValueError):
+                result = row["result"]
+            if query != (row["query"] or "") or result != row["result"]:
+                conn.execute("UPDATE analyses SET query = ?, result = ? WHERE id = ?", (query, result, row["id"]))
+                changed["analyses"] += 1
+        for row in conn.execute("SELECT id, query_preview, error FROM metrics").fetchall():
+            preview = mask_text(row["query_preview"] or "")
+            error = mask_text(row["error"]) if row["error"] else row["error"]
+            if preview != (row["query_preview"] or "") or error != row["error"]:
+                conn.execute("UPDATE metrics SET query_preview = ?, error = ? WHERE id = ?", (preview, error, row["id"]))
+                changed["metrics"] += 1
+        for row in conn.execute("SELECT query_key FROM answer_cache").fetchall():
+            if find_private_name(row["query_key"]) or mask_text(row["query_key"]) != row["query_key"]:
+                conn.execute("DELETE FROM answer_cache WHERE query_key = ?", (row["query_key"],))
+                changed["answer_cache"] += 1
+    return changed
