@@ -66,6 +66,26 @@ cd api && python smoke_test.py
 cd web && npm run lint && npm run build
 ```
 
+## 릴리스
+
+[SemVer](https://semver.org/lang/ko/)를 따르고, 태그 `vX.Y.Z`와 `api/app/config.py`의 `APP_VERSION`,
+`web/package.json`의 `version`을 **함께** 올립니다. 배포본이 어떤 버전인지는
+`GET /api/health`의 `version`으로 확인합니다.
+
+| 올리는 자리 | 언제 |
+|---|---|
+| **MAJOR** | 응답 형식·관리자 API처럼 쓰는 쪽이 바뀌어야 하는 변경 |
+| **MINOR** | 기능 추가·동작 변화 (새 검색 방식, 새 방어 계층) |
+| **PATCH** | 결함 수정·보안 패치만 |
+
+```bash
+git tag -a vX.Y.Z -m "vX.Y.Z — 한 줄 요약"
+git push origin vX.Y.Z
+gh release create vX.Y.Z --verify-tag --title "vX.Y.Z — 한 줄 요약" --notes-file notes.md
+```
+
+문서만 바뀐 커밋은 릴리스하지 않습니다.
+
 ## 답변 품질 회귀 테스트
 
 프롬프트나 검색 설정을 바꾼 뒤에는 평가셋을 실행해 품질 저하를 확인합니다.

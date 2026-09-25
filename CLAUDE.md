@@ -3,7 +3,7 @@
 인하대학교 학생회 규정·감사 질의응답 서비스. **실서비스 운영 중** — 변경은 곧 사용자에게 나간다.
 
 - 프론트: https://ai-agent-patrick-16be.vercel.app (Vercel) · 백엔드: https://aiagent-production-d71a.up.railway.app (Railway)
-- `main` push → CI 통과 후 양쪽 자동 배포
+- `main` push → CI 통과 후 양쪽 자동 배포 · 배포 버전은 `/api/health`의 `version` (릴리스 태그·`config.APP_VERSION`과 함께 올린다, [CONTRIBUTING.md](CONTRIBUTING.md#릴리스))
 - 구조: FastAPI + LangGraph (`router → retrieve → reviewer‖auditor → coordinator`) + ChromaDB / Next.js 16
 - LLM `gemini-3.7-flash` · 임베딩 `gemini-embedding-2` · `GEMINI_API_KEY` 없으면 목업 모드
 
@@ -26,7 +26,7 @@
 ```bash
 cd api
 .venv/Scripts/python.exe smoke_test.py              # 목업 스모크 (CI와 동일)
-.venv/Scripts/python.exe tests/check_all.py         # 회귀 테스트 13건 (키·서버 없이, CI와 동일)
+.venv/Scripts/python.exe tests/check_all.py         # 회귀 테스트 19건 (키·서버 없이, CI와 동일)
 .venv/Scripts/python.exe evaluate.py --retrieval    # 검색 지표(MRR·순위), LLM 미호출
 .venv/Scripts/python.exe evaluate.py --multihop     # 인용 그래프 A/B(판례 커버리지), LLM 미호출
 .venv/Scripts/python.exe ingest_folder.py           # documents/ ↔ 로컬 색인 동기화
