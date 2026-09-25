@@ -24,6 +24,8 @@ out/
 
 # 로컬 개발 도구 설정
 .claude/
+# 다른 에이전트 도구가 CLAUDE.md를 복사해 만드는 사본 — 규칙의 원본은 CLAUDE.md 하나다
+/AGENTS.md
 web/AGENTS.md
 web/CLAUDE.md
 
