@@ -307,6 +307,40 @@ def _():
     assert client.delete("/api/documents/synthetic-doc", headers=AUTH).status_code == 404
 
 
+@case("문서 삭제 뒤 그래프 재생성이 실패해도 삭제는 성공으로 끝나고 그래프는 다시 만들 대상이 된다")
+def _():
+    db.add_document("graph-fail-doc", "graph-fail.pdf", 1)
+    with patch.object(main.citation_graph, "get_graph", side_effect=RuntimeError("graph down")):
+        r = client.delete("/api/documents/graph-fail-doc", headers=AUTH)
+    assert r.status_code == 200, f"이미 지운 문서를 실패로 알렸다 ({r.status_code})"
+    assert citation_graph._graph is None and not citation_graph.GRAPH_PATH.exists(), "낡은 그래프가 남았다"
+    assert client.delete("/api/documents/graph-fail-doc", headers=AUTH).status_code == 404
+
+
+@case("업로드 상한은 다 읽기 전에 끊는다 (413)")
+def _():
+    read_sizes: list[int] = []
+    from starlette.datastructures import UploadFile as StarletteUploadFile
+
+    original_read = StarletteUploadFile.read
+
+    async def counting_read(self, size=-1):
+        data = await original_read(self, size)
+        read_sizes.append(len(data))
+        return data
+
+    with patch.object(main, "MAX_UPLOAD_BYTES", 2 * 1024 * 1024), patch.object(
+        main, "ingest_pdf"
+    ) as ingest, patch.object(StarletteUploadFile, "read", counting_read):
+        big = b"%PDF-1.4\n" + b"0" * (5 * 1024 * 1024)
+        r = client.post("/api/documents", headers=AUTH, files={"file": ("big.pdf", big, "application/pdf")})
+        assert r.status_code == 413, r.status_code
+        assert not ingest.called, "상한을 넘은 파일을 색인했다"
+        assert sum(read_sizes) <= 3 * 1024 * 1024, f"상한을 넘겨 {sum(read_sizes)}바이트를 읽었다"
+        ok = client.post("/api/documents", headers=AUTH, files={"file": ("small.pdf", b"%PDF-1.4 tiny", "application/pdf")})
+        assert ok.status_code != 413, "상한 이하 파일을 거절했다"
+
+
 @case("업로드에서 DB 기록이 실패하면 이미 넣은 청크를 회수한다")
 def _():
     baseline = store.chunk_count()

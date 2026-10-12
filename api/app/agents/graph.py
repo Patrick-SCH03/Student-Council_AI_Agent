@@ -246,7 +246,11 @@ async def retrieve_node(state: AgentState) -> AgentState:
     # (호출 시점에 읽는다 — A/B 실행 중 토글할 수 있어야 한다)
     flag = os.getenv("GRAPH_EXPANSION", "")
     if flag == "1" or (flag != "0" and state.get("needs_precedents")):
-        expanded = await asyncio.to_thread(citation_graph.expand, reg_hits + audit_full)
+        try:
+            expanded = await asyncio.to_thread(citation_graph.expand, reg_hits + audit_full)
+        except Exception as e:  # noqa: BLE001 - 판례 확장은 보강일 뿐, 실패해도 기본 검색으로 답한다
+            print(f"인용 그래프 확장 실패, 확장 없이 진행: {type(e).__name__}: {e}")
+            expanded = []
         for extra in expanded[len(reg_hits) + len(audit_full):]:
             (reg_hits if extra.get("doc_type") == "regulation" else audit_full).append(extra)
 

@@ -169,6 +169,14 @@ def load_graph() -> nx.DiGraph:
 _graph: nx.DiGraph | None = None
 
 
+def invalidate() -> None:
+    """그래프를 버려 다음 조회 때 다시 만들게 한다. 재생성에 실패했을 때 낡은 그래프
+    (지운 문서의 조항·빠진 새 문서)로 판례를 모으지 않도록 쓴다."""
+    global _graph
+    _graph = None
+    GRAPH_PATH.unlink(missing_ok=True)
+
+
 def get_graph(rebuild: bool = False) -> nx.DiGraph:
     global _graph
     if _graph is None or rebuild:
