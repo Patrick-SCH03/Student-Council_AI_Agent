@@ -171,7 +171,7 @@ flowchart LR
 | **개⁠인⁠정⁠보 보⁠호** | 실명이 든 질문은 입구에서 거절하고, 출력 직전 실명·전화·계좌·이메일을 한 번 더 지웁니다 |
 | **도⁠메⁠인 가⁠드** | 학생회 업무 밖 질문은 LLM 호출 없이 안내합니다 |
 | **비⁠용 방⁠어** | 전체·사용자·IP 기준 일일 한도, 동시 실행 상한, 반복 질문 캐시 |
-| **품⁠질 검⁠증** | 키·서버 없이 도는 회귀 테스트 27건을 CI가 매 push마다, 평가셋 51건은 배포 전에 실행합니다 |
+| **품⁠질 검⁠증** | 키·서버 없이 도는 회귀 테스트 30건을 CI가 매 push마다, 평가셋 51건은 배포 전에 실행합니다 |
 | **운⁠영 대⁠시⁠보⁠드** | 질의 수·응답 시간·토큰·비용·방문자·메모리를 자체 계측합니다 (`/stats`, 관리자 전용) |
 
 ---
@@ -187,13 +187,14 @@ flowchart LR
 │   │   ├── privacy.py            # 실명 거절 · 출력 마스킹
 │   │   ├── db.py                 # 분석 이력 · 운영 지표 · 답변 캐시
 │   │   └── config.py             # 환경변수 · 기본 한도
-│   ├── tests/check_all.py        # 회귀 테스트 27건 (키·서버 없이)
+│   ├── tests/check_all.py        # 회귀 테스트 30건 (키·서버 없이)
 │   ├── smoke_test.py             # 목업 스모크 테스트
 │   ├── evaluate.py               # 답변·검색 품질 평가
 │   ├── evalset.json              # 평가셋 51건 (기대 라우팅·근거·키워드·위험도)
 │   ├── evalset_multihop.json     # 판례 집계 평가셋 9건
 │   ├── ingest_folder.py          # documents/ ↔ 색인 동기화
-│   └── upload_to_remote.py       # 배포 서버로 문서 업로드
+│   ├── upload_to_remote.py       # 배포 서버로 문서 업로드
+│   └── requirements-lock.txt     # 배포본에서 검증한 전체 의존성 버전 (Docker·CI가 사용)
 ├── web/src/
 │   ├── app/                      # page.tsx(채팅) · stats/(운영 대시보드)
 │   └── lib/api.ts                # SSE 클라이언트
@@ -209,9 +210,9 @@ flowchart LR
 
 ```bash
 cd api
-python -m venv .venv
+python -m venv .venv            # Python 3.12 (배포·CI와 같은 버전)
 .venv\Scripts\activate           # Linux/Mac: source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements.txt -c requirements-lock.txt
 cp .env.example .env
 uvicorn app.main:app --port 8000
 ```

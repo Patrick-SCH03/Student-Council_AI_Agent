@@ -486,9 +486,7 @@ async def upload_document(file: UploadFile):
     if not (file.filename or "").lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="PDF 파일만 올릴 수 있어요.")
 
-    content = await file.read()
-    if len(content) > MAX_UPLOAD_BYTES:
-        raise HTTPException(status_code=413, detail="파일이 너무 커요 (최대 20MB).")
+    content = await _read_limited(file, MAX_UPLOAD_BYTES)
 
     # OCR·임베딩·그래프 재구축은 수 분이 걸리는 동기 작업이다. 이벤트 루프에서
     # 돌리면 그동안 모든 채팅 스트림이 멈추므로 스레드로 보낸다.
@@ -499,6 +497,32 @@ async def upload_document(file: UploadFile):
     return {"doc_id": doc_id, "filename": file.filename, "chunks": chunks}
 
 
+async def _read_limited(file: UploadFile, limit: int) -> bytes:
+    """상한까지만 조금씩 읽는다. 통째로 읽고 나서 크기를 재면 큰 파일이 먼저 메모리에 다 올라간다."""
+    buf = bytearray()
+    while chunk := await file.read(1024 * 1024):
+        buf += chunk
+        if len(buf) > limit:
+            raise HTTPException(status_code=413, detail="파일이 너무 커요 (최대 20MB).")
+    return bytes(buf)
+
+
+def _after_index_change() -> None:
+    """색인이 바뀐 뒤 파생물(답변 캐시·인용 그래프)을 갱신한다. 업로드·삭제 공통.
+
+    문서 변경은 이미 끝난 뒤라, 여기서 실패해도 요청을 실패로 돌려주지 않는다.
+    실패로 알리면 운영자는 반영된 업로드를 다시 올리거나 삭제를 재시도한다.
+    """
+    # 색인이 바뀌면 이전 답변은 낡은 근거일 수 있으므로 캐시를 비운다
+    db.clear_cache()
+    # 인용 그래프도 색인의 파생물이므로 함께 재생성한다 (약 2초, 낡은 그래프 방지)
+    try:
+        citation_graph.get_graph(rebuild=True)
+    except Exception as e:  # noqa: BLE001 - 파생물 실패가 끝난 문서 변경을 되돌리지 않도록
+        print(f"인용 그래프 재생성 실패, 다음 조회 때 다시 만든다: {type(e).__name__}: {e}")
+        citation_graph.invalidate()
+
+
 def _index_upload(content: bytes, filename: str) -> tuple[str, int]:
     doc_id, chunks = ingest_pdf(content, filename)
     try:
@@ -506,10 +530,7 @@ def _index_upload(content: bytes, filename: str) -> tuple[str, int]:
     except Exception:
         store.delete_doc(doc_id)  # 목록에 없는 청크가 검색에 섞이지 않도록 회수
         raise
-    # 색인이 바뀌면 이전 답변은 낡은 근거일 수 있으므로 캐시를 비운다
-    db.clear_cache()
-    # 인용 그래프도 색인의 파생물이므로 함께 재생성한다 (약 2초, 낡은 그래프 방지)
-    citation_graph.get_graph(rebuild=True)
+    _after_index_change()
     return doc_id, chunks
 
 
@@ -524,8 +545,7 @@ def delete_document(doc_id: str):
     store.delete_doc(doc_id)
     if not db.delete_document(doc_id):
         raise HTTPException(status_code=404, detail="문서를 찾을 수 없어요.")
-    db.clear_cache()
-    citation_graph.get_graph(rebuild=True)
+    _after_index_change()
     return {"deleted": doc_id}
 
 

@@ -2,9 +2,10 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# 의존성 먼저 설치 (레이어 캐시 활용)
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# 의존성 먼저 설치 (레이어 캐시 활용). 잠금 파일로 버전을 고정해, 같은 커밋을 다시
+# 빌드해도 검증한 그 버전이 깔린다 (하한만 두면 빌드 시점의 최신이 몰래 들어온다).
+COPY requirements.txt requirements-lock.txt ./
+RUN pip install --no-cache-dir -r requirements.txt -c requirements-lock.txt
 
 COPY app ./app
 COPY ingest_folder.py .
