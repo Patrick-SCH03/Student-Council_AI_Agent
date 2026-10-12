@@ -271,6 +271,16 @@ def _():
     assert after == before, (before, after)
 
 
+@case("라우터 재작성이 실패해도 후속 질문은 직전 질문(마스킹)을 맥락으로 들고 간다")
+def _():
+    from app.agents.graph import _fallback_query
+    assert _fallback_query("증빙은 뭐가 필요해?", []) == "증빙은 뭐가 필요해?"
+    hist = [{"question": "영수증 없이 회식비를 집행했어. 010-1234-5678로 연락 왔는데", "answer": "..."}]
+    q = _fallback_query("증빙은 뭐가 필요해?", hist)
+    assert "영수증 없이 회식비를 집행" in q and q.endswith("증빙은 뭐가 필요해?"), q
+    assert "1234-5678" not in q, "직전 질문의 연락처가 마스킹되지 않았다"
+
+
 @case("/api/history의 limit은 1~100으로 고정된다 (음수는 SQLite 무제한)")
 def _():
     for _i in range(105):

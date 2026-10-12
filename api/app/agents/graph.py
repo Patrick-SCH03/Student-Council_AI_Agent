@@ -138,6 +138,19 @@ def _format_history(history: list[dict]) -> str:
     return "\n".join(lines) + "\n\n"
 
 
+def _fallback_query(query: str, history: list[dict]) -> str:
+    """라우터 재작성이 실패했을 때 판정 에이전트에 넘길 질의.
+
+    판정 에이전트는 대화 이력을 받지 않고 이 질의만 본다. 후속 질문("증빙은 뭐가 필요해?")을
+    맥락 없이 넘기면, 앞 턴에서 설명한 위반 행위가 빠진 채 '절차 문의'로 판정된다.
+    직전 질문을 마스킹해 붙여 최소한의 맥락을 지킨다.
+    """
+    if not history:
+        return query
+    previous = mask_text(history[-1].get("question", "")).strip()
+    return f"(이전 질문: {previous}) {query}" if previous else query
+
+
 def _refuse_private_name(query: str) -> AgentState:
     return {
         "route": "general",
@@ -184,9 +197,13 @@ async def route_node(state: AgentState) -> AgentState:
         # 분류가 안 되면 규정 경로로 보낸다. 규정 질문을 잘라내는 것보다
         # 범위 밖 질문에 한 번 성실히 답하는 쪽이 덜 해롭다.
         print(f"라우터 호출 실패, regulation 경로로 폴백: {type(e).__name__}: {e}")
-        return {"route": "regulation", "standalone_query": query, "needs_precedents": False}
+        return {
+            "route": "regulation",
+            "standalone_query": _fallback_query(query, history),
+            "needs_precedents": False,
+        }
     route = decision.route if decision.route in ("regulation", "general") else "regulation"
-    standalone = (decision.standalone_query or "").strip() or query
+    standalone = (decision.standalone_query or "").strip() or _fallback_query(query, history)
     # 재작성이 이력에서 이름을 끌어왔으면("그 사람의 처분은?" → "○○○의 처분") 여기서 막는다
     if find_private_name(standalone):
         return _refuse_private_name(query)
