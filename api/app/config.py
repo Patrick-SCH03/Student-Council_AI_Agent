@@ -11,7 +11,7 @@ GEMINI_API_KEY: str | None = (
     os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or None
 )
 # 릴리스 태그(v2.7.0)와 같이 올린다. /api/health로 배포본이 어떤 버전인지 확인한다.
-APP_VERSION = "2.8.1"
+APP_VERSION = "2.9.0"
 
 GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-3.7-flash")
 # 라우터는 분류 + 한 문장 재작성만 하므로 경량 모델을 쓴다.
@@ -21,6 +21,9 @@ GEMINI_ROUTER_MODEL: str = os.getenv("GEMINI_ROUTER_MODEL", "gemini-3.5-flash-li
 GEMINI_EMBEDDING_MODEL: str = os.getenv(
     "GEMINI_EMBEDDING_MODEL", "models/gemini-embedding-2"
 )
+# 규정 검토·감사 분석의 사고 수준 (low/medium/high). 비우면 모델 기본값.
+# 사고 토큰은 첫 응답 전에 만들어져 지연의 주원인이라, 속도·품질 A/B를 코드 수정 없이 돌린다.
+AGENT_THINKING: str | None = os.getenv("AGENT_THINKING") or None
 
 # 키가 없으면 LLM·임베딩 호출 없이 전체 플로우를 검증하는 목업 모드로 동작한다.
 MOCK_MODE: bool = GEMINI_API_KEY is None

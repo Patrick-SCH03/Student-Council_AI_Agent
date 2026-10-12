@@ -26,6 +26,7 @@ from app.agents.schemas import (
     RouteDecision,
 )
 from app.config import (
+    AGENT_THINKING,
     GEMINI_API_KEY,
     GEMINI_MODEL,
     GEMINI_ROUTER_MODEL,
@@ -277,7 +278,7 @@ async def reviewer_node(state: AgentState) -> AgentState:
         )
         return {"reviewer": result, "citations": result.citations}
 
-    llm = _get_llm().with_structured_output(ReviewerResult)
+    llm = _get_llm(thinking=AGENT_THINKING).with_structured_output(ReviewerResult)
     result: ReviewerResult = await llm.ainvoke(
         [
             ("system", prompts.REVIEWER_SYSTEM),
@@ -310,7 +311,7 @@ async def auditor_node(state: AgentState) -> AgentState:
         )
         return {"auditor": result, "citations": result.citations}
 
-    llm = _get_llm().with_structured_output(AuditorResult)
+    llm = _get_llm(thinking=AGENT_THINKING).with_structured_output(AuditorResult)
     result: AuditorResult = await llm.ainvoke(
         [
             ("system", prompts.AUDITOR_SYSTEM),
