@@ -43,12 +43,14 @@ export function clearAdminToken(): void {
 
 export class AuthError extends Error {}
 
-/** 관리자 토큰을 붙여 요청하고, 인증 실패는 AuthError로 구분한다. */
-export async function adminFetch(path: string): Promise<Response> {
+/** 관리자 토큰을 붙여 요청하고, 인증 실패(401·503)는 AuthError로 구분한다.
+ *  관리자 요청은 모두 이 함수를 거친다. 요청마다 토큰·인증 오류를 따로 처리하면
+ *  같은 만료 토큰에 화면마다 다른 오류가 뜬다. */
+export async function adminFetch(path: string, init: RequestInit = {}): Promise<Response> {
   const token = getAdminToken();
-  const res = await fetch(`${API_BASE}${path}`, {
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
-  });
+  const headers = new Headers(init.headers);
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  const res = await fetch(`${API_BASE}${path}`, { ...init, headers });
   if (res.status === 401 || res.status === 503) {
     const body = await res.json().catch(() => null);
     throw new AuthError(body?.detail ?? "관리자 인증이 필요해요.");
@@ -221,11 +223,7 @@ export type Limits = {
 };
 
 export async function clearAnswerCache(): Promise<{ cleared: number }> {
-  const token = getAdminToken();
-  const res = await fetch(`${API_BASE}/api/cache/clear`, {
-    method: "POST",
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
-  });
+  const res = await adminFetch("/api/cache/clear", { method: "POST" });
   if (!res.ok) throw new Error("캐시를 비우지 못했어요.");
   return res.json();
 }
@@ -239,18 +237,11 @@ export async function updateLimits(
     | "cache_ttl_hours"
   >,
 ): Promise<Limits> {
-  const token = getAdminToken();
-  const res = await fetch(`${API_BASE}/api/settings`, {
+  const res = await adminFetch("/api/settings", {
     method: "PUT",
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(values),
   });
-  if (res.status === 401 || res.status === 503) {
-    throw new AuthError("관리자 인증이 필요해요.");
-  }
   if (!res.ok) throw new Error("저장하지 못했어요.");
   return res.json();
 }
