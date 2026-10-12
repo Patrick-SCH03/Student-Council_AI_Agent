@@ -289,6 +289,30 @@ function AgentDetail({
   );
 }
 
+/** 진행 중인 동안 1초마다 경과 초를 센다. 끝나면 멈춘다. */
+function useElapsedSeconds(running: boolean): number {
+  const [seconds, setSeconds] = useState(0);
+  useEffect(() => {
+    if (!running) return;
+    const started = Date.now();
+    const t = setInterval(() => setSeconds(Math.floor((Date.now() - started) / 1000)), 1000);
+    return () => clearInterval(t);
+  }, [running]);
+  return seconds;
+}
+
+function Spinner({ className = "h-3.5 w-3.5" }: { className?: string }) {
+  return (
+    <span
+      aria-hidden
+      className={`inline-block shrink-0 animate-spin rounded-full border-2 border-indigo-200 border-t-indigo-600 motion-reduce:animate-none ${className}`}
+    />
+  );
+}
+
+// 배포본 규정 질의 응답 중앙값 9.9초 · p90 13초 (2026-09 실측). 이보다 한참 길면 안내를 바꾼다.
+const SLOW_AFTER_SECONDS = 20;
+
 function AssistantBubble({
   state,
   isLast,
@@ -304,6 +328,9 @@ function AssistantBubble({
   const auditor = result?.auditor ?? state.auditor;
   // 스트리밍 중 후속 질문 블록(<followups>)은 표시에서 제외
   const streamingText = (result?.final_markdown || tokens).split("<followups>")[0];
+  // 결과가 오기 전까지는 진행 중이다. 단계 이벤트 사이가 길어도 멈춘 게 아니라는 걸 보여준다.
+  const running = !result && !error && !!stage;
+  const elapsed = useElapsedSeconds(running);
 
   const copyAnswer = async () => {
     if (!result) return;
@@ -341,33 +368,39 @@ function AssistantBubble({
           </p>
         ) : (
           <>
-            {!result && stage && (
-              <div className="mb-2 flex items-center gap-2 text-sm font-medium text-slate-500">
-                <span aria-hidden className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-indigo-200 border-t-indigo-600 motion-reduce:animate-none" />
+            {running && (
+              <div className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm font-medium text-slate-500">
+                <Spinner />
                 {stage}
-                {/* 배포본 규정 질의 응답 중앙값 9.9초 · p90 13초 (2026-09 실측) */}
-                <span className="text-xs text-slate-500">보통 10초 안팎</span>
+                {/* 경과 시간은 시각 신호용. 화면낭독기에는 단계 변화만 알린다(1초마다 읽지 않도록) */}
+                <span aria-hidden className="text-xs tabular-nums text-slate-500">
+                  {elapsed}초 경과 ·{" "}
+                  {elapsed < SLOW_AFTER_SECONDS
+                    ? "보통 10초 안팎"
+                    : "평소보다 오래 걸리고 있어요. 잠시만 기다려 주세요"}
+                </span>
               </div>
             )}
 
             {route === "regulation" && !result && (
               <div className="mb-4 flex flex-wrap gap-1.5 text-xs font-medium">
                 {[
-                  { label: "규정 검토", done: !!reviewer },
-                  { label: "감사 분석", done: !!auditor },
+                  { label: "규정 검토", done: !!reviewer, active: !reviewer },
+                  { label: "감사 분석", done: !!auditor, active: !auditor },
                   { label: "종합 조정", done: false, active: !!reviewer && !!auditor },
                 ].map((step) => (
                   <span
                     key={step.label}
-                    className={`inline-flex items-center gap-1 rounded-full px-3 py-1 ring-1 ${
+                    className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 ring-1 ${
                       step.done
                         ? "bg-green-50 text-green-700 ring-green-200"
-                        : "active" in step && step.active
+                        : step.active
                           ? "bg-indigo-50 text-indigo-700 ring-indigo-200"
                           : "bg-slate-50 text-slate-500 ring-slate-200"
                     }`}
                   >
                     {step.done && <Icon path={paths.check} className="h-3 w-3" />}
+                    {!step.done && step.active && <Spinner className="h-3 w-3" />}
                     {step.label}
                   </span>
                 ))}
@@ -380,7 +413,18 @@ function AssistantBubble({
               </div>
             )}
 
-            {streamingText && <Markdown text={streamingText} />}
+            {streamingText ? (
+              <Markdown text={streamingText} />
+            ) : (
+              running &&
+              route === "regulation" && (
+                <div aria-hidden className="flex flex-col gap-2.5 py-1">
+                  <span className="skeleton-line h-3.5 w-11/12" />
+                  <span className="skeleton-line h-3.5 w-full" />
+                  <span className="skeleton-line h-3.5 w-3/4" />
+                </div>
+              )
+            )}
 
             {(reviewer || auditor) && route !== "general" && (
               <div className="mt-5 flex flex-col gap-2">
