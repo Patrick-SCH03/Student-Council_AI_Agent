@@ -76,7 +76,62 @@ type Stats = {
   limits: Limits;
   feedback: Feedback;
   cache: { entries: number; hits: number };
+  // 최근 완료된 규정 질의의 단계별 중앙값 (초, 사고 토큰은 개수)
+  stages?: Partial<Record<StageKey, number>> & { samples: number };
 };
+
+type StageKey =
+  | "router"
+  | "retrieve"
+  | "reviewer"
+  | "auditor"
+  | "coordinator_ttft"
+  | "coordinator"
+  | "reasoning_tokens";
+
+const STAGE_LABELS: { key: StageKey; label: string }[] = [
+  { key: "router", label: "질문 분류" },
+  { key: "retrieve", label: "검색" },
+  { key: "reviewer", label: "규정 검토" },
+  { key: "auditor", label: "감사 분석" },
+  { key: "coordinator_ttft", label: "종합 첫 글자" },
+  { key: "coordinator", label: "종합 완료" },
+];
+
+/** 응답이 느려졌을 때 어느 단계인지 가르는 줄. 표본이 없으면 그리지 않는다. */
+function StageBreakdown({ stages }: { stages: NonNullable<Stats["stages"]> }) {
+  if (!stages.samples) return null;
+  return (
+    <div className={`rounded-2xl border border-slate-200 bg-white p-5 ${CARD_SHADOW}`}>
+      <p className="text-sm font-bold text-slate-800">
+        단계별 소요 시간
+        <span className="ml-2 text-xs font-medium text-slate-500">
+          최근 규정 질의 {fmt(stages.samples)}건의 중앙값 · 규정 검토와 감사 분석은 동시에 실행
+        </span>
+      </p>
+      <dl className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-7">
+        {STAGE_LABELS.map(({ key, label }) =>
+          stages[key] === undefined ? null : (
+            <div key={key}>
+              <dt className="text-xs font-medium text-slate-500">{label}</dt>
+              <dd className="text-lg font-bold tabular-nums text-slate-800">
+                {stages[key]!.toFixed(1)}초
+              </dd>
+            </div>
+          ),
+        )}
+        {stages.reasoning_tokens !== undefined && (
+          <div>
+            <dt className="text-xs font-medium text-slate-500">사고 토큰</dt>
+            <dd className="text-lg font-bold tabular-nums text-slate-800">
+              {fmt(stages.reasoning_tokens)}
+            </dd>
+          </div>
+        )}
+      </dl>
+    </div>
+  );
+}
 
 type Analysis = {
   id: number;
@@ -543,6 +598,12 @@ export default function StatsPage() {
           value={`${stats.totals.avg_elapsed.toFixed(1)}초`}
         />
       </div>
+
+      {stats.stages && stats.stages.samples > 0 && (
+        <div className="mt-4">
+          <StageBreakdown stages={stats.stages} />
+        </div>
+      )}
 
       <div className="mt-4 grid gap-4 lg:grid-cols-3">
         <div className="flex flex-col gap-4 lg:col-span-2">

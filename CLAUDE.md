@@ -26,7 +26,7 @@
 ```bash
 cd api
 .venv/Scripts/python.exe smoke_test.py              # 강제 목업 스모크 (임시 DATA_DIR, CI와 동일)
-.venv/Scripts/python.exe tests/check_all.py         # 회귀 테스트 30건 (키·서버 없이, CI와 동일)
+.venv/Scripts/python.exe tests/check_all.py         # 회귀 테스트 32건 (키·서버 없이, CI와 동일)
 .venv/Scripts/python.exe evaluate.py --retrieval    # 검색 지표(MRR·순위), 실제 색인·임베딩, LLM 미호출
 .venv/Scripts/python.exe evaluate.py --multihop     # 인용 그래프 A/B(판례 커버리지), 실제 색인·임베딩, LLM 미호출
 .venv/Scripts/python.exe ingest_folder.py           # documents/ ↔ 로컬 색인 동기화

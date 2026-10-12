@@ -122,6 +122,35 @@ def _feedback_token(analysis_id: int) -> str:
     return hmac.new(IP_HASH_SALT.encode(), msg, hashlib.sha256).hexdigest()[:32]
 
 
+def _stage_timings(start: float, marks: dict[str, float], usage: dict) -> dict:
+    """노드 완료 시각으로 단계별 소요 시간(초)을 계산한다.
+
+    규정 검토·감사 분석은 동시에 돌므로 각자 검색 완료 시점부터 잰다. 종합 조정은 두 분석이
+    모두 끝난 시점부터 첫 글자(ttft)와 끝까지를 잰다. 사고 토큰은 첫 글자 전에 생성돼
+    지연의 주원인이 되므로 함께 남긴다 (모델 구분 없이 합계).
+    """
+    t: dict = {}
+
+    def gap(end: str, begin: float | None) -> None:
+        if end in marks and begin is not None:
+            t[end] = round(marks[end] - begin, 2)
+
+    gap("router", start)
+    gap("retrieve", marks.get("router"))
+    gap("reviewer", marks.get("retrieve"))
+    gap("auditor", marks.get("retrieve"))
+    agents_done = max((marks[k] for k in ("reviewer", "auditor") if k in marks), default=None)
+    if "coordinator_first_token" in marks and agents_done is not None:
+        t["coordinator_ttft"] = round(marks["coordinator_first_token"] - agents_done, 2)
+    gap("coordinator", agents_done)
+    reasoning = sum(
+        (u.get("output_token_details") or {}).get("reasoning", 0) for u in usage.values()
+    )
+    if reasoning:
+        t["reasoning_tokens"] = reasoning
+    return t
+
+
 def _sse(payload: dict) -> str:
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
@@ -326,6 +355,10 @@ async def chat(
         # 프롬프트의 실명 금지 규칙은 확률적이다. 나가는 모든 텍스트를 코드가 한 번 더 지운다.
         masker = StreamMasker()
         recorded = False  # 정상·오류 경로에서 지표를 남겼는지
+        marks: dict[str, float] = {}  # 노드별 완료 시각 (단계별 소요 시간 계산용)
+
+        def _timings() -> dict:
+            return _stage_timings(start, marks, usage_handler.usage_metadata or {})
 
         def _token_totals() -> tuple[int, int]:
             usage = usage_handler.usage_metadata or {}
@@ -347,12 +380,14 @@ async def chat(
                     node = meta.get("langgraph_node", "")
                     content = content_to_text(getattr(chunk, "content", ""))
                     if node in ("coordinator", "general") and content:
+                        marks.setdefault("coordinator_first_token", time.time())
                         if visible := masker.feed(content):
                             yield _sse({"type": "token", "content": visible})
                     continue
 
                 # mode == "updates": {node_name: state_delta}
                 for node, delta in payload.items():
+                    marks[node] = time.time()
                     if not isinstance(delta, dict):
                         continue
                     for key, value in delta.items():
@@ -421,6 +456,7 @@ async def chat(
                 visitor_id=visitor_id,
                 ip_hash=ip_hash,
                 is_admin=is_admin,
+                stage_timings=_timings(),
             )
             recorded = True
             if cache_key:
@@ -447,6 +483,7 @@ async def chat(
                 ip_hash=ip_hash,
                 is_admin=is_admin,
                 error=f"{type(e).__name__}: {e}",
+                stage_timings=_timings(),
             )
             recorded = True
             # 예외 원문(LLM 출력 조각·내부 경로가 섞일 수 있음)은 지표에만 남기고 사용자에겐 일반 문구
@@ -461,6 +498,7 @@ async def chat(
                     route=merged.get("route"),
                     risk_level=None,
                     status="cancelled",
+                    stage_timings=_timings(),
                     elapsed=round(time.time() - start, 2),
                     input_tokens=in_tok,
                     output_tokens=out_tok,

@@ -83,6 +83,8 @@ def _connect() -> sqlite3.Connection:
         "ALTER TABLE metrics ADD COLUMN is_admin INTEGER DEFAULT 0",
         # 실패 사유. status만 남기면 대시보드를 봐도 무엇이 문제인지 알 수 없다.
         "ALTER TABLE metrics ADD COLUMN error TEXT",
+        # 단계별 소요 시간(초)·사고 토큰 JSON. 응답이 느려졌을 때 어느 단계인지 가른다.
+        "ALTER TABLE metrics ADD COLUMN stage_timings TEXT",
     ):
         try:
             conn.execute(stmt)
@@ -154,17 +156,19 @@ def record_metric(
     ip_hash: str | None = None,
     is_admin: bool = False,
     error: str | None = None,
+    stage_timings: dict | None = None,
 ) -> None:
     with _connect() as conn:
         conn.execute(
             "INSERT INTO metrics (ts, route, risk_level, status, elapsed, input_tokens, output_tokens, "
-            "query_preview, analysis_id, visitor_id, ip_hash, is_admin, error) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "query_preview, analysis_id, visitor_id, ip_hash, is_admin, error, stage_timings) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 _now(), route, risk_level, status, elapsed, input_tokens, output_tokens,
                 # 자르기 전에 마스킹한다 — 잘린 경계에 걸친 이름·번호가 남지 않도록
                 mask_text(query_preview)[:500], analysis_id, visitor_id, ip_hash, int(is_admin),
                 (error or None) and mask_text(error)[:300],
+                json.dumps(stage_timings) if stage_timings else None,
             ),
         )
 
@@ -430,6 +434,13 @@ def get_stats(days: int = 14) -> dict:
             "total_visits": conn.execute("SELECT COUNT(*) AS n FROM visits").fetchone()["n"],
         }
 
+        # 최근 완료된 규정 질의의 단계별 중앙값 — 느려졌을 때 병목 단계를 바로 본다
+        stage_rows = [json.loads(r["stage_timings"]) for r in conn.execute(
+            "SELECT stage_timings FROM metrics WHERE status = 'ok' AND route = 'regulation' "
+            "AND stage_timings IS NOT NULL ORDER BY id DESC LIMIT ?",
+            (STAGE_SAMPLE,),
+        ).fetchall()]
+
         daily_visits = [dict(r) for r in conn.execute(
             "SELECT date(ts, '+9 hours') AS date, COUNT(DISTINCT visitor_id) AS visitors "
             "FROM visits WHERE ts >= datetime('now', ?) GROUP BY date(ts, '+9 hours') ORDER BY date",
@@ -447,7 +458,24 @@ def get_stats(days: int = 14) -> dict:
         "daily_visits": daily_visits,
         "feedback": fb,
         "cache": cache_stats(),
+        "stages": summarize_stages(stage_rows),
     }
+
+
+STAGE_SAMPLE = 50
+STAGE_KEYS = ("router", "retrieve", "reviewer", "auditor", "coordinator_ttft", "coordinator", "reasoning_tokens")
+
+
+def summarize_stages(rows: list[dict]) -> dict:
+    """단계별 중앙값. 표본이 없는 단계는 뺀다."""
+    out: dict = {"samples": len(rows)}
+    for key in STAGE_KEYS:
+        values = sorted(r[key] for r in rows if isinstance(r.get(key), (int, float)))
+        if values:
+            mid = len(values) // 2
+            median = values[mid] if len(values) % 2 else (values[mid - 1] + values[mid]) / 2
+            out[key] = round(median, 2)
+    return out
 
 
 def get_analysis(analysis_id: int) -> dict | None:

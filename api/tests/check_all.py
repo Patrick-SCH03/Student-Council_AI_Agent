@@ -281,6 +281,31 @@ def _():
     assert "1234-5678" not in q, "직전 질문의 연락처가 마스킹되지 않았다"
 
 
+@case("단계별 소요 시간: 병렬 분석은 검색 완료부터, 종합 조정은 두 분석이 끝난 뒤부터 잰다")
+def _():
+    marks = {"router": 1.0, "retrieve": 2.0, "reviewer": 5.0, "auditor": 7.0,
+             "coordinator_first_token": 9.5, "coordinator": 12.0}
+    usage = {"m": {"output_token_details": {"reasoning": 300}}, "r": {}}
+    got = main._stage_timings(0.0, marks, usage)
+    want = {"router": 1.0, "retrieve": 1.0, "reviewer": 3.0, "auditor": 5.0,
+            "coordinator_ttft": 2.5, "coordinator": 5.0, "reasoning_tokens": 300}
+    assert got == want, got
+    # 중간에 끊긴 요청: 있는 단계만 남는다
+    assert main._stage_timings(0.0, {"router": 0.5}, {}) == {"router": 0.5}
+
+
+@case("규정 질의는 단계별 시간을 지표에 남기고 대시보드가 중앙값을 보여준다")
+def _():
+    chat_result("학생회비 단계 시간 기록 테스트")
+    with db._connect() as conn:
+        raw = conn.execute("SELECT stage_timings FROM metrics ORDER BY id DESC LIMIT 1").fetchone()[0]
+    stages = json.loads(raw)
+    for key in ("router", "retrieve", "reviewer", "auditor", "coordinator"):
+        assert key in stages, f"{key} 없음: {stages}"
+    summary = client.get("/api/stats", headers=AUTH).json()["stages"]
+    assert summary["samples"] >= 1 and "coordinator" in summary, summary
+
+
 @case("/api/history의 limit은 1~100으로 고정된다 (음수는 SQLite 무제한)")
 def _():
     for _i in range(105):
