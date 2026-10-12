@@ -49,7 +49,7 @@ fix: 본문이 이미지인 PDF가 스캔본 판정을 우회하던 문제 해�
 
 | Job | 내용 |
 |---|---|
-| **api** | 의존성 설치 → 스모크 테스트 (벡터 스토어 · 그래프 병렬 실행 · 라우팅) |
+| **api** | 잠금 파일로 의존성 설치 → 스모크 테스트 → 회귀 테스트 |
 | **web** | 의존성 설치 → ESLint → 프로덕션 빌드 |
 
 백엔드 스모크 테스트와 회귀 테스트는 **목업 모드를 스스로 강제**합니다(키를 비우고 임시 `DATA_DIR` 사용). 그래서 CI에 시크릿이 필요 없고, 로컬 `api/.env`에 실제 키가 있어도 과금이나 실제 색인 변경이 없습니다.
@@ -65,6 +65,21 @@ cd api && python smoke_test.py && python tests/check_all.py
 # 프론트엔드
 cd web && npm run lint && npm run build
 ```
+
+## 의존성
+
+백엔드는 두 파일로 나눕니다.
+
+| 파일 | 역할 |
+|---|---|
+| `api/requirements.txt` | 직접 쓰는 패키지와 하한 (의도) |
+| `api/requirements-lock.txt` | 배포본에서 검증한 **전체** 의존성의 정확한 버전 (재현성) |
+
+Docker·CI·로컬 모두 `pip install -r requirements.txt -c requirements-lock.txt` 로 설치합니다.
+버전을 올릴 때는 Python 3.12 환경에서 `requirements.txt`만으로 설치한 뒤 `pip freeze` 결과로 잠금 파일을 교체하고,
+스모크·회귀 테스트와 배포본 질의 1건으로 확인합니다. 보안 권고는 Dependabot이 PR로 알려 줍니다.
+
+프론트엔드는 `package-lock.json`과 `npm ci`로 고정되고, `next`·`react`는 정확한 버전으로 적습니다.
 
 ## 릴리스
 

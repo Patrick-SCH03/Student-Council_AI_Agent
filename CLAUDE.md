@@ -26,7 +26,7 @@
 ```bash
 cd api
 .venv/Scripts/python.exe smoke_test.py              # 강제 목업 스모크 (임시 DATA_DIR, CI와 동일)
-.venv/Scripts/python.exe tests/check_all.py         # 회귀 테스트 27건 (키·서버 없이, CI와 동일)
+.venv/Scripts/python.exe tests/check_all.py         # 회귀 테스트 30건 (키·서버 없이, CI와 동일)
 .venv/Scripts/python.exe evaluate.py --retrieval    # 검색 지표(MRR·순위), 실제 색인·임베딩, LLM 미호출
 .venv/Scripts/python.exe evaluate.py --multihop     # 인용 그래프 A/B(판례 커버리지), 실제 색인·임베딩, LLM 미호출
 .venv/Scripts/python.exe ingest_folder.py           # documents/ ↔ 로컬 색인 동기화
@@ -34,11 +34,12 @@ cd api
 cd web && npm run lint && npm run build
 ```
 
-Windows 주의: 인터프리터는 `api/.venv/Scripts/python.exe`, 한글 출력에는 `PYTHONIOENCODING=utf-8`.
+Windows 주의: 인터프리터는 `api/.venv/Scripts/python.exe`(Python 3.12, 배포·CI와 같은 버전), 한글 출력에는 `PYTHONIOENCODING=utf-8`.
 
 ## 함정 (실제로 겪은 것)
 
 - **"목업" 스크립트는 키를 직접 비워야 목업이다.** `config.py`가 import 시 `api/.env`를 읽으므로, 환경변수만 없는 상태로는 로컬 실키가 잡혀 실제 과금·실제 색인 변경이 일어난다. 2026-09-26까지 `smoke_test.py`가 이 상태였다(CI는 키가 없어 몰랐음). 새 검증 스크립트는 `GEMINI_API_KEY`·`GOOGLE_API_KEY`를 `""`로, `DATA_DIR`을 임시 폴더로 **app import 전에** 강제하고, `MOCK_MODE`가 아니면 즉시 종료한다.
+- **백엔드 의존성은 `requirements-lock.txt`로 고정한다.** 하한(`>=`)만 두던 시절 배포마다 최신이 몰래 깔려, v2.7.1 배포 때 LangChain·Google SDK가 검증 없이 올라갔다. 버전을 올릴 때는 잠금 파일을 갱신하고 배포본 질의 1건(약 35원)으로 확인한다 ([CONTRIBUTING.md](CONTRIBUTING.md#의존성)).
 - **검색 관련 회귀는 배포본에서 확인한다.** OCR이 비결정적이라 로컬/원격 청크 경계가 달라 로컬만 통과한 적이 있다. 지금은 `data/ocr_cache`로 고정 — 캐시 키가 파일해시+프롬프트라 `_OCR_PROMPT`를 바꾸면 전체 재추출 비용이 발생한다.
 - **원격 평가 전 답변 캐시를 비운다** (`POST /api/cache/clear`). 안 비우면 캐시가 0.3초에 응답해 새 코드가 검증되지 않는다. 문서 추가·삭제 시엔 자동으로 비워진다.
 - 관리자 API 인증: `Authorization: Bearer <ADMIN_TOKEN>` (`api/.env`). settings 변경은 **PUT** (POST는 405). `/docs`·`/openapi.json`은 운영에서 꺼져 있다 (목업 모드에서만 열림).
