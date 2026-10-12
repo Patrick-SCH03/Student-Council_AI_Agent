@@ -16,7 +16,7 @@
 | `smoke_test.py` · `tests/check_all.py` · lint · build | 무료 | 기본 검증 수단. 두 파이썬 스크립트는 키를 비우고 임시 `DATA_DIR`로 강제 목업 (`api/.env`에 키가 있어도) |
 | `evaluate.py --retrieval` / `--multihop` | 거의 무료 | **실제 로컬 색인** + Gemini 질의 임베딩 호출 (LLM 미호출). `api/data/`가 없으면 만들고 인용 그래프도 생성할 수 있다 |
 | `evaluate.py --case <id>` | 건당 ~35원 | 프롬프트 일부 변경 시 1~3건만 |
-| `evaluate.py` 전체 50건 | ~1,750원 | 배포 직전 1회만, 로컬·원격 중 **한쪽만** |
+| `evaluate.py` 전체 51건 | ~1,800원 | 배포 직전 1회만, 로컬·원격 중 **한쪽만** |
 | 문서 재색인 (OCR 포함) | ~750원 | OCR 캐시 덕에 프롬프트를 안 바꾸면 재호출 없음 |
 
 실제 사고(2026-08-16): 검증 반복이 누적 비용의 85%를 차지했고 크레딧 소진으로 서비스 장애 발생.
@@ -26,7 +26,7 @@
 ```bash
 cd api
 .venv/Scripts/python.exe smoke_test.py              # 강제 목업 스모크 (임시 DATA_DIR, CI와 동일)
-.venv/Scripts/python.exe tests/check_all.py         # 회귀 테스트 26건 (키·서버 없이, CI와 동일)
+.venv/Scripts/python.exe tests/check_all.py         # 회귀 테스트 27건 (키·서버 없이, CI와 동일)
 .venv/Scripts/python.exe evaluate.py --retrieval    # 검색 지표(MRR·순위), 실제 색인·임베딩, LLM 미호출
 .venv/Scripts/python.exe evaluate.py --multihop     # 인용 그래프 A/B(판례 커버리지), 실제 색인·임베딩, LLM 미호출
 .venv/Scripts/python.exe ingest_folder.py           # documents/ ↔ 로컬 색인 동기화
@@ -48,6 +48,7 @@ Windows 주의: 인터프리터는 `api/.venv/Scripts/python.exe`, 한글 출력
 - 클라이언트가 응답 중 끊어도 `status=cancelled`로 지표에 남는다 — 끊기로 한도를 우회할 수 없다. 캐시는 세대(`cache_generation`)로 보호되어, 비운 뒤 완료된 옛 요청이 낡은 답을 다시 저장하지 않는다.
 - 피드백은 결과 이벤트의 `feedback_token`(HMAC 서명)이 있어야 받는다 — 순번 `analysis_id`만으로는 남의 답변을 평가할 수 없다.
 - 프론트 CSP는 `next.config.ts`에서 백엔드 주소로만 통신을 허용한다(`connect-src`). 새 외부 서비스를 부르면 여기에 추가해야 한다.
+- 최종 위험도는 두 에이전트 판정 중 **높은 쪽**(`overall_risk`)이라, 한쪽이 가정한 위반을 매기면 단순 절차 문의도 '높음'이 된다. 프롬프트의 `JUDGMENT_RULE`이 "판정은 사용자의 행위에 대해서만"을 강제한다 — 위험도 관련 프롬프트를 고치면 평가셋의 `expect_risk` 케이스(절차 문의 = 낮음, 위반 전제 = 높음/보통)를 함께 돌린다.
 - 인용 그래프(`citation_graph.py`)는 색인의 파생물 — 문서 추가·삭제 시 자동 재생성된다. 확장은 라우터의 `needs_precedents` 판별로만 켜지고, `GRAPH_EXPANSION=0`이 킬 스위치다.
 - 문서 분류는 파일명 기준(`classify_doc`): `보고서`/`감사결과` 포함 → audit (Gemini 표 구조 추출), 그 외 → regulation (pypdf + 조항 청킹).
 - `documents/`는 git 제외(내부 문서). 로컬 색인과 배포 색인은 **별개** — 배포 반영은 `upload_to_remote.py`.
