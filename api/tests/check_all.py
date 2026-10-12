@@ -317,6 +317,33 @@ def _():
     assert client.delete("/api/documents/graph-fail-doc", headers=AUTH).status_code == 404
 
 
+@case("그래프 무효화 도중 옛 파일을 읽던 조회가 낡은 그래프를 다시 게시하지 않는다")
+def _():
+    import threading
+
+    citation_graph.invalidate()
+    citation_graph.GRAPH_PATH.write_text("{}", encoding="utf-8")  # 아직 지워지지 않은 옛 파일
+    started, release = threading.Event(), threading.Event()
+
+    def slow_load():
+        started.set()
+        release.wait(5)
+        return "OLD"
+
+    with patch.object(citation_graph, "load_graph", side_effect=slow_load):
+        reader = threading.Thread(target=citation_graph.get_graph)
+        reader.start()
+        assert started.wait(5), "조회가 시작되지 않았다"
+        invalidator = threading.Thread(target=citation_graph.invalidate)
+        invalidator.start()
+        invalidator.join(0.2)  # 잠금이 있으면 조회가 끝날 때까지 기다린다
+        release.set()
+        reader.join(5)
+        invalidator.join(5)
+    assert citation_graph._graph is None, f"무효화 뒤 낡은 그래프가 남았다: {citation_graph._graph!r}"
+    assert not citation_graph.GRAPH_PATH.exists()
+
+
 @case("업로드 상한은 다 읽기 전에 끊는다 (413)")
 def _():
     read_sizes: list[int] = []

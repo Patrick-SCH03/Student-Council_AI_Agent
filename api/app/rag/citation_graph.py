@@ -14,6 +14,7 @@ LLM 추출 그래프의 '부패' 문제가 없다).
 
 import json
 import re
+import threading
 from collections import defaultdict
 
 import networkx as nx
@@ -167,25 +168,30 @@ def load_graph() -> nx.DiGraph:
 
 
 _graph: nx.DiGraph | None = None
+# 조회(채팅 스레드)·재생성(문서 변경 스레드)·무효화가 겹치면, 무효화 직전에 옛 파일을
+# 읽던 조회가 끝나며 낡은 그래프를 다시 게시할 수 있다. 셋을 한 잠금으로 직렬화한다.
+_graph_lock = threading.Lock()
 
 
 def invalidate() -> None:
     """그래프를 버려 다음 조회 때 다시 만들게 한다. 재생성에 실패했을 때 낡은 그래프
     (지운 문서의 조항·빠진 새 문서)로 판례를 모으지 않도록 쓴다."""
     global _graph
-    _graph = None
-    GRAPH_PATH.unlink(missing_ok=True)
+    with _graph_lock:
+        GRAPH_PATH.unlink(missing_ok=True)
+        _graph = None
 
 
 def get_graph(rebuild: bool = False) -> nx.DiGraph:
     global _graph
-    if _graph is None or rebuild:
-        if GRAPH_PATH.exists() and not rebuild:
-            _graph = load_graph()
-        else:
-            _graph = build_graph()
-            save_graph(_graph)
-    return _graph
+    with _graph_lock:
+        if _graph is None or rebuild:
+            if GRAPH_PATH.exists() and not rebuild:
+                _graph = load_graph()
+            else:
+                _graph = build_graph()
+                save_graph(_graph)
+        return _graph
 
 
 def _chunk_text(doc: str, idx: int) -> dict | None:
