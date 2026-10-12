@@ -6,14 +6,16 @@
       "query": "행사 물품 구매 시 증빙서류는 무엇을 준비해야 하나요?",
       "expect_route": "regulation",
       "expect_sources": ["재정·회계 세칙"],
-      "expect_keywords": ["증빙", "지출"]
+      "expect_keywords": ["증빙", "지출"],
+      "expect_risk": ["낮음"]
     },
     {
       "id": "budget-change",
       "query": "예산 변경 시 필요한 승인 절차는 무엇인가요?",
       "expect_route": "regulation",
       "expect_sources": ["재정·회계 세칙"],
-      "expect_keywords": ["추가경정", "대의원회"]
+      "expect_keywords": ["추가경정", "대의원회"],
+      "expect_risk": ["낮음"]
     },
     {
       "id": "sanction-types",
@@ -99,6 +101,14 @@
       "expect_route": "regulation",
       "expect_keywords": ["예산집행정지"],
       "expect_risk": ["높음", "보통"]
+    },
+    {
+      "id": "procedural-execution-wait",
+      "query": "사업 인준 후 며칠 뒤에 집행이 가능해?",
+      "expect_route": "regulation",
+      "expect_sources": ["재정·회계 세칙"],
+      "expect_keywords": ["인준", "집행"],
+      "expect_risk": ["낮음"]
     },
     {
       "id": "budget-transfer",
@@ -226,7 +236,8 @@
       "query": "감사를 방해하면 어떤 처분을 받나요?",
       "expect_route": "regulation",
       "expect_sources": ["감사처분에 관한 세칙"],
-      "expect_keywords": ["방해"]
+      "expect_keywords": ["방해"],
+      "expect_risk": ["높음", "보통"]
     },
     {
       "id": "charter-impeachment",
