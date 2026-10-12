@@ -289,18 +289,6 @@ function AgentDetail({
   );
 }
 
-/** 진행 중인 동안 1초마다 경과 초를 센다. 끝나면 멈춘다. */
-function useElapsedSeconds(running: boolean): number {
-  const [seconds, setSeconds] = useState(0);
-  useEffect(() => {
-    if (!running) return;
-    const started = Date.now();
-    const t = setInterval(() => setSeconds(Math.floor((Date.now() - started) / 1000)), 1000);
-    return () => clearInterval(t);
-  }, [running]);
-  return seconds;
-}
-
 function Spinner({ className = "h-3.5 w-3.5" }: { className?: string }) {
   return (
     <span
@@ -309,9 +297,6 @@ function Spinner({ className = "h-3.5 w-3.5" }: { className?: string }) {
     />
   );
 }
-
-// 배포본 규정 질의 응답 중앙값 9.9초 · p90 13초 (2026-09 실측). 이보다 한참 길면 안내를 바꾼다.
-const SLOW_AFTER_SECONDS = 20;
 
 function AssistantBubble({
   state,
@@ -330,7 +315,6 @@ function AssistantBubble({
   const streamingText = (result?.final_markdown || tokens).split("<followups>")[0];
   // 결과가 오기 전까지는 진행 중이다. 단계 이벤트 사이가 길어도 멈춘 게 아니라는 걸 보여준다.
   const running = !result && !error && !!stage;
-  const elapsed = useElapsedSeconds(running);
 
   const copyAnswer = async () => {
     if (!result) return;
@@ -347,11 +331,14 @@ function AssistantBubble({
 
   return (
     <div className="flex items-start gap-2.5">
-      <span
-        aria-hidden
-        className="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-indigo-600 text-[11px] font-extrabold text-white"
-      >
-        AI
+      <span aria-hidden className="relative mt-1 h-8 w-8 shrink-0">
+        {/* 분석 중에는 아이콘 둘레에 링이 돈다 — 이벤트 사이가 길어도 멈춘 게 아니라는 신호 */}
+        {running && (
+          <span className="absolute -inset-1 animate-spin rounded-full border-[3px] border-indigo-100 border-t-indigo-500 border-r-indigo-500 motion-reduce:animate-none" />
+        )}
+        <span className="flex h-8 w-8 items-center justify-center rounded-full bg-indigo-600 text-[11px] font-extrabold text-white">
+          AI
+        </span>
       </span>
       <div
         className={`min-w-0 flex-1 rounded-2xl border border-slate-200 bg-white p-5 ${CARD_SHADOW}`}
@@ -370,15 +357,10 @@ function AssistantBubble({
           <>
             {running && (
               <div className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm font-medium text-slate-500">
-                <Spinner />
+                <Spinner className="h-4 w-4 border-[2.5px]" />
                 {stage}
-                {/* 경과 시간은 시각 신호용. 화면낭독기에는 단계 변화만 알린다(1초마다 읽지 않도록) */}
-                <span aria-hidden className="text-xs tabular-nums text-slate-500">
-                  {elapsed}초 경과 ·{" "}
-                  {elapsed < SLOW_AFTER_SECONDS
-                    ? "보통 10초 안팎"
-                    : "평소보다 오래 걸리고 있어요. 잠시만 기다려 주세요"}
-                </span>
+                {/* 배포본 규정 질의 응답 중앙값 9.9초 · p90 13초 (2026-09 실측) */}
+                <span className="text-xs text-slate-500">보통 10초 안팎</span>
               </div>
             )}
 
