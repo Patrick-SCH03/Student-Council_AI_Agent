@@ -21,6 +21,9 @@ GEMINI_ROUTER_MODEL: str = os.getenv("GEMINI_ROUTER_MODEL", "gemini-3.5-flash-li
 GEMINI_EMBEDDING_MODEL: str = os.getenv(
     "GEMINI_EMBEDDING_MODEL", "models/gemini-embedding-2"
 )
+# 규정 검토·감사 분석의 사고 수준 (low/medium/high). 비우면 모델 기본값.
+# 사고 토큰은 첫 응답 전에 만들어져 지연의 주원인이라, 속도·품질 A/B를 코드 수정 없이 돌린다.
+AGENT_THINKING: str | None = os.getenv("AGENT_THINKING") or None
 
 # 키가 없으면 LLM·임베딩 호출 없이 전체 플로우를 검증하는 목업 모드로 동작한다.
 MOCK_MODE: bool = GEMINI_API_KEY is None
