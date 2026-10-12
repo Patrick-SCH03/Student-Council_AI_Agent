@@ -16,6 +16,7 @@ import {
   setAdminToken,
   updateLimits,
 } from "@/lib/api";
+import { LIMIT_MAX, parseLimit } from "@/lib/limits";
 
 const CARD_SHADOW =
   "shadow-[0px_12px_16px_-4px_rgba(16,24,40,0.08),0px_4px_6px_-2px_rgba(16,24,40,0.03)]";
@@ -232,15 +233,34 @@ function LimitSettings({
     perIp !== String(limits.daily_limit_per_ip) ||
     ttl !== String(limits.cache_ttl_hours);
 
+  const parsed = {
+    daily_limit_total: parseLimit(total, LIMIT_MAX.daily_limit_total),
+    daily_limit_per_user: parseLimit(perUser, LIMIT_MAX.daily_limit_per_user),
+    daily_limit_per_ip: parseLimit(perIp, LIMIT_MAX.daily_limit_per_ip),
+    cache_ttl_hours: parseLimit(ttl, LIMIT_MAX.cache_ttl_hours),
+  };
+  const invalid = Object.values(parsed).some((v) => v === null);
+
   const save = async () => {
+    const { daily_limit_total, daily_limit_per_user, daily_limit_per_ip, cache_ttl_hours } =
+      parsed;
+    if (
+      daily_limit_total === null ||
+      daily_limit_per_user === null ||
+      daily_limit_per_ip === null ||
+      cache_ttl_hours === null
+    ) {
+      setMessage("빈 칸이나 올바르지 않은 값이 있어요. 0 이상의 정수를 넣어 주세요.");
+      return;
+    }
     setSaving(true);
     setMessage(null);
     try {
       await updateLimits({
-        daily_limit_total: Number(total) || 0,
-        daily_limit_per_user: Number(perUser) || 0,
-        daily_limit_per_ip: Number(perIp) || 0,
-        cache_ttl_hours: Number(ttl) || 0,
+        daily_limit_total,
+        daily_limit_per_user,
+        daily_limit_per_ip,
+        cache_ttl_hours,
       });
       setMessage("저장했어요.");
       onSaved();
@@ -259,6 +279,7 @@ function LimitSettings({
     label: string,
     value: string,
     onChange: (v: string) => void,
+    max: number,
     unit = "건",
   ) => (
     // label로 감싸 입력칸에 이름을 연결한다 (화면낭독기가 '숫자 입력'만 읽지 않도록)
@@ -270,9 +291,12 @@ function LimitSettings({
         <input
           type="number"
           min={0}
+          max={max}
+          step={1}
           value={value}
+          aria-invalid={parseLimit(value, max) === null}
           onChange={(e) => onChange(e.target.value)}
-          className="w-28 rounded-lg border border-slate-300 py-1.5 pl-3 pr-10 text-right text-sm tabular-nums outline-none focus:border-indigo-400"
+          className="w-28 rounded-lg border border-slate-300 py-1.5 pl-3 pr-10 text-right text-sm tabular-nums outline-none focus:border-indigo-400 aria-[invalid=true]:border-rose-500"
         />
         <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs font-medium text-slate-500">
           {unit}
@@ -314,10 +338,10 @@ function LimitSettings({
       )}
 
       <div className="mt-5 flex flex-wrap items-center gap-x-6 gap-y-3">
-        {field("전체", total, setTotal)}
-        {field("사용자당", perUser, setPerUser)}
-        {field("IP당", perIp, setPerIp)}
-        {field("답변 재사용", ttl, setTtl, "시간")}
+        {field("전체", total, setTotal, LIMIT_MAX.daily_limit_total)}
+        {field("사용자당", perUser, setPerUser, LIMIT_MAX.daily_limit_per_user)}
+        {field("IP당", perIp, setPerIp, LIMIT_MAX.daily_limit_per_ip)}
+        {field("답변 재사용", ttl, setTtl, LIMIT_MAX.cache_ttl_hours, "시간")}
 
         <span className="text-xs font-medium text-slate-500">0 = 사용 안 함</span>
 
@@ -335,7 +359,7 @@ function LimitSettings({
           <button
             type="button"
             onClick={save}
-            disabled={!dirty || saving}
+            disabled={!dirty || invalid || saving}
             className="rounded-full bg-indigo-600 px-5 py-2 text-xs font-bold text-white transition hover:bg-indigo-700 disabled:bg-slate-200 disabled:text-slate-500"
           >
             {saving ? "저장 중..." : "저장"}
@@ -376,6 +400,16 @@ export default function StatsPage() {
     }
   }, []);
 
+  // 관리자 조작(CSV·캐시)의 실패 처리. 인증 실패는 지표 조회와 똑같이 로그인 화면으로 보낸다.
+  const handleAdminError = (e: unknown, fallback: string) => {
+    if (e instanceof AuthError) {
+      setNeedsAuth(true);
+      setAuthError(e.message);
+      return;
+    }
+    setError(e instanceof Error ? e.message : fallback);
+  };
+
   // 마운트 시 1회 + 30초 주기로 지표를 갱신한다.
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- 서버 데이터 폴링(비동기 갱신)
@@ -402,6 +436,10 @@ export default function StatsPage() {
   const downloadCsv = async () => {
     try {
       const res = await adminFetch("/api/stats/export");
+      // 오류 응답 본문이 metrics.csv로 저장되면 정상 내보내기로 착각한다
+      if (!res.ok || !(res.headers.get("content-type") ?? "").includes("text/csv")) {
+        throw new Error(`CSV를 내보내지 못했어요 (HTTP ${res.status}).`);
+      }
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -409,8 +447,8 @@ export default function StatsPage() {
       a.download = "metrics.csv";
       a.click();
       URL.revokeObjectURL(url);
-    } catch {
-      setError("CSV를 내보내지 못했어요.");
+    } catch (e) {
+      handleAdminError(e, "CSV를 내보내지 못했어요.");
     }
   };
 
@@ -651,7 +689,7 @@ export default function StatsPage() {
               await clearAnswerCache();
               load();
             } catch (e) {
-              setError(e instanceof Error ? e.message : "캐시 비우기 실패");
+              handleAdminError(e, "캐시를 비우지 못했어요.");
             }
           }}
         />
