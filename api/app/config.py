@@ -11,7 +11,7 @@ GEMINI_API_KEY: str | None = (
     os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or None
 )
 # 릴리스 태그(v2.7.0)와 같이 올린다. /api/health로 배포본이 어떤 버전인지 확인한다.
-APP_VERSION = "2.12.0"
+APP_VERSION = "2.13.0"
 
 GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-3.7-flash")
 # 라우터는 분류 + 한 문장 재작성만 하므로 경량 모델을 쓴다.
@@ -76,23 +76,7 @@ IP_HASH_SALT: str = os.getenv("IP_HASH_SALT") or ADMIN_TOKEN or "inha-sc-local"
 # 서명이 필요한 기능(피드백)은 끈다 — 관리자 API의 fail-closed와 같은 원칙.
 SIGNING_KEY_IS_PUBLIC: bool = not (os.getenv("IP_HASH_SALT") or ADMIN_TOKEN)
 
-# 비용 추정 단가 (USD / 1M 토큰).
-# gemini-3.7-flash 도입 할인가로, 2027-01-01부터 1.50 / 7.50으로 환원된다.
-PRICE_INPUT_PER_1M: float = float(os.getenv("PRICE_INPUT_PER_1M", "0.75"))
-PRICE_OUTPUT_PER_1M: float = float(os.getenv("PRICE_OUTPUT_PER_1M", "3.75"))
-# Claude 단가 (USD / 1M 토큰, Anthropic 1st-party 정가). Haiku 5.5는 프롬프트 100K 토큰 이하 기준.
-_CLAUDE_PRICES = {
-    "claude-haiku-5-5": (0.10, 0.50),
-    "claude-sonnet-5-5": (2.00, 10.00),
-    "claude-opus-5-5": (4.00, 20.00),
-}
-CLAUDE_PRICE_INPUT_PER_1M: float = float(
-    os.getenv("CLAUDE_PRICE_INPUT_PER_1M", _CLAUDE_PRICES.get(CLAUDE_MODEL, (4.00, 20.00))[0])
-)
-CLAUDE_PRICE_OUTPUT_PER_1M: float = float(
-    os.getenv("CLAUDE_PRICE_OUTPUT_PER_1M", _CLAUDE_PRICES.get(CLAUDE_MODEL, (4.00, 20.00))[1])
-)
-USD_KRW: float = float(os.getenv("USD_KRW", "1400"))
+# 토큰 단가는 app/pricing.py (모델별·적용일별 공식 정가)
 
 # 운영 지표·방문·분석 기록 보존 기간(일). 지나면 기동 시 삭제한다.
 RETENTION_DAYS: int = int(os.getenv("RETENTION_DAYS", "365"))
