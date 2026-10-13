@@ -50,7 +50,7 @@ fix: 본문이 이미지인 PDF가 스캔본 판정을 우회하던 문제 해�
 | Job | 내용 |
 |---|---|
 | **api** | 잠금 파일로 의존성 설치 → 스모크 테스트 → 회귀 테스트 |
-| **web** | 의존성 설치 → ESLint → 프로덕션 빌드 |
+| **web** | 의존성 설치 → ESLint → 단위 테스트(`npm test`, Node 내장 러너) → 프로덕션 빌드 |
 
 백엔드 스모크 테스트와 회귀 테스트는 **목업 모드를 스스로 강제**합니다(키를 비우고 임시 `DATA_DIR` 사용). 그래서 CI에 시크릿이 필요 없고, 로컬 `api/.env`에 실제 키가 있어도 과금이나 실제 색인 변경이 없습니다.
 
@@ -63,7 +63,7 @@ push 전에 아래를 실행합니다.
 cd api && python smoke_test.py && python tests/check_all.py
 
 # 프론트엔드
-cd web && npm run lint && npm run build
+cd web && npm run lint && npm test && npm run build
 ```
 
 ## 의존성
