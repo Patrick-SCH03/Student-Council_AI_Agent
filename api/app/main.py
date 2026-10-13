@@ -21,6 +21,8 @@ from app.agents.graph import content_to_text, graph
 from app.agents.schemas import overall_risk
 from app.config import (
     ADMIN_TOKEN,
+    CLAUDE_PRICE_INPUT_PER_1M,
+    CLAUDE_PRICE_OUTPUT_PER_1M,
     APP_VERSION,
     CORS_ORIGINS,
     DEFAULT_LIMITS,
@@ -360,11 +362,25 @@ async def chat(
         def _timings() -> dict:
             return _stage_timings(start, marks, usage_handler.usage_metadata or {})
 
-        def _token_totals() -> tuple[int, int]:
+        # Claude 단계는 LangChain 콜백에 잡히지 않아 custom 스트림으로 받은 사용량을 따로 모은다
+        claude_usage = {"input_tokens": 0, "output_tokens": 0}
+
+        def _gemini_totals() -> tuple[int, int]:
             usage = usage_handler.usage_metadata or {}
             return (
                 sum(u.get("input_tokens", 0) for u in usage.values()),
                 sum(u.get("output_tokens", 0) for u in usage.values()),
+            )
+
+        def _token_totals() -> tuple[int, int]:
+            g_in, g_out = _gemini_totals()
+            return g_in + claude_usage["input_tokens"], g_out + claude_usage["output_tokens"]
+
+        def _request_cost() -> float:
+            g_in, g_out = _gemini_totals()
+            return _cost_usd(g_in, g_out) + (
+                claude_usage["input_tokens"] / 1_000_000 * CLAUDE_PRICE_INPUT_PER_1M
+                + claude_usage["output_tokens"] / 1_000_000 * CLAUDE_PRICE_OUTPUT_PER_1M
             )
 
         try:
@@ -373,8 +389,19 @@ async def chat(
             async for mode, payload in graph.astream(
                 {"query": query, "history": history, "citations": []},
                 config={"callbacks": [usage_handler]},
-                stream_mode=["updates", "messages"],
+                stream_mode=["updates", "messages", "custom"],
             ):
+                if mode == "custom":
+                    # Claude 단계가 직접 흘리는 토큰·사용량 (LangChain 모델이 아니라 messages에 안 잡힘)
+                    if isinstance(payload, dict):
+                        if text := payload.get("token"):
+                            marks.setdefault("coordinator_first_token", time.time())
+                            if visible := masker.feed(text):
+                                yield _sse({"type": "token", "content": visible})
+                        if usage := payload.get("usage"):
+                            claude_usage["input_tokens"] += int(usage.get("input_tokens", 0))
+                            claude_usage["output_tokens"] += int(usage.get("output_tokens", 0))
+                    continue
                 if mode == "messages":
                     chunk, meta = payload
                     node = meta.get("langgraph_node", "")
@@ -444,10 +471,12 @@ async def chat(
             result = mask_obj(result)
             analysis_id = db.add_analysis(query, risk, result)
             in_tok, out_tok = _token_totals()
+            partial = bool(merged.get("partial"))
             db.record_metric(
                 route=merged.get("route"),
                 risk_level=risk,
-                status="ok",
+                # 잘린 답은 정상과 구분해 남긴다 (대시보드 오류 집계에 잡혀 절단 빈도가 보인다)
+                status="partial" if partial else "ok",
                 elapsed=result["elapsed"],
                 input_tokens=in_tok,
                 output_tokens=out_tok,
@@ -457,9 +486,11 @@ async def chat(
                 ip_hash=ip_hash,
                 is_admin=is_admin,
                 stage_timings=_timings(),
+                cost_usd=_request_cost(),
             )
             recorded = True
-            if cache_key:
+            # 잘린 답을 캐시하면 같은 질문을 한 모든 사용자에게 하루 동안 잘린 답이 나간다
+            if cache_key and not partial:
                 db.save_cached_answer(cache_key, analysis_id, result, cache_generation)
             # analysis_id는 저장 후에야 정해지므로 응답에만 덧붙인다 (피드백 전송용)
             yield _sse({
@@ -484,6 +515,7 @@ async def chat(
                 is_admin=is_admin,
                 error=f"{type(e).__name__}: {e}",
                 stage_timings=_timings(),
+                cost_usd=_request_cost(),
             )
             recorded = True
             # 예외 원문(LLM 출력 조각·내부 경로가 섞일 수 있음)은 지표에만 남기고 사용자에겐 일반 문구
@@ -499,6 +531,7 @@ async def chat(
                     risk_level=None,
                     status="cancelled",
                     stage_timings=_timings(),
+                    cost_usd=_request_cost(),
                     elapsed=round(time.time() - start, 2),
                     input_tokens=in_tok,
                     output_tokens=out_tok,
@@ -726,8 +759,11 @@ def get_stats(days: int = 14):
     stats = db.get_stats(min(max(days, 1), 90))
     stats["limits"] = {**db.get_settings(DEFAULT_LIMITS), "used_today": db.count_today()}
     stats["memory"] = _memory_mb()
-    total_usd = _cost_usd(stats["totals"]["input_tokens"], stats["totals"]["output_tokens"])
-    today_usd = _cost_usd(stats["today"]["input_tokens"], stats["today"]["output_tokens"])
+    # 요청별 비용(cost_usd)이 있는 행은 그 값을, 도입 전 행은 토큰 × Gemini 단가로 합산한다
+    total_usd = stats["totals"]["cost_usd"] + _cost_usd(
+        stats["totals"]["legacy_input_tokens"], stats["totals"]["legacy_output_tokens"])
+    today_usd = stats["today"]["cost_usd"] + _cost_usd(
+        stats["today"]["legacy_input_tokens"], stats["today"]["legacy_output_tokens"])
     stats["cost"] = {
         "total_usd": round(total_usd, 4),
         "today_usd": round(today_usd, 4),

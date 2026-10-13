@@ -58,7 +58,8 @@ def _check(case: dict, result: dict) -> list[str]:
         if leaked := [n for n in KNOWN_NAMES if n in blob]:
             failures.append(f"실명 노출 {leaked}")
 
-    if (cap := case.get("max_tokens")) and (tokens := result.get("_tokens")):
+    # 상한은 Gemini 토크나이저 기준으로 잡은 값이라 Claude 토큰(한국어 ~1.75배)은 빼고 잰다
+    if (cap := case.get("max_tokens")) and (tokens := result.get("_tokens", 0) - result.get("_claude_tokens", 0)):
         if tokens > cap:
             failures.append(f"토큰 {tokens} > {cap} (범위 밖 질문에 과다 호출)")
 
@@ -91,10 +92,18 @@ async def _run_local(query: str) -> dict:
     from app.agents.schemas import overall_risk
 
     usage = UsageMetadataCallbackHandler()
-    state = await graph.ainvoke(
+    # Claude 단계(AGENT_PROVIDER=claude)는 LangChain 콜백에 안 잡혀 custom 스트림으로 사용량을 받는다
+    claude_tokens = 0
+    state: dict = {}
+    async for mode, payload in graph.astream(
         {"query": query, "history": [], "citations": []},
         config={"callbacks": [usage]},
-    )
+        stream_mode=["values", "custom"],
+    ):
+        if mode == "values":
+            state = payload
+        elif isinstance(payload, dict) and (u := payload.get("usage")):
+            claude_tokens += int(u.get("input_tokens", 0)) + int(u.get("output_tokens", 0))
     reviewer, auditor = state.get("reviewer"), state.get("auditor")
     markdown = content_to_text(state.get("final_markdown", ""))
     return {
@@ -107,7 +116,8 @@ async def _run_local(query: str) -> dict:
         ],
         "reviewer": reviewer.model_dump() if reviewer else None,
         "auditor": auditor.model_dump() if auditor else None,
-        "_tokens": sum(
+        "_claude_tokens": claude_tokens,
+        "_tokens": claude_tokens + sum(
             u.get("input_tokens", 0) + u.get("output_tokens", 0)
             for u in (usage.usage_metadata or {}).values()
         ),

@@ -9,6 +9,8 @@ langgraph>=1.0
 langchain-google-genai>=2.0
 langchain-core>=1.0
 langchain-text-splitters>=1.0
+# AGENT_PROVIDER=claude일 때 규정 검토·감사 분석·종합 조정 (공식 SDK)
+anthropic>=1.13
 
 # --- RAG ---
 chromadb>=1.0

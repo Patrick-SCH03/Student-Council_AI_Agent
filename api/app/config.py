@@ -11,7 +11,7 @@ GEMINI_API_KEY: str | None = (
     os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or None
 )
 # 릴리스 태그(v2.7.0)와 같이 올린다. /api/health로 배포본이 어떤 버전인지 확인한다.
-APP_VERSION = "2.9.0"
+APP_VERSION = "2.10.0"
 
 GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-3.7-flash")
 # 라우터는 분류 + 한 문장 재작성만 하므로 경량 모델을 쓴다.
@@ -24,6 +24,24 @@ GEMINI_EMBEDDING_MODEL: str = os.getenv(
 # 규정 검토·감사 분석의 사고 수준 (low/medium/high). 비우면 모델 기본값.
 # 사고 토큰은 첫 응답 전에 만들어져 지연의 주원인이라, 속도·품질 A/B를 코드 수정 없이 돌린다.
 AGENT_THINKING: str | None = os.getenv("AGENT_THINKING") or None
+
+# 규정 검토·감사 분석·종합 조정을 돌릴 모델 공급자 (gemini | claude). 라우터·임베딩은 항상 Gemini.
+# claude로 켜도 Claude 호출이 실패하면 그 단계만 Gemini로 돌아간다 (가용성 우선).
+AGENT_PROVIDER: str = (os.getenv("AGENT_PROVIDER") or "gemini").strip().lower()
+CLAUDE_API_KEY: str | None = os.getenv("CLAUDE_API_KEY") or os.getenv("ANTHROPIC_API_KEY") or None
+CLAUDE_MODEL: str = os.getenv("CLAUDE_MODEL", "claude-haiku-5-5")
+# effort는 사고 깊이·출력량을 함께 정한다. 2026-10-13 A/B에서 low가 지연 목표에 맞았다.
+CLAUDE_EFFORT: str = os.getenv("CLAUDE_EFFORT", "low")
+# Claude 호출 타임아웃(초). Haiku·low는 단계당 5~10초라 30초면 충분하다. 더 큰 모델이나 높은 effort로
+# 바꾸면 함께 올린다 — 낮으면 매번 타임아웃 → 재시도 → Gemini 폴백으로 비용만 겹친다.
+CLAUDE_TIMEOUT: float = float(os.getenv("CLAUDE_TIMEOUT") or (30 if CLAUDE_EFFORT == "low" else 90))
+if AGENT_PROVIDER not in ("gemini", "claude"):
+    print(f"AGENT_PROVIDER={AGENT_PROVIDER!r}는 알 수 없는 값이라 gemini로 동작한다")
+    AGENT_PROVIDER = "gemini"
+if AGENT_PROVIDER == "claude" and not CLAUDE_API_KEY:
+    # 켠 줄 알았는데 매 요청이 조용히 Gemini로 폴백하면 결과·비용을 잘못 읽는다
+    print("AGENT_PROVIDER=claude인데 CLAUDE_API_KEY가 없어 gemini로 동작한다")
+    AGENT_PROVIDER = "gemini"
 
 # 키가 없으면 LLM·임베딩 호출 없이 전체 플로우를 검증하는 목업 모드로 동작한다.
 MOCK_MODE: bool = GEMINI_API_KEY is None
@@ -60,6 +78,18 @@ SIGNING_KEY_IS_PUBLIC: bool = not (os.getenv("IP_HASH_SALT") or ADMIN_TOKEN)
 # gemini-3.7-flash 도입 할인가로, 2027-01-01부터 1.50 / 7.50으로 환원된다.
 PRICE_INPUT_PER_1M: float = float(os.getenv("PRICE_INPUT_PER_1M", "0.75"))
 PRICE_OUTPUT_PER_1M: float = float(os.getenv("PRICE_OUTPUT_PER_1M", "3.75"))
+# Claude 단가 (USD / 1M 토큰, Anthropic 1st-party 정가). Haiku 5.5는 프롬프트 100K 토큰 이하 기준.
+_CLAUDE_PRICES = {
+    "claude-haiku-5-5": (0.10, 0.50),
+    "claude-sonnet-5-5": (2.00, 10.00),
+    "claude-opus-5-5": (4.00, 20.00),
+}
+CLAUDE_PRICE_INPUT_PER_1M: float = float(
+    os.getenv("CLAUDE_PRICE_INPUT_PER_1M", _CLAUDE_PRICES.get(CLAUDE_MODEL, (4.00, 20.00))[0])
+)
+CLAUDE_PRICE_OUTPUT_PER_1M: float = float(
+    os.getenv("CLAUDE_PRICE_OUTPUT_PER_1M", _CLAUDE_PRICES.get(CLAUDE_MODEL, (4.00, 20.00))[1])
+)
 USD_KRW: float = float(os.getenv("USD_KRW", "1400"))
 
 # 운영 지표·방문·분석 기록 보존 기간(일). 지나면 기동 시 삭제한다.
