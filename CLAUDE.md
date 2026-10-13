@@ -26,11 +26,12 @@
 ```bash
 cd api
 .venv/Scripts/python.exe smoke_test.py              # 강제 목업 스모크 (임시 DATA_DIR, CI와 동일)
-.venv/Scripts/python.exe tests/check_all.py         # 회귀 테스트 39건 (키·서버 없이, CI와 동일)
+.venv/Scripts/python.exe tests/check_all.py         # 회귀 테스트 40건 (키·서버 없이, CI와 동일)
 .venv/Scripts/python.exe evaluate.py --retrieval    # 검색 지표(MRR·순위), 실제 색인·임베딩, LLM 미호출
 .venv/Scripts/python.exe evaluate.py --multihop     # 인용 그래프 A/B(판례 커버리지), 실제 색인·임베딩, LLM 미호출
 .venv/Scripts/python.exe ingest_folder.py           # documents/ ↔ 로컬 색인 동기화
 .venv/Scripts/python.exe upload_to_remote.py <배포URL>  # 배포 서버로 업로드 (기존 파일 건너뜀)
+.venv/Scripts/python.exe backup_remote.py <배포URL>    # 운영 SQLite·OCR 캐시를 api/backups/에 보관 (무료, 최근 10개)
 cd web && npm run lint && npm test && npm run build   # npm test: 한도 입력·SSE 해석 단위 테스트 (서버 불필요)
 ```
 
@@ -53,6 +54,7 @@ Windows 주의: 인터프리터는 `api/.venv/Scripts/python.exe`(Python 3.12, �
 - **에이전트 모델 스위치 `AGENT_PROVIDER`** (gemini 기본 | claude). claude면 규정 검토·감사 분석·종합 조정을 `app/agents/claude_agents.py`(공식 anthropic SDK)로 돌리고, 실패한 단계만 Gemini로 폴백한다 — 폴백은 사용자에게 안 보이므로 요청별 `metrics.fallback`(단계 쉼표 구분)에 남기고 대시보드 누적 질의 칸·최근 질의 표에 표시한다 — 늘면 느려지고 비용이 ~5배가 된다. 키(`CLAUDE_API_KEY`)가 없으면 기동 시 gemini로 강제된다. Claude 토큰은 LangChain 콜백에 안 잡혀 custom 스트림(`{"usage": ...}`)으로 합산하고, 비용은 요청별 `metrics.cost_usd`로 남긴다. Claude는 한국어 입력을 Gemini의 약 1.75배 토큰으로 센다. 2026-10-13 비교: Haiku 5.5가 에이전트 11초·질의당 ~7원으로 Gemini(20초·~38원)보다 빠르고 쌌다.
 - 인용 그래프(`citation_graph.py`)는 색인의 파생물 — 문서 추가·삭제 시 자동 재생성된다. 확장은 라우터의 `needs_precedents` 판별로만 켜지고, `GRAPH_EXPANSION=0`이 킬 스위치다.
 - 문서 분류는 파일명 기준(`classify_doc`): `보고서`/`감사결과` 포함 → audit (Gemini 표 구조 추출), 그 외 → regulation (pypdf + 조항 청킹).
+- **백업은 직접 받는다.** Railway 볼륨 백업은 Pro 요금제 전용이라(Hobby는 복원·삭제만) `backup_remote.py`로 `/api/backup`을 받아 `api/backups/`(git 제외)에 둔다. 담는 건 되살릴 수 없는 SQLite와 OCR 캐시뿐 — 색인은 `documents/`로 다시 만들고, OCR 캐시가 있으면 재색인 비용(약 750원)이 들지 않는다.
 - `documents/`는 git 제외(내부 문서). 로컬 색인과 배포 색인은 **별개** — 배포 반영은 `upload_to_remote.py`.
 - Railway 프록시 뒤에서 클라이언트 IP는 X-Forwarded-For의 **오른쪽 끝** 항목이다 (앞쪽은 클라이언트가 위조 가능).
 - 응답이 갑자기 30초 이상으로 느려지면 코드보다 **Claude·Gemini 크레딧·쿼터**부터 의심한다 — Claude 쪽이면 대시보드의 Gemini 폴백 건수가 함께 는다. 대시보드 오류 배지에 마우스를 올리면 실패 사유가 보인다.
