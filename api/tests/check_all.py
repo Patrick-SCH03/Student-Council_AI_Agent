@@ -524,6 +524,36 @@ def _():
     assert stats["agent"]["provider"] in ("gemini", "claude"), stats.get("agent")
 
 
+@case("/api/backup은 관리자만 받고, 열리는 SQLite 스냅샷과 OCR 캐시를 zip으로 내려준다")
+def _():
+    import io
+    import sqlite3
+    import zipfile
+
+    from app.config import OCR_CACHE_DIR
+
+    assert client.get("/api/backup").status_code == 401
+    (OCR_CACHE_DIR / "backup-test.txt").write_text("ocr", encoding="utf-8")
+    db.record_metric(route="general", risk_level=None, status="ok", elapsed=0.1,
+                     input_tokens=0, output_tokens=0, query_preview="백업 확인용")
+    r = client.get("/api/backup", headers=AUTH)
+    assert r.status_code == 200 and r.headers["content-type"] == "application/zip", r.status_code
+    with zipfile.ZipFile(io.BytesIO(r.content)) as zf:
+        assert zf.testzip() is None
+        names = zf.namelist()
+        assert "ocr_cache/backup-test.txt" in names and "manifest.json" in names, names
+        path = os.path.join(_SCRATCH, "restored.sqlite3")
+        with open(path, "wb") as f:
+            f.write(zf.read("app.sqlite3"))
+    conn = sqlite3.connect(path)
+    try:
+        assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        n = conn.execute("SELECT COUNT(*) FROM metrics WHERE query_preview = '백업 확인용'").fetchone()[0]
+    finally:
+        conn.close()
+    assert n == 1, "스냅샷에 최근 기록이 없다"
+
+
 @case("/api/history의 limit은 1~100으로 고정된다 (음수는 SQLite 무제한)")
 def _():
     for _i in range(105):

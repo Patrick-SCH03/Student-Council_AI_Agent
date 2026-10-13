@@ -42,3 +42,5 @@ legacy/
 .DS_Store
 *.log
 api/data-mock/
+# 운영 데이터 백업 (backup_remote.py) — 마스킹된 질의·IP 해시 포함
+api/backups/
