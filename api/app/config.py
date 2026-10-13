@@ -32,6 +32,9 @@ CLAUDE_API_KEY: str | None = os.getenv("CLAUDE_API_KEY") or os.getenv("ANTHROPIC
 CLAUDE_MODEL: str = os.getenv("CLAUDE_MODEL", "claude-haiku-5-5")
 # effort는 사고 깊이·출력량을 함께 정한다. 2026-10-13 A/B에서 low가 지연 목표에 맞았다.
 CLAUDE_EFFORT: str = os.getenv("CLAUDE_EFFORT", "low")
+# Claude 호출 타임아웃(초). Haiku·low는 단계당 5~10초라 30초면 충분하다. 더 큰 모델이나 높은 effort로
+# 바꾸면 함께 올린다 — 낮으면 매번 타임아웃 → 재시도 → Gemini 폴백으로 비용만 겹친다.
+CLAUDE_TIMEOUT: float = float(os.getenv("CLAUDE_TIMEOUT") or (30 if CLAUDE_EFFORT == "low" else 90))
 if AGENT_PROVIDER not in ("gemini", "claude"):
     print(f"AGENT_PROVIDER={AGENT_PROVIDER!r}는 알 수 없는 값이라 gemini로 동작한다")
     AGENT_PROVIDER = "gemini"

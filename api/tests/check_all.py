@@ -446,6 +446,25 @@ def _():
     assert gr.PARTIAL_ANSWER_NOTICE.strip() in out["final_markdown"]
 
 
+@case("잘린 답(partial)은 캐시하지 않고 지표에 status=partial로 남긴다")
+def _():
+    class FakeGraph:
+        async def astream(self, *a, **kw):
+            yield ("updates", {"router": {"route": "regulation", "standalone_query": "q"}})
+            yield ("updates", {"coordinator": {"final_markdown": "부분 답변", "partial": True}})
+
+    query = "부분 답변 캐시 금지 테스트 질문"
+    with patch.object(main, "graph", FakeGraph()):
+        r = client.post("/api/chat", json={"query": query})
+    assert r.status_code == 200
+    with db._connect() as conn:
+        status = conn.execute("SELECT status FROM metrics ORDER BY id DESC LIMIT 1").fetchone()[0]
+        cached = conn.execute("SELECT COUNT(*) FROM answer_cache WHERE query_key = ?",
+                              (db.normalize_query(query),)).fetchone()[0]
+    assert status == "partial", status
+    assert cached == 0, "잘린 답이 캐시됐다"
+
+
 @case("custom 스트림 토큰은 마스킹돼 SSE로 나가고, Claude 사용량은 Claude 단가로 요청 비용에 들어간다")
 def _():
     class FakeGraph:

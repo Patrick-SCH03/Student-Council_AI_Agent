@@ -471,10 +471,12 @@ async def chat(
             result = mask_obj(result)
             analysis_id = db.add_analysis(query, risk, result)
             in_tok, out_tok = _token_totals()
+            partial = bool(merged.get("partial"))
             db.record_metric(
                 route=merged.get("route"),
                 risk_level=risk,
-                status="ok",
+                # 잘린 답은 정상과 구분해 남긴다 (대시보드 오류 집계에 잡혀 절단 빈도가 보인다)
+                status="partial" if partial else "ok",
                 elapsed=result["elapsed"],
                 input_tokens=in_tok,
                 output_tokens=out_tok,
@@ -487,7 +489,8 @@ async def chat(
                 cost_usd=_request_cost(),
             )
             recorded = True
-            if cache_key:
+            # 잘린 답을 캐시하면 같은 질문을 한 모든 사용자에게 하루 동안 잘린 답이 나간다
+            if cache_key and not partial:
                 db.save_cached_answer(cache_key, analysis_id, result, cache_generation)
             # analysis_id는 저장 후에야 정해지므로 응답에만 덧붙인다 (피드백 전송용)
             yield _sse({

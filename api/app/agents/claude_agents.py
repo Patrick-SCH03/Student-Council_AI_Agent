@@ -15,11 +15,10 @@ from typing import TypeVar
 
 from pydantic import BaseModel
 
-from app.config import CLAUDE_API_KEY, CLAUDE_EFFORT, CLAUDE_MODEL, LLM_TIMEOUT
+from app.config import CLAUDE_API_KEY, CLAUDE_EFFORT, CLAUDE_MODEL, CLAUDE_TIMEOUT
 
-# SDK는 타임아웃도 재시도한다. Gemini 폴백이 가용성 장치로 동작하려면 Claude 쪽 대기는 짧아야 한다
-# (Haiku 단계 응답은 5~10초 — 2026-10-13 A/B). 상류가 멈추면 30초 × 2회 안에 Gemini로 넘어간다.
-CLAUDE_TIMEOUT = float(min(LLM_TIMEOUT, 30))
+# SDK는 타임아웃도 재시도한다. Gemini 폴백이 가용성 장치로 동작하려면 Claude 쪽 대기는 짧아야 한다.
+# 상류가 멈추면 CLAUDE_TIMEOUT × 2회 안에 Gemini로 넘어간다.
 CLAUDE_MAX_RETRIES = 1
 
 T = TypeVar("T", bound=BaseModel)
@@ -111,8 +110,13 @@ async def coordinate(system: str, user: str) -> str:
                     write({"token": text})
             final = await stream.get_final_message()
     except Exception as e:
-        # 끊기기 전까지 생성된 토큰도 과금된다 — 스냅샷에 남은 사용량을 보고한다
-        snapshot = getattr(stream, "current_message_snapshot", None) if stream else None
+        # 끊기기 전까지 생성된 토큰도 과금된다 — 스냅샷에 남은 사용량을 보고한다.
+        # 첫 이벤트 전에 끊기면 스냅샷 접근이 AssertionError를 내므로 원래 예외를 가리지 않게 삼킨다.
+        # (출력 토큰은 끝 이벤트에서만 갱신돼 부분 보고는 사실상 입력 토큰만 — 비용 대부분이 입력이다)
+        try:
+            snapshot = stream.current_message_snapshot if stream is not None else None
+        except Exception:  # noqa: BLE001
+            snapshot = None
         if snapshot is not None and getattr(snapshot, "usage", None):
             _report_usage(write, snapshot.usage)
         if parts:

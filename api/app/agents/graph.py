@@ -68,6 +68,8 @@ class AgentState(TypedDict, total=False):
     # 병렬 노드가 동시에 기록하므로 리듀서 필요
     citations: Annotated[list[Citation], operator.add]
     final_markdown: str
+    # 종합 조정이 중간에 끊겨 받은 데까지만 담았다 — 캐시하지 않고 지표에 따로 남긴다
+    partial: bool
 
 
 _llm_cache: dict = {}
@@ -397,7 +399,9 @@ async def coordinator_node(state: AgentState) -> AgentState:
         # 이미 화면에 나간 글을 지우고 다시 쓸 수는 없다. 받은 데까지에 안내를 붙여 끝내고,
         # 두 분석·근거·위험도는 그대로 결과로 보낸다 (요청 전체를 오류로 버리지 않는다).
         print(f"Claude 종합 조정이 중간에 끊김: {e}")
-        markdown = e.partial + PARTIAL_ANSWER_NOTICE
+        # 후속 질문 블록 도중에 끊기면 닫는 태그가 없어 화면이 안내문까지 잘라 버린다 — 블록 앞에서 자른다
+        body = e.partial.split("<followups>")[0].rstrip()
+        return {"final_markdown": body + PARTIAL_ANSWER_NOTICE, "partial": True}
     return {"final_markdown": markdown}
 
 
