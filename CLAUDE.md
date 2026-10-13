@@ -49,7 +49,7 @@ Windows 주의: 인터프리터는 `api/.venv/Scripts/python.exe`(Python 3.12, �
 - 클라이언트가 응답 중 끊어도 `status=cancelled`로 지표에 남는다 — 끊기로 한도를 우회할 수 없다. 캐시는 세대(`cache_generation`)로 보호되어, 비운 뒤 완료된 옛 요청이 낡은 답을 다시 저장하지 않는다.
 - 피드백은 결과 이벤트의 `feedback_token`(HMAC 서명)이 있어야 받는다 — 순번 `analysis_id`만으로는 남의 답변을 평가할 수 없다.
 - 프론트 CSP는 `next.config.ts`에서 백엔드 주소로만 통신을 허용한다(`connect-src`). 새 외부 서비스를 부르면 여기에 추가해야 한다.
-- 최종 위험도는 두 에이전트 판정 중 **높은 쪽**(`overall_risk`)이라, 한쪽이 가정한 위반을 매기면 단순 절차 문의도 '높음'이 된다. 프롬프트의 `JUDGMENT_RULE`이 "판정은 사용자의 행위에 대해서만"을 강제한다 — 위험도 관련 프롬프트를 고치면 평가셋의 `expect_risk` 케이스(절차 문의 = 낮음, 위반 전제 = 높음/보통)를 함께 돌린다.
+- 최종 위험도는 두 에이전트 판정 중 **높은 쪽**(`overall_risk`)이라, 한쪽이 가정한 위반을 매기면 단순 절차 문의도 '높음'이 된다. 프롬프트의 `JUDGMENT_RULE`이 질문을 **행위(했거나·하려거나·가정한 행위 → 평가) / 기준·절차(→ 낮음) / 기록 조회(과거 처분 사례 → 낮음)** 세 갈래로 나눠 판정하게 한다 — 위험도 관련 프롬프트를 고치면 평가셋의 `expect_risk` 44건을 함께 돌린다. "예산 항목 간 전용이 가능한가요?"·"회식비 사용이 가능한가요?"처럼 일반적인 허용 여부 질문은 행위/기준 경계라 기대치를 두지 않았다.
 - **에이전트 모델 스위치 `AGENT_PROVIDER`** (gemini 기본 | claude). claude면 규정 검토·감사 분석·종합 조정을 `app/agents/claude_agents.py`(공식 anthropic SDK)로 돌리고, 실패한 단계만 Gemini로 폴백한다 — 폴백이 조용히 일어나므로 `"Gemini로 폴백"` 로그를 본다. 키(`CLAUDE_API_KEY`)가 없으면 기동 시 gemini로 강제된다. Claude 토큰은 LangChain 콜백에 안 잡혀 custom 스트림(`{"usage": ...}`)으로 합산하고, 비용은 요청별 `metrics.cost_usd`로 남긴다. Claude는 한국어 입력을 Gemini의 약 1.75배 토큰으로 센다. 2026-10-13 비교: Haiku 5.5가 에이전트 11초·질의당 ~7원으로 Gemini(20초·~38원)보다 빠르고 쌌다.
 - 인용 그래프(`citation_graph.py`)는 색인의 파생물 — 문서 추가·삭제 시 자동 재생성된다. 확장은 라우터의 `needs_precedents` 판별로만 켜지고, `GRAPH_EXPANSION=0`이 킬 스위치다.
 - 문서 분류는 파일명 기준(`classify_doc`): `보고서`/`감사결과` 포함 → audit (Gemini 표 구조 추출), 그 외 → regulation (pypdf + 조항 청킹).
