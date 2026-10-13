@@ -36,7 +36,7 @@ jobs:
         run: python tests/check_all.py
 
   web:
-    name: Frontend (lint + build)
+    name: Frontend (lint + test + build)
     runs-on: ubuntu-24.04
     defaults:
       run:
@@ -55,6 +55,10 @@ jobs:
 
       - name: Lint
         run: npm run lint
+
+      # 순수 로직(한도 입력 검증·SSE 해석)만 Node 내장 러너로 — 서버·브라우저 불필요
+      - name: Unit tests
+        run: npm test
 
       - name: Build
         run: npm run build
