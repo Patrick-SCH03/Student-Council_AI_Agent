@@ -21,12 +21,14 @@ from app.agents.graph import content_to_text, graph
 from app.agents.schemas import overall_risk
 from app.config import (
     ADMIN_TOKEN,
+    AGENT_MODEL,
+    AGENT_PROVIDER,
     CLAUDE_PRICE_INPUT_PER_1M,
     CLAUDE_PRICE_OUTPUT_PER_1M,
     APP_VERSION,
     CORS_ORIGINS,
     DEFAULT_LIMITS,
-    GEMINI_MODEL,
+    GEMINI_ROUTER_MODEL,
     IP_HASH_SALT,
     MAX_INFLIGHT_TOTAL,
     MOCK_MODE,
@@ -195,7 +197,10 @@ def health():
         "version": APP_VERSION,
         "mock_mode": MOCK_MODE,
         "admin_protected": bool(ADMIN_TOKEN),
-        "model": GEMINI_MODEL,
+        # 분석·종합을 실제로 돌리는 모델. 질문 분류(router)는 공급자와 무관하게 Gemini다
+        "agent_provider": AGENT_PROVIDER,
+        "model": AGENT_MODEL,
+        "router_model": GEMINI_ROUTER_MODEL,
         "indexed_chunks": store.chunk_count(),
     }
 
@@ -364,6 +369,10 @@ async def chat(
 
         # Claude 단계는 LangChain 콜백에 잡히지 않아 custom 스트림으로 받은 사용량을 따로 모은다
         claude_usage = {"input_tokens": 0, "output_tokens": 0}
+        fallbacks: list[str] = []  # Claude가 실패해 Gemini로 넘어간 단계
+
+        def _fallback() -> str | None:
+            return ",".join(fallbacks) or None
 
         def _gemini_totals() -> tuple[int, int]:
             usage = usage_handler.usage_metadata or {}
@@ -401,6 +410,8 @@ async def chat(
                         if usage := payload.get("usage"):
                             claude_usage["input_tokens"] += int(usage.get("input_tokens", 0))
                             claude_usage["output_tokens"] += int(usage.get("output_tokens", 0))
+                        if stage := payload.get("fallback"):
+                            fallbacks.append(str(stage))
                     continue
                 if mode == "messages":
                     chunk, meta = payload
@@ -487,6 +498,7 @@ async def chat(
                 is_admin=is_admin,
                 stage_timings=_timings(),
                 cost_usd=_request_cost(),
+                fallback=_fallback(),
             )
             recorded = True
             # 잘린 답을 캐시하면 같은 질문을 한 모든 사용자에게 하루 동안 잘린 답이 나간다
@@ -516,6 +528,7 @@ async def chat(
                 error=f"{type(e).__name__}: {e}",
                 stage_timings=_timings(),
                 cost_usd=_request_cost(),
+                fallback=_fallback(),
             )
             recorded = True
             # 예외 원문(LLM 출력 조각·내부 경로가 섞일 수 있음)은 지표에만 남기고 사용자에겐 일반 문구
@@ -532,6 +545,7 @@ async def chat(
                     status="cancelled",
                     stage_timings=_timings(),
                     cost_usd=_request_cost(),
+                    fallback=_fallback(),
                     elapsed=round(time.time() - start, 2),
                     input_tokens=in_tok,
                     output_tokens=out_tok,
@@ -771,6 +785,7 @@ def get_stats(days: int = 14):
         "today_krw": round(today_usd * USD_KRW),
         "usd_krw": USD_KRW,
     }
+    stats["agent"] = {"provider": AGENT_PROVIDER, "model": AGENT_MODEL}
     return stats
 
 

@@ -32,6 +32,8 @@ type RecentRow = {
   tokens: number;
   query_preview: string;
   error: string | null;
+  // Claude가 실패해 Gemini로 넘어간 단계 (쉼표 구분)
+  fallback: string | null;
   helpful: number | null;
 };
 
@@ -53,12 +55,14 @@ type Stats = {
     input_tokens: number;
     output_tokens: number;
     errors: number;
+    fallbacks: number;
   };
   today: {
     count: number;
     avg_elapsed: number;
     input_tokens: number;
     output_tokens: number;
+    fallbacks: number;
   };
   daily: { date: string; count: number; avg_elapsed: number; tokens: number }[];
   risk: Record<string, number>;
@@ -78,7 +82,20 @@ type Stats = {
   cache: { entries: number; hits: number };
   // 최근 완료된 규정 질의의 단계별 중앙값 (초, 사고 토큰은 개수)
   stages?: Partial<Record<StageKey, number>> & { samples: number };
+  // 규정 검토·감사 분석·종합 조정을 돌리는 모델
+  agent?: { provider: string; model: string };
 };
+
+const FALLBACK_STAGE_LABELS: Record<string, string> = {
+  reviewer: "규정 검토",
+  auditor: "감사 분석",
+  coordinator: "종합 조정",
+};
+
+function fallbackTitle(fallback: string): string {
+  const stages = fallback.split(",").map((s) => FALLBACK_STAGE_LABELS[s] ?? s);
+  return `Claude 실패로 Gemini가 처리: ${stages.join(", ")}`;
+}
 
 type StageKey =
   | "router"
@@ -542,6 +559,7 @@ export default function StatsPage() {
           </h1>
           <p className="mt-1 text-sm font-medium text-slate-500">
             30초마다 자동 갱신 · 관리용 페이지
+            {stats.agent && ` · 분석 모델 ${stats.agent.model}`}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -576,7 +594,13 @@ export default function StatsPage() {
         <StatTile
           label="누적 질의"
           value={`${fmt(stats.totals.count)}건`}
-          sub={stats.totals.errors ? `오류 ${stats.totals.errors}건` : "오류 0건"}
+          sub={[
+            stats.totals.errors ? `오류 ${stats.totals.errors}건` : "오류 0건",
+            // Claude 장애로 Gemini가 대신 답한 건수 — 늘면 응답이 느려지고 비용이 커진다
+            stats.totals.fallbacks ? `Gemini 폴백 ${stats.totals.fallbacks}건` : null,
+          ]
+            .filter(Boolean)
+            .join(" · ")}
         />
         <StatTile
           label="방문자"
@@ -826,6 +850,14 @@ export default function StatsPage() {
                       </span>
                     ) : (
                       <span className="text-xs font-medium text-slate-500">—</span>
+                    )}
+                    {r.fallback && (
+                      <span
+                        className="ml-1.5 cursor-help text-xs font-bold text-amber-700"
+                        title={fallbackTitle(r.fallback)}
+                      >
+                        폴백
+                      </span>
                     )}
                   </td>
                   <td className="whitespace-nowrap px-2 py-2.5 text-xs font-medium text-slate-500">

@@ -116,6 +116,8 @@ async def _with_claude(stage: str, claude_call, gemini_call):
     # 사용자에게는 답이 끊기는 것보다 같은 규칙(프롬프트·출력 마스킹)으로 Gemini가 답하는 편이 낫다.
     except Exception as e:  # noqa: BLE001 - 상류 장애·거절·크레딧 소진 모두 Gemini로 넘긴다
         print(f"Claude {stage} 실패, Gemini로 폴백: {type(e).__name__}: {e}")
+        # 로그만 남기면 폴백이 매 요청 일어나도 대시보드엔 정상으로 보인다 (느려지고 비용 ~5배)
+        claude_agents._writer()({"fallback": stage})
         return await gemini_call()
 
 

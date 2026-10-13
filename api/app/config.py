@@ -11,7 +11,7 @@ GEMINI_API_KEY: str | None = (
     os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or None
 )
 # 릴리스 태그(v2.7.0)와 같이 올린다. /api/health로 배포본이 어떤 버전인지 확인한다.
-APP_VERSION = "2.10.1"
+APP_VERSION = "2.11.0"
 
 GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-3.7-flash")
 # 라우터는 분류 + 한 문장 재작성만 하므로 경량 모델을 쓴다.
@@ -42,6 +42,8 @@ if AGENT_PROVIDER == "claude" and not CLAUDE_API_KEY:
     # 켠 줄 알았는데 매 요청이 조용히 Gemini로 폴백하면 결과·비용을 잘못 읽는다
     print("AGENT_PROVIDER=claude인데 CLAUDE_API_KEY가 없어 gemini로 동작한다")
     AGENT_PROVIDER = "gemini"
+# 규정 검토·감사 분석·종합 조정이 실제로 쓰는 모델 (/api/health·대시보드 표시용)
+AGENT_MODEL: str = CLAUDE_MODEL if AGENT_PROVIDER == "claude" else GEMINI_MODEL
 
 # 키가 없으면 LLM·임베딩 호출 없이 전체 플로우를 검증하는 목업 모드로 동작한다.
 MOCK_MODE: bool = GEMINI_API_KEY is None
