@@ -133,7 +133,10 @@ export type HealthInfo = {
   status: string;
   version?: string;
   mock_mode: boolean;
+  // 분석·종합을 돌리는 공급자·모델 (질문 분류는 router_model)
+  agent_provider?: "gemini" | "claude";
   model: string;
+  router_model?: string;
   indexed_chunks: number;
 };
 

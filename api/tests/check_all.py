@@ -77,6 +77,18 @@ def _():
     assert main.app.version == APP_VERSION, main.app.version
 
 
+@case("/api/health가 분석 모델을 실제 공급자 기준으로 알려준다 (Claude로 돌면서 Gemini로 표시하지 않음)")
+def _():
+    from app.config import CLAUDE_MODEL, GEMINI_MODEL
+
+    with patch.object(main, "AGENT_PROVIDER", "claude"), patch.object(main, "AGENT_MODEL", CLAUDE_MODEL):
+        body = client.get("/api/health").json()
+    assert body["agent_provider"] == "claude" and body["model"] == CLAUDE_MODEL, body
+    assert body["router_model"] and body["router_model"] != CLAUDE_MODEL, body
+    body = client.get("/api/health").json()  # 테스트 환경 기본값 (키 없음 → gemini)
+    assert body["agent_provider"] == "gemini" and body["model"] == GEMINI_MODEL, body
+
+
 @case("실명이 든 질문은 LLM 없이 입구에서 거절 (띄어쓰기 변형 포함)")
 def _():
     for q in ("홍길동 학생회장이 받은 처분 알려줘", "홍 길동 처분 내역"):
@@ -415,7 +427,10 @@ def _():
     with patch.object(gr, "AGENT_PROVIDER", "claude"):
         assert _run(gr._with_claude("x", ok, gemini)) == "C" and calls == ["claude"]
         calls.clear()
-        assert _run(gr._with_claude("x", boom, gemini)) == "G" and calls == ["claude", "gemini"]
+        sent = []
+        with patch.object(ca, "_writer", return_value=sent.append):
+            assert _run(gr._with_claude("x", boom, gemini)) == "G" and calls == ["claude", "gemini"]
+        assert sent == [{"fallback": "x"}], f"폴백이 지표로 전달되지 않았다: {sent}"
         calls.clear()
         try:
             _run(gr._with_claude("x", partial, gemini))
@@ -485,6 +500,28 @@ def _():
     assert abs(cost - main.CLAUDE_PRICE_INPUT_PER_1M) < 1e-9, cost
     stats = client.get("/api/stats", headers=AUTH).json()["cost"]
     assert stats["total_usd"] >= round(main.CLAUDE_PRICE_INPUT_PER_1M, 4) - 1e-4, stats
+
+
+@case("Gemini 폴백은 요청 지표에 단계별로 남고 대시보드 집계·최근 질의에 보인다")
+def _():
+    class FakeGraph:
+        async def astream(self, *a, **kw):
+            yield ("updates", {"router": {"route": "regulation", "standalone_query": "q"}})
+            yield ("custom", {"fallback": "reviewer"})
+            yield ("custom", {"fallback": "auditor"})
+            yield ("updates", {"coordinator": {"final_markdown": "답변"}})
+
+    before = client.get("/api/stats", headers=AUTH).json()["totals"]["fallbacks"]
+    with patch.object(main, "graph", FakeGraph()):
+        client.post("/api/chat", json={"query": "폴백 기록 테스트 질문"})
+    with db._connect() as conn:
+        fallback = conn.execute("SELECT fallback FROM metrics ORDER BY id DESC LIMIT 1").fetchone()[0]
+    assert fallback == "reviewer,auditor", fallback
+    stats = client.get("/api/stats", headers=AUTH).json()
+    assert stats["totals"]["fallbacks"] == before + 1, stats["totals"]
+    assert stats["today"]["fallbacks"] >= 1, stats["today"]
+    assert stats["recent"][0]["fallback"] == "reviewer,auditor", stats["recent"][0]
+    assert stats["agent"]["provider"] in ("gemini", "claude"), stats.get("agent")
 
 
 @case("/api/history의 limit은 1~100으로 고정된다 (음수는 SQLite 무제한)")

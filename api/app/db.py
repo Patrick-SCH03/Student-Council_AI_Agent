@@ -87,6 +87,8 @@ def _connect() -> sqlite3.Connection:
         "ALTER TABLE metrics ADD COLUMN stage_timings TEXT",
         # 요청별 추정 비용(USD). 모델 공급자가 섞이면 토큰 합 × 한 단가로는 비용을 낼 수 없다.
         "ALTER TABLE metrics ADD COLUMN cost_usd REAL",
+        # Claude가 실패해 Gemini로 넘어간 단계 (쉼표 구분). 폴백은 조용히 일어나 로그만으로는 놓친다.
+        "ALTER TABLE metrics ADD COLUMN fallback TEXT",
     ):
         try:
             conn.execute(stmt)
@@ -160,12 +162,13 @@ def record_metric(
     error: str | None = None,
     stage_timings: dict | None = None,
     cost_usd: float | None = None,
+    fallback: str | None = None,
 ) -> None:
     with _connect() as conn:
         conn.execute(
             "INSERT INTO metrics (ts, route, risk_level, status, elapsed, input_tokens, output_tokens, "
-            "query_preview, analysis_id, visitor_id, ip_hash, is_admin, error, stage_timings, cost_usd) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "query_preview, analysis_id, visitor_id, ip_hash, is_admin, error, stage_timings, cost_usd, fallback) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 _now(), route, risk_level, status, elapsed, input_tokens, output_tokens,
                 # 자르기 전에 마스킹한다 — 잘린 경계에 걸친 이름·번호가 남지 않도록
@@ -173,6 +176,7 @@ def record_metric(
                 (error or None) and mask_text(error)[:300],
                 json.dumps(stage_timings) if stage_timings else None,
                 cost_usd,
+                fallback,
             ),
         )
 
@@ -379,7 +383,8 @@ def get_stats(days: int = 14) -> dict:
             "COALESCE(SUM(CASE WHEN cost_usd IS NULL THEN input_tokens END), 0) AS legacy_input_tokens, "
             "COALESCE(SUM(CASE WHEN cost_usd IS NULL THEN output_tokens END), 0) AS legacy_output_tokens, "
             # 'cached'는 정상 응답이므로 오류로 세지 않는다
-            "COALESCE(SUM(CASE WHEN status NOT IN ('ok', 'cached', 'cancelled') THEN 1 ELSE 0 END), 0) AS errors "
+            "COALESCE(SUM(CASE WHEN status NOT IN ('ok', 'cached', 'cancelled') THEN 1 ELSE 0 END), 0) AS errors, "
+            "COUNT(fallback) AS fallbacks "
             "FROM metrics"
         ).fetchone())
 
@@ -395,7 +400,8 @@ def get_stats(days: int = 14) -> dict:
             "COALESCE(SUM(CASE WHEN cost_usd IS NULL THEN output_tokens END), 0) AS legacy_output_tokens, "
             # IP 상한이 실제로 클라이언트를 구분하는지 확인하는 용도.
             # 프록시가 실제 IP를 넘겨주지 않으면 트래픽이 늘어도 1에서 멈춘다.
-            "COUNT(DISTINCT ip_hash) AS unique_ips "
+            "COUNT(DISTINCT ip_hash) AS unique_ips, "
+            "COUNT(fallback) AS fallbacks "
             f"FROM metrics WHERE {_TODAY}"
         ).fetchone())
 
@@ -419,7 +425,7 @@ def get_stats(days: int = 14) -> dict:
 
         recent = [dict(r) for r in conn.execute(
             "SELECT m.id, m.analysis_id, m.ts, m.route, m.risk_level, m.status, m.elapsed, "
-            "m.input_tokens + m.output_tokens AS tokens, m.query_preview, m.error, f.helpful "
+            "m.input_tokens + m.output_tokens AS tokens, m.query_preview, m.error, m.fallback, f.helpful "
             "FROM metrics m LEFT JOIN feedback f ON f.analysis_id = m.analysis_id "
             "ORDER BY m.id DESC LIMIT 20"
         ).fetchall()]

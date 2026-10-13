@@ -42,6 +42,8 @@ if AGENT_PROVIDER == "claude" and not CLAUDE_API_KEY:
     # 켠 줄 알았는데 매 요청이 조용히 Gemini로 폴백하면 결과·비용을 잘못 읽는다
     print("AGENT_PROVIDER=claude인데 CLAUDE_API_KEY가 없어 gemini로 동작한다")
     AGENT_PROVIDER = "gemini"
+# 규정 검토·감사 분석·종합 조정이 실제로 쓰는 모델 (/api/health·대시보드 표시용)
+AGENT_MODEL: str = CLAUDE_MODEL if AGENT_PROVIDER == "claude" else GEMINI_MODEL
 
 # 키가 없으면 LLM·임베딩 호출 없이 전체 플로우를 검증하는 목업 모드로 동작한다.
 MOCK_MODE: bool = GEMINI_API_KEY is None
