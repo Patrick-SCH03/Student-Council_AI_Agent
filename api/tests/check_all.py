@@ -487,7 +487,7 @@ def _():
             yield ("updates", {"router": {"route": "regulation", "standalone_query": "q"}})
             yield ("custom", {"token": "연락처는 010-1234-5678 "})
             yield ("custom", {"token": "입니다."})
-            yield ("custom", {"usage": {"input_tokens": 1_000_000, "output_tokens": 0}})
+            yield ("custom", {"usage": {"model": "claude-haiku-5-5", "input_tokens": 1_000_000, "output_tokens": 0}})
             yield ("updates", {"coordinator": {"final_markdown": "연락처는 010-1234-5678 입니다."}})
 
     with patch.object(main, "graph", FakeGraph()):
@@ -497,9 +497,9 @@ def _():
     assert '"type": "token"' in body
     with db._connect() as conn:
         cost = conn.execute("SELECT cost_usd FROM metrics ORDER BY id DESC LIMIT 1").fetchone()[0]
-    assert abs(cost - main.CLAUDE_PRICE_INPUT_PER_1M) < 1e-9, cost
+    assert abs(cost - 0.10) < 1e-9, f"Haiku 입력 100만 토큰은 $0.10이어야 한다: {cost}"
     stats = client.get("/api/stats", headers=AUTH).json()["cost"]
-    assert stats["total_usd"] >= round(main.CLAUDE_PRICE_INPUT_PER_1M, 4) - 1e-4, stats
+    assert stats["total_usd"] >= 0.10 - 1e-4, stats
 
 
 @case("Gemini 폴백은 요청 지표에 단계별로 남고 대시보드 집계·최근 질의에 보인다")
@@ -552,6 +552,42 @@ def _():
     finally:
         conn.close()
     assert n == 1, "스냅샷에 최근 기록이 없다"
+
+
+@case("비용은 모델별 단가·캐시 적중 할인·할인 종료일을 반영한다 (한 단가로 뭉뚱그리지 않음)")
+def _():
+    from datetime import date
+
+    from app import pricing
+
+    oct_ = date(2026, 10, 14)
+    flash = pricing.cost_usd("gemini-3.7-flash", 1_000_000, 0, on=oct_)
+    lite = pricing.cost_usd("models/gemini-3.5-flash-lite", 1_000_000, 0, on=oct_)
+    assert abs(flash - 0.75) < 1e-9 and abs(lite - 0.30) < 1e-9, (flash, lite)
+    # 입력 100만 중 80만이 캐시 적중이면 20만 × 정가 + 80만 × 캐시 단가
+    cached = pricing.cost_usd("gemini-3.7-flash", 1_000_000, 0, cached_tokens=800_000, on=oct_)
+    assert abs(cached - (0.2 * 0.75 + 0.8 * 0.075)) < 1e-9, cached
+    assert abs(pricing.cost_usd("gemini-3.7-flash", 0, 1_000_000, on=date(2027, 1, 1)) - 7.50) < 1e-9
+    unknown = pricing.cost_usd("gemini-9-ultra", 1_000_000, 0, on=oct_)
+    assert unknown >= max(r[0][1] for r in pricing.PRICES.values()), "모르는 모델을 싸게 매겼다"
+    usage = {
+        "gemini-3.5-flash-lite": {"input_tokens": 1000, "output_tokens": 100},
+        "gemini-3.7-flash": {"input_tokens": 2000, "output_tokens": 200, "input_token_details": {"cache_read": 1000}},
+    }
+    expected = pricing.cost_usd("gemini-3.5-flash-lite", 1000, 100) + pricing.cost_usd("gemini-3.7-flash", 2000, 200, 1000)
+    assert abs(pricing.langchain_usage_cost(usage) - expected) < 1e-12
+
+
+@case("대시보드 비용은 달러로만 내려주고, 캐시 응답은 비용 0으로 기록된다")
+def _():
+    query = "캐시 비용 기록 테스트 질문"
+    with patch.object(main.db, "get_cached_answer", return_value={"route": "regulation", "final_markdown": "x"}):
+        client.post("/api/chat", json={"query": query})
+    with db._connect() as conn:
+        status, cost = conn.execute("SELECT status, cost_usd FROM metrics ORDER BY id DESC LIMIT 1").fetchone()
+    assert status == "cached" and cost == 0.0, (status, cost)
+    c = client.get("/api/stats", headers=AUTH).json()["cost"]
+    assert set(c) == {"total_usd", "today_usd", "estimated_usd"}, c
 
 
 @case("/api/history의 limit은 1~100으로 고정된다 (음수는 SQLite 무제한)")

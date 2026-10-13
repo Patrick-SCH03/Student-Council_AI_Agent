@@ -73,9 +73,8 @@ type Stats = {
   cost: {
     total_usd: number;
     today_usd: number;
-    total_krw: number;
-    today_krw: number;
-    usd_krw: number;
+    // total_usd 중 모델별 기록 없이 토큰 합으로 추정한 몫 (요청별 비용 기록 이전)
+    estimated_usd: number;
   };
   limits: Limits;
   feedback: Feedback;
@@ -165,6 +164,12 @@ const RISK_STYLE: Record<string, { dot: string; chip: string }> = {
 
 function fmt(n: number): string {
   return n.toLocaleString("ko-KR");
+}
+
+/** 비용은 달러로만 표시한다. 1달러 미만은 질의 몇 건의 차이가 보이도록 소수 넷째 자리까지. */
+function usd(n: number): string {
+  if (n === 0) return "$0";
+  return `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: n < 1 ? 4 : 2 })}`;
 }
 
 function StatTile({ label, value, sub }: { label: string; value: string; sub?: string }) {
@@ -608,9 +613,15 @@ export default function StatsPage() {
           sub={`누적 ${fmt(stats.visits.total_visitors)}명 · 총 방문 ${fmt(stats.visits.total_visits)}회`}
         />
         <StatTile
-          label="예상 API 비용"
-          value={`₩${fmt(stats.cost.total_krw)}`}
-          sub={`오늘 ₩${fmt(stats.cost.today_krw)} · $${stats.cost.total_usd.toFixed(2)}`}
+          label="예상 API 비용 (USD)"
+          value={usd(stats.cost.total_usd)}
+          sub={[
+            `오늘 ${usd(stats.cost.today_usd)}`,
+            // 요청별 비용 기록 이전 행은 모델 구분 없이 토큰 합으로 추정한 값이다
+            stats.cost.estimated_usd ? `토큰 합 추정분 ${usd(stats.cost.estimated_usd)} 포함` : null,
+          ]
+            .filter(Boolean)
+            .join(" · ")}
         />
         <StatTile
           label="토큰 사용량"

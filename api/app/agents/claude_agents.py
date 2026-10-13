@@ -52,7 +52,9 @@ def _report_usage(write: Callable[[dict], None], usage) -> None:
     write({"usage": {
         "provider": "claude",
         "model": CLAUDE_MODEL,
-        "input_tokens": usage.input_tokens or 0,
+        # Claude의 input_tokens는 캐시 적중분을 뺀 값이라 합쳐서 넘긴다 (pricing.cost_usd 규약)
+        "input_tokens": (usage.input_tokens or 0) + (getattr(usage, "cache_read_input_tokens", 0) or 0),
+        "cached_tokens": getattr(usage, "cache_read_input_tokens", 0) or 0,
         "output_tokens": usage.output_tokens or 0,
     }})
 

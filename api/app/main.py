@@ -10,7 +10,7 @@ import secrets
 import tempfile
 import time
 import zipfile
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, UploadFile
@@ -20,15 +20,13 @@ from langchain_core.callbacks import UsageMetadataCallbackHandler
 from pydantic import BaseModel, Field, field_validator
 from starlette.datastructures import MutableHeaders
 
-from app import db
+from app import db, pricing
 from app.agents.graph import content_to_text, graph
 from app.agents.schemas import overall_risk
 from app.config import (
     ADMIN_TOKEN,
     AGENT_MODEL,
     AGENT_PROVIDER,
-    CLAUDE_PRICE_INPUT_PER_1M,
-    CLAUDE_PRICE_OUTPUT_PER_1M,
     APP_VERSION,
     CORS_ORIGINS,
     DEFAULT_LIMITS,
@@ -37,11 +35,8 @@ from app.config import (
     MAX_INFLIGHT_TOTAL,
     MOCK_MODE,
     OCR_CACHE_DIR,
-    PRICE_INPUT_PER_1M,
-    PRICE_OUTPUT_PER_1M,
     RETENTION_DAYS,
     SIGNING_KEY_IS_PUBLIC,
-    USD_KRW,
 )
 from app.privacy import PRIVATE_NAMES, StreamMasker, mask_obj, mask_text
 from app.rag import citation_graph, store
@@ -335,6 +330,7 @@ async def chat(
                     elapsed=0.0,
                     input_tokens=0,
                     output_tokens=0,
+                    cost_usd=0.0,  # LLM 미호출 — 비용 기록이 없는 옛 행과 구분한다
                     query_preview=query,
                     analysis_id=cached.get("analysis_id"),
                     visitor_id=visitor_id,
@@ -373,7 +369,7 @@ async def chat(
             return _stage_timings(start, marks, usage_handler.usage_metadata or {})
 
         # Claude 단계는 LangChain 콜백에 잡히지 않아 custom 스트림으로 받은 사용량을 따로 모은다
-        claude_usage = {"input_tokens": 0, "output_tokens": 0}
+        claude_usage = {"input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0}
         fallbacks: list[str] = []  # Claude가 실패해 Gemini로 넘어간 단계
 
         def _fallback() -> str | None:
@@ -391,11 +387,8 @@ async def chat(
             return g_in + claude_usage["input_tokens"], g_out + claude_usage["output_tokens"]
 
         def _request_cost() -> float:
-            g_in, g_out = _gemini_totals()
-            return _cost_usd(g_in, g_out) + (
-                claude_usage["input_tokens"] / 1_000_000 * CLAUDE_PRICE_INPUT_PER_1M
-                + claude_usage["output_tokens"] / 1_000_000 * CLAUDE_PRICE_OUTPUT_PER_1M
-            )
+            # 모델별 단가 + 캐시 적중 할인. 질문 분류(Flash-Lite)와 폴백(Flash)이 섞여도 각각 매긴다
+            return pricing.langchain_usage_cost(usage_handler.usage_metadata) + claude_usage["cost_usd"]
 
         try:
             yield _sse({"type": "stage", "label": "질문 분석 중..."})
@@ -413,8 +406,14 @@ async def chat(
                             if visible := masker.feed(text):
                                 yield _sse({"type": "token", "content": visible})
                         if usage := payload.get("usage"):
-                            claude_usage["input_tokens"] += int(usage.get("input_tokens", 0))
-                            claude_usage["output_tokens"] += int(usage.get("output_tokens", 0))
+                            in_tok = int(usage.get("input_tokens", 0))
+                            out_tok = int(usage.get("output_tokens", 0))
+                            claude_usage["input_tokens"] += in_tok
+                            claude_usage["output_tokens"] += out_tok
+                            claude_usage["cost_usd"] += pricing.cost_usd(
+                                usage.get("model") or AGENT_MODEL, in_tok, out_tok,
+                                int(usage.get("cached_tokens", 0)),
+                            )
                         if stage := payload.get("fallback"):
                             fallbacks.append(str(stage))
                     continue
@@ -763,11 +762,14 @@ def _memory_mb() -> dict:
     }
 
 
-def _cost_usd(input_tokens: int, output_tokens: int) -> float:
-    return (
-        input_tokens / 1_000_000 * PRICE_INPUT_PER_1M
-        + output_tokens / 1_000_000 * PRICE_OUTPUT_PER_1M
-    )
+# 요청별 비용(cost_usd)을 남기기 전(~v2.8) 행은 모델·캐시 구분 없이 토큰 합만 있다. 그때 분석 모델이던
+# Flash의 당시 단가로 한 번에 매긴다 — 질문 분류(Flash-Lite)까지 Flash로 세므로 실제보다 약간 높다.
+_LEGACY_MODEL = "gemini-3.7-flash"
+_LEGACY_PRICED_ON = date(2026, 10, 13)
+
+
+def _legacy_cost_usd(input_tokens: int, output_tokens: int) -> float:
+    return pricing.cost_usd(_LEGACY_MODEL, input_tokens, output_tokens, on=_LEGACY_PRICED_ON)
 
 
 class SettingsRequest(BaseModel):
@@ -808,17 +810,16 @@ def get_stats(days: int = 14):
     stats = db.get_stats(min(max(days, 1), 90))
     stats["limits"] = {**db.get_settings(DEFAULT_LIMITS), "used_today": db.count_today()}
     stats["memory"] = _memory_mb()
-    # 요청별 비용(cost_usd)이 있는 행은 그 값을, 도입 전 행은 토큰 × Gemini 단가로 합산한다
-    total_usd = stats["totals"]["cost_usd"] + _cost_usd(
+    # 요청별 비용(cost_usd)이 있는 행은 그 값을, 도입 전 행은 토큰 합으로 추정해 더한다 (USD만 쓴다)
+    legacy_usd = _legacy_cost_usd(
         stats["totals"]["legacy_input_tokens"], stats["totals"]["legacy_output_tokens"])
-    today_usd = stats["today"]["cost_usd"] + _cost_usd(
+    today_legacy_usd = _legacy_cost_usd(
         stats["today"]["legacy_input_tokens"], stats["today"]["legacy_output_tokens"])
     stats["cost"] = {
-        "total_usd": round(total_usd, 4),
-        "today_usd": round(today_usd, 4),
-        "total_krw": round(total_usd * USD_KRW),
-        "today_krw": round(today_usd * USD_KRW),
-        "usd_krw": USD_KRW,
+        "total_usd": round(stats["totals"]["cost_usd"] + legacy_usd, 4),
+        "today_usd": round(stats["today"]["cost_usd"] + today_legacy_usd, 4),
+        # 위 합계 중 모델별 기록 없이 토큰 합으로 추정한 몫
+        "estimated_usd": round(legacy_usd, 4),
     }
     stats["agent"] = {"provider": AGENT_PROVIDER, "model": AGENT_MODEL}
     return stats
