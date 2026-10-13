@@ -14,6 +14,8 @@ os.environ["GEMINI_API_KEY"] = ""
 os.environ["GOOGLE_API_KEY"] = ""
 os.environ["DATA_DIR"] = str(API_DIR / "data-mock")
 os.environ["CORS_ORIGINS"] = "http://localhost:3000"
+# 운영 관리자 토큰(api/.env)을 로컬 화면에 입력하지 않도록 목업 전용 값으로 덮는다
+os.environ["ADMIN_TOKEN"] = "mock-admin"
 
 import uvicorn  # noqa: E402  (환경 설정 후에 임포트)
 
