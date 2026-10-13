@@ -16,5 +16,11 @@ COPY ingest_folder.py .
 #   - Docker Compose: deploy/docker-compose.yml 에서 api-data:/data 로 마운트
 ENV DATA_DIR=/data
 
+# 서버 프로세스는 root가 아닌 app 사용자로 돈다 (전환은 docker-entrypoint.sh)
+RUN useradd --system --no-create-home --shell /usr/sbin/nologin app
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
 EXPOSE 8000
+ENTRYPOINT ["docker-entrypoint.sh"]
 CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]

@@ -171,7 +171,7 @@ flowchart LR
 | **개⁠인⁠정⁠보 보⁠호** | 실명이 든 질문은 입구에서 거절하고, 출력 직전 실명·전화·계좌·이메일을 한 번 더 지웁니다 |
 | **도⁠메⁠인 가⁠드** | 학생회 업무 밖 질문은 LLM 호출 없이 안내합니다 |
 | **비⁠용 방⁠어** | 전체·사용자·IP 기준 일일 한도, 동시 실행 상한, 반복 질문 캐시 |
-| **품⁠질 검⁠증** | 키·서버 없이 도는 회귀 테스트 39건을 CI가 매 push마다, 평가셋 51건은 배포 전에 실행합니다 |
+| **품⁠질 검⁠증** | 키·서버 없이 도는 회귀 테스트 40건을 CI가 매 push마다, 평가셋 51건은 배포 전에 실행합니다 |
 | **운⁠영 대⁠시⁠보⁠드** | 질의 수·응답 시간·토큰·비용·방문자·메모리를 자체 계측합니다 (`/stats`, 관리자 전용) |
 
 ---
@@ -187,13 +187,14 @@ flowchart LR
 │   │   ├── privacy.py            # 실명 거절 · 출력 마스킹
 │   │   ├── db.py                 # 분석 이력 · 운영 지표 · 답변 캐시
 │   │   └── config.py             # 환경변수 · 기본 한도
-│   ├── tests/check_all.py        # 회귀 테스트 39건 (키·서버 없이)
+│   ├── tests/check_all.py        # 회귀 테스트 40건 (키·서버 없이)
 │   ├── smoke_test.py             # 목업 스모크 테스트
 │   ├── evaluate.py               # 답변·검색 품질 평가
 │   ├── evalset.json              # 평가셋 51건 (기대 라우팅·근거·키워드·위험도)
 │   ├── evalset_multihop.json     # 판례 집계 평가셋 9건
 │   ├── ingest_folder.py          # documents/ ↔ 색인 동기화
 │   ├── upload_to_remote.py       # 배포 서버로 문서 업로드
+│   ├── backup_remote.py          # 배포 서버의 SQLite·OCR 캐시를 받아 로컬에 보관
 │   └── requirements-lock.txt     # 배포본에서 검증한 전체 의존성 버전 (Docker·CI가 사용)
 ├── web/src/
 │   ├── app/                      # page.tsx(채팅) · stats/(운영 대시보드)
@@ -213,6 +214,7 @@ flowchart LR
 | `POST` | `/api/feedback` | — | 답변 평가 (도움됨 / 부족함) |
 | `POST` | `/api/track` | — | 방문 기록 (방문자당 하루 1회) |
 | `GET` | `/api/stats` · `/api/stats/export` | 필요 | 운영 지표 · CSV 내보내기 |
+| `GET` | `/api/backup` | 필요 | SQLite 스냅샷 + OCR 캐시 zip (색인은 문서로 재생성) |
 | `GET` | `/api/history` · `/api/analyses/{id}` | 필요 | 분석 이력 |
 | `POST` `GET` `DELETE` | `/api/documents` | 필요 | 문서 색인 관리 |
 | `GET` `PUT` | `/api/settings` | 필요 | 일일 한도·캐시 TTL 조회 및 변경 |

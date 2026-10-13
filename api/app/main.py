@@ -3,15 +3,19 @@
 import asyncio
 import hashlib
 import hmac
+import io
 import json
 import re
 import secrets
+import tempfile
 import time
+import zipfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import PlainTextResponse, StreamingResponse
+from fastapi.responses import PlainTextResponse, Response, StreamingResponse
 from langchain_core.callbacks import UsageMetadataCallbackHandler
 from pydantic import BaseModel, Field, field_validator
 from starlette.datastructures import MutableHeaders
@@ -32,6 +36,7 @@ from app.config import (
     IP_HASH_SALT,
     MAX_INFLIGHT_TOTAL,
     MOCK_MODE,
+    OCR_CACHE_DIR,
     PRICE_INPUT_PER_1M,
     PRICE_OUTPUT_PER_1M,
     RETENTION_DAYS,
@@ -679,6 +684,36 @@ class TrackRequest(BaseModel):
 def track_visit(request: TrackRequest):
     db.add_visit(request.visitor_id)
     return {"ok": True}
+
+
+@app.get("/api/backup", dependencies=[admin_only])
+def download_backup():
+    """되살릴 수 없는 운영 데이터를 zip 하나로 내려준다 (backup_remote.py가 받아 로컬에 보관).
+
+    담는 것: SQLite(지표·분석·피드백·설정·방문)와 OCR 캐시. 색인(Chroma)·인용 그래프는 문서로
+    다시 만들 수 있어 뺀다 — OCR 캐시가 있으면 재색인 때 OCR(약 750원)을 다시 부르지 않는다.
+    Railway 볼륨 백업은 Pro 요금제 전용이라 쓰지 않는다.
+    """
+    buffer = io.BytesIO()
+    with tempfile.TemporaryDirectory() as tmp:
+        db_copy = Path(tmp) / "app.sqlite3"
+        db.snapshot(str(db_copy))
+        ocr_files = sorted(OCR_CACHE_DIR.glob("*.txt"))
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.write(db_copy, "app.sqlite3")
+            for f in ocr_files:
+                zf.write(f, f"ocr_cache/{f.name}")
+            zf.writestr("manifest.json", json.dumps({
+                "version": APP_VERSION,
+                "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "ocr_cache_files": len(ocr_files),
+            }))
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    return Response(
+        buffer.getvalue(),
+        media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename=backup-{stamp}.zip"},
+    )
 
 
 @app.get("/api/stats/export", dependencies=[admin_only])

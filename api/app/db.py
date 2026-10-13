@@ -530,6 +530,17 @@ def _ts_column(conn: sqlite3.Connection, table: str) -> str:
     return "ts" if "ts" in cols else "created_at"
 
 
+def snapshot(dest: str) -> None:
+    """운영 중인 DB를 일관된 한 시점으로 복사한다 (백업용).
+
+    파일을 그대로 복사하면 쓰기 도중의 페이지가 섞일 수 있다. SQLite 온라인 백업 API는
+    진행 중인 쓰기와 충돌하지 않게 페이지 단위로 복사한다.
+    """
+    with _connect() as src, sqlite3.connect(dest) as dst:
+        src.backup(dst)
+    dst.close()
+
+
 def purge_old(days: int) -> dict[str, int]:
     """보존 기간이 지난 지표·방문·분석 기록을 지운다. 답변 캐시는 7일이 지나면 지운다.
 
