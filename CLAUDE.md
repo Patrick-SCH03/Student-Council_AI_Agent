@@ -26,7 +26,7 @@
 ```bash
 cd api
 .venv/Scripts/python.exe smoke_test.py              # 강제 목업 스모크 (임시 DATA_DIR, CI와 동일)
-.venv/Scripts/python.exe tests/check_all.py         # 회귀 테스트 32건 (키·서버 없이, CI와 동일)
+.venv/Scripts/python.exe tests/check_all.py         # 회귀 테스트 37건 (키·서버 없이, CI와 동일)
 .venv/Scripts/python.exe evaluate.py --retrieval    # 검색 지표(MRR·순위), 실제 색인·임베딩, LLM 미호출
 .venv/Scripts/python.exe evaluate.py --multihop     # 인용 그래프 A/B(판례 커버리지), 실제 색인·임베딩, LLM 미호출
 .venv/Scripts/python.exe ingest_folder.py           # documents/ ↔ 로컬 색인 동기화
@@ -50,6 +50,7 @@ Windows 주의: 인터프리터는 `api/.venv/Scripts/python.exe`(Python 3.12, �
 - 피드백은 결과 이벤트의 `feedback_token`(HMAC 서명)이 있어야 받는다 — 순번 `analysis_id`만으로는 남의 답변을 평가할 수 없다.
 - 프론트 CSP는 `next.config.ts`에서 백엔드 주소로만 통신을 허용한다(`connect-src`). 새 외부 서비스를 부르면 여기에 추가해야 한다.
 - 최종 위험도는 두 에이전트 판정 중 **높은 쪽**(`overall_risk`)이라, 한쪽이 가정한 위반을 매기면 단순 절차 문의도 '높음'이 된다. 프롬프트의 `JUDGMENT_RULE`이 "판정은 사용자의 행위에 대해서만"을 강제한다 — 위험도 관련 프롬프트를 고치면 평가셋의 `expect_risk` 케이스(절차 문의 = 낮음, 위반 전제 = 높음/보통)를 함께 돌린다.
+- **에이전트 모델 스위치 `AGENT_PROVIDER`** (gemini 기본 | claude). claude면 규정 검토·감사 분석·종합 조정을 `app/agents/claude_agents.py`(공식 anthropic SDK)로 돌리고, 실패한 단계만 Gemini로 폴백한다 — 폴백이 조용히 일어나므로 `"Gemini로 폴백"` 로그를 본다. 키(`CLAUDE_API_KEY`)가 없으면 기동 시 gemini로 강제된다. Claude 토큰은 LangChain 콜백에 안 잡혀 custom 스트림(`{"usage": ...}`)으로 합산하고, 비용은 요청별 `metrics.cost_usd`로 남긴다. Claude는 한국어 입력을 Gemini의 약 1.75배 토큰으로 센다. 2026-10-13 비교: Haiku 5.5가 에이전트 11초·질의당 ~7원으로 Gemini(20초·~38원)보다 빠르고 쌌다.
 - 인용 그래프(`citation_graph.py`)는 색인의 파생물 — 문서 추가·삭제 시 자동 재생성된다. 확장은 라우터의 `needs_precedents` 판별로만 켜지고, `GRAPH_EXPANSION=0`이 킬 스위치다.
 - 문서 분류는 파일명 기준(`classify_doc`): `보고서`/`감사결과` 포함 → audit (Gemini 표 구조 추출), 그 외 → regulation (pypdf + 조항 청킹).
 - `documents/`는 git 제외(내부 문서). 로컬 색인과 배포 색인은 **별개** — 배포 반영은 `upload_to_remote.py`.
