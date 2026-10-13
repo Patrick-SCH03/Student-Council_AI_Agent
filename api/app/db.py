@@ -85,6 +85,8 @@ def _connect() -> sqlite3.Connection:
         "ALTER TABLE metrics ADD COLUMN error TEXT",
         # 단계별 소요 시간(초)·사고 토큰 JSON. 응답이 느려졌을 때 어느 단계인지 가른다.
         "ALTER TABLE metrics ADD COLUMN stage_timings TEXT",
+        # 요청별 추정 비용(USD). 모델 공급자가 섞이면 토큰 합 × 한 단가로는 비용을 낼 수 없다.
+        "ALTER TABLE metrics ADD COLUMN cost_usd REAL",
     ):
         try:
             conn.execute(stmt)
@@ -157,18 +159,20 @@ def record_metric(
     is_admin: bool = False,
     error: str | None = None,
     stage_timings: dict | None = None,
+    cost_usd: float | None = None,
 ) -> None:
     with _connect() as conn:
         conn.execute(
             "INSERT INTO metrics (ts, route, risk_level, status, elapsed, input_tokens, output_tokens, "
-            "query_preview, analysis_id, visitor_id, ip_hash, is_admin, error, stage_timings) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "query_preview, analysis_id, visitor_id, ip_hash, is_admin, error, stage_timings, cost_usd) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 _now(), route, risk_level, status, elapsed, input_tokens, output_tokens,
                 # 자르기 전에 마스킹한다 — 잘린 경계에 걸친 이름·번호가 남지 않도록
                 mask_text(query_preview)[:500], analysis_id, visitor_id, ip_hash, int(is_admin),
                 (error or None) and mask_text(error)[:300],
                 json.dumps(stage_timings) if stage_timings else None,
+                cost_usd,
             ),
         )
 
@@ -370,6 +374,10 @@ def get_stats(days: int = 14) -> dict:
             "COALESCE(AVG(CASE WHEN status != 'cached' THEN elapsed END), 0) AS avg_elapsed, "
             "COALESCE(SUM(input_tokens), 0) AS input_tokens, "
             "COALESCE(SUM(output_tokens), 0) AS output_tokens, "
+            "COALESCE(SUM(cost_usd), 0) AS cost_usd, "
+            # cost_usd 도입 전 행은 토큰으로 비용을 추정한다 (main.py가 Gemini 단가로 환산)
+            "COALESCE(SUM(CASE WHEN cost_usd IS NULL THEN input_tokens END), 0) AS legacy_input_tokens, "
+            "COALESCE(SUM(CASE WHEN cost_usd IS NULL THEN output_tokens END), 0) AS legacy_output_tokens, "
             # 'cached'는 정상 응답이므로 오류로 세지 않는다
             "COALESCE(SUM(CASE WHEN status NOT IN ('ok', 'cached', 'cancelled') THEN 1 ELSE 0 END), 0) AS errors "
             "FROM metrics"
@@ -381,6 +389,10 @@ def get_stats(days: int = 14) -> dict:
             "COALESCE(AVG(CASE WHEN status != 'cached' THEN elapsed END), 0) AS avg_elapsed, "
             "COALESCE(SUM(input_tokens), 0) AS input_tokens, "
             "COALESCE(SUM(output_tokens), 0) AS output_tokens, "
+            "COALESCE(SUM(cost_usd), 0) AS cost_usd, "
+            # cost_usd 도입 전 행은 토큰으로 비용을 추정한다 (main.py가 Gemini 단가로 환산)
+            "COALESCE(SUM(CASE WHEN cost_usd IS NULL THEN input_tokens END), 0) AS legacy_input_tokens, "
+            "COALESCE(SUM(CASE WHEN cost_usd IS NULL THEN output_tokens END), 0) AS legacy_output_tokens, "
             # IP 상한이 실제로 클라이언트를 구분하는지 확인하는 용도.
             # 프록시가 실제 IP를 넘겨주지 않으면 트래픽이 늘어도 1에서 멈춘다.
             "COUNT(DISTINCT ip_hash) AS unique_ips "

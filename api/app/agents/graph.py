@@ -26,6 +26,7 @@ from app.agents.schemas import (
     RouteDecision,
 )
 from app.config import (
+    AGENT_PROVIDER,
     AGENT_THINKING,
     GEMINI_API_KEY,
     GEMINI_MODEL,
@@ -94,6 +95,26 @@ def _get_llm(model: str | None = None, thinking: str | None = None):
             model=key[0], google_api_key=GEMINI_API_KEY, **kwargs
         )
     return _llm_cache[key]
+
+
+async def _with_claude(stage: str, claude_call, gemini_call):
+    """AGENT_PROVIDER=claude면 Claude로, 실패하면 그 단계만 Gemini로 돌린다.
+
+    토큰을 이미 흘린 뒤 실패한 종합 조정(StreamStarted)은 다시 쓰면 답이 두 번 나오므로 폴백하지 않는다.
+    """
+    if AGENT_PROVIDER != "claude":
+        return await gemini_call()
+    from app.agents import claude_agents
+
+    try:
+        return await claude_call(claude_agents)
+    except claude_agents.StreamStarted:
+        raise
+    # 안전 분류기 거절(ClaudeRefusal)도 폴백한다: 학생회 규정 질의에서 거절은 오탐일 가능성이 높고,
+    # 사용자에게는 답이 끊기는 것보다 같은 규칙(프롬프트·출력 마스킹)으로 Gemini가 답하는 편이 낫다.
+    except Exception as e:  # noqa: BLE001 - 상류 장애·거절·크레딧 소진 모두 Gemini로 넘긴다
+        print(f"Claude {stage} 실패, Gemini로 폴백: {type(e).__name__}: {e}")
+        return await gemini_call()
 
 
 def content_to_text(content) -> str:
@@ -278,14 +299,16 @@ async def reviewer_node(state: AgentState) -> AgentState:
         )
         return {"reviewer": result, "citations": result.citations}
 
-    llm = _get_llm(thinking=AGENT_THINKING).with_structured_output(ReviewerResult)
-    result: ReviewerResult = await llm.ainvoke(
-        [
-            ("system", prompts.REVIEWER_SYSTEM),
-            ("user", prompts.REVIEWER_USER.format(
-                query=query, regulations=_format_hits(hits)
-            )),
-        ]
+    user = prompts.REVIEWER_USER.format(query=query, regulations=_format_hits(hits))
+
+    async def gemini():
+        llm = _get_llm(thinking=AGENT_THINKING).with_structured_output(ReviewerResult)
+        return await llm.ainvoke([("system", prompts.REVIEWER_SYSTEM), ("user", user)])
+
+    result: ReviewerResult = await _with_claude(
+        "reviewer",
+        lambda ca: ca.structured(prompts.REVIEWER_SYSTEM, user, ReviewerResult),
+        gemini,
     )
     return {"reviewer": result, "citations": result.citations}
 
@@ -311,16 +334,20 @@ async def auditor_node(state: AgentState) -> AgentState:
         )
         return {"auditor": result, "citations": result.citations}
 
-    llm = _get_llm(thinking=AGENT_THINKING).with_structured_output(AuditorResult)
-    result: AuditorResult = await llm.ainvoke(
-        [
-            ("system", prompts.AUDITOR_SYSTEM),
-            ("user", prompts.AUDITOR_USER.format(
-                query=query,
-                regulations=_format_hits(reg_hits),
-                audit_records=_format_hits(audit_hits),
-            )),
-        ]
+    user = prompts.AUDITOR_USER.format(
+        query=query,
+        regulations=_format_hits(reg_hits),
+        audit_records=_format_hits(audit_hits),
+    )
+
+    async def gemini():
+        llm = _get_llm(thinking=AGENT_THINKING).with_structured_output(AuditorResult)
+        return await llm.ainvoke([("system", prompts.AUDITOR_SYSTEM), ("user", user)])
+
+    result: AuditorResult = await _with_claude(
+        "auditor",
+        lambda ca: ca.structured(prompts.AUDITOR_SYSTEM, user, AuditorResult),
+        gemini,
     )
     return {"auditor": result, "citations": result.citations}
 
@@ -352,11 +379,32 @@ async def coordinator_node(state: AgentState) -> AgentState:
     )
     # 조정은 이미 구조화된 두 분석을 병합하는 작업이라 깊은 사고가 필요 없다.
     # 사고 토큰은 첫 응답 토큰을 늦추고 출력 단가로 과금되므로 low로 제한한다.
-    response = await _get_llm(thinking="low").ainvoke(
-        [("system", prompts.COORDINATOR_SYSTEM), ("user", user_prompt)]
-    )
-    return {"final_markdown": content_to_text(response.content)}
+    async def gemini():
+        response = await _get_llm(thinking="low").ainvoke(
+            [("system", prompts.COORDINATOR_SYSTEM), ("user", user_prompt)]
+        )
+        return content_to_text(response.content)
 
+    from app.agents.claude_agents import StreamStarted
+
+    try:
+        markdown = await _with_claude(
+            "coordinator",
+            lambda ca: ca.coordinate(prompts.COORDINATOR_SYSTEM, user_prompt),
+            gemini,
+        )
+    except StreamStarted as e:
+        # 이미 화면에 나간 글을 지우고 다시 쓸 수는 없다. 받은 데까지에 안내를 붙여 끝내고,
+        # 두 분석·근거·위험도는 그대로 결과로 보낸다 (요청 전체를 오류로 버리지 않는다).
+        print(f"Claude 종합 조정이 중간에 끊김: {e}")
+        markdown = e.partial + PARTIAL_ANSWER_NOTICE
+    return {"final_markdown": markdown}
+
+
+PARTIAL_ANSWER_NOTICE = (
+    "\n\n> 답변을 만드는 중에 연결이 끊겨 여기까지만 보여드려요. "
+    "아래 규정 검토·감사 분석 내용을 참고하시고, 필요하면 다시 질문해 주세요."
+)
 
 OUT_OF_SCOPE_MESSAGE = """\
 안녕하세요! 저는 **인하대학교 학생회 규정·재정·감사 전용 AI 어시스턴트**예요.

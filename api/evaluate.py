@@ -91,10 +91,18 @@ async def _run_local(query: str) -> dict:
     from app.agents.schemas import overall_risk
 
     usage = UsageMetadataCallbackHandler()
-    state = await graph.ainvoke(
+    # Claude 단계(AGENT_PROVIDER=claude)는 LangChain 콜백에 안 잡혀 custom 스트림으로 사용량을 받는다
+    claude_tokens = 0
+    state: dict = {}
+    async for mode, payload in graph.astream(
         {"query": query, "history": [], "citations": []},
         config={"callbacks": [usage]},
-    )
+        stream_mode=["values", "custom"],
+    ):
+        if mode == "values":
+            state = payload
+        elif isinstance(payload, dict) and (u := payload.get("usage")):
+            claude_tokens += int(u.get("input_tokens", 0)) + int(u.get("output_tokens", 0))
     reviewer, auditor = state.get("reviewer"), state.get("auditor")
     markdown = content_to_text(state.get("final_markdown", ""))
     return {
@@ -107,7 +115,7 @@ async def _run_local(query: str) -> dict:
         ],
         "reviewer": reviewer.model_dump() if reviewer else None,
         "auditor": auditor.model_dump() if auditor else None,
-        "_tokens": sum(
+        "_tokens": claude_tokens + sum(
             u.get("input_tokens", 0) + u.get("output_tokens", 0)
             for u in (usage.usage_metadata or {}).values()
         ),

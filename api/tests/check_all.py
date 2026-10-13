@@ -306,6 +306,168 @@ def _():
     assert summary["samples"] >= 1 and "coordinator" in summary, summary
 
 
+class _FakeUsage:
+    def __init__(self, i, o):
+        self.input_tokens, self.output_tokens = i, o
+
+
+class _FakeStream:
+    """anthropic messages.stream 흉내: text_stream을 내보내고 fail_after개 뒤 예외."""
+
+    def __init__(self, texts, fail_after=None, stop_reason="end_turn"):
+        self.texts, self.fail_after, self.stop_reason = texts, fail_after, stop_reason
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    @property
+    async def text_stream(self):
+        for i, x in enumerate(self.texts):
+            if self.fail_after is not None and i >= self.fail_after:
+                raise RuntimeError("stream cut")
+            yield x
+
+    async def get_final_message(self):
+        class M:
+            usage = _FakeUsage(100, 20)
+            stop_reason = self.stop_reason
+            stop_details = None
+        return M()
+
+
+def _fake_client(parse_result=None, stream=None):
+    class Messages:
+        async def parse(self, **kw):
+            class R:
+                usage = _FakeUsage(1000, 50)
+                stop_reason = "end_turn"
+                stop_details = None
+                parsed_output = parse_result
+            return R()
+
+        def stream(self, **kw):
+            return stream
+
+    class C:
+        messages = Messages()
+    return C()
+
+
+def _run(coro):
+    import asyncio
+    return asyncio.run(coro)
+
+
+@case("Claude 경로: 구조화 출력·스트림 토큰·사용량을 custom 스트림으로 흘리고, 중간에 끊기면 폴백하지 않는다")
+def _():
+    from app.agents import claude_agents as ca
+    from app.agents.schemas import ReviewerResult, RiskLevel
+
+    sent = []
+    rv = ReviewerResult(violation="위반 없음", risk_level=RiskLevel.LOW, reasoning="r", recommendation="c")
+    with patch.object(ca, "_writer", return_value=sent.append), patch.object(
+        ca, "_get_client", return_value=_fake_client(parse_result=rv, stream=_FakeStream(["가", "나"]))
+    ):
+        assert _run(ca.structured("s", "u", ReviewerResult)) is rv
+        assert _run(ca.coordinate("s", "u")) == "가나"
+    tokens = [p["token"] for p in sent if "token" in p]
+    usages = [p["usage"] for p in sent if "usage" in p]
+    assert tokens == ["가", "나"], sent
+    assert [(u["input_tokens"], u["output_tokens"]) for u in usages] == [(1000, 50), (100, 20)], usages
+    with patch.object(ca, "_writer", return_value=sent.append), patch.object(
+        ca, "_get_client", return_value=_fake_client(stream=_FakeStream(["가", "나"], fail_after=1))
+    ):
+        try:
+            _run(ca.coordinate("s", "u"))
+            raise AssertionError("부분 출력 뒤 실패가 StreamStarted로 올라오지 않았다")
+        except ca.StreamStarted:
+            pass
+
+
+@case("AGENT_PROVIDER=claude: Claude가 실패하면 그 단계만 Gemini로, 부분 출력 뒤 실패는 폴백하지 않는다")
+def _():
+    from app.agents import claude_agents as ca
+    from app.agents import graph as gr
+
+    calls = []
+
+    async def gemini():
+        calls.append("gemini")
+        return "G"
+
+    async def ok(_ca):
+        calls.append("claude")
+        return "C"
+
+    async def boom(_ca):
+        calls.append("claude")
+        raise RuntimeError("credit exhausted")
+
+    async def partial(_ca):
+        raise ca.StreamStarted("cut")
+
+    with patch.object(gr, "AGENT_PROVIDER", "gemini"):
+        assert _run(gr._with_claude("x", ok, gemini)) == "G" and calls == ["gemini"]
+    calls.clear()
+    with patch.object(gr, "AGENT_PROVIDER", "claude"):
+        assert _run(gr._with_claude("x", ok, gemini)) == "C" and calls == ["claude"]
+        calls.clear()
+        assert _run(gr._with_claude("x", boom, gemini)) == "G" and calls == ["claude", "gemini"]
+        calls.clear()
+        try:
+            _run(gr._with_claude("x", partial, gemini))
+            raise AssertionError("부분 출력 뒤 Gemini로 다시 써 답이 중복될 수 있다")
+        except ca.StreamStarted:
+            assert calls == []
+
+
+@case("Claude 종합 조정이 중간에 끊기면 받은 데까지에 안내를 붙여 완결한다 (요청 전체를 버리지 않음)")
+def _():
+    from app.agents import claude_agents as ca
+    from app.agents import graph as gr
+    from app.agents.schemas import AuditorResult, ReviewerResult, RiskLevel
+
+    async def cut(system, user):
+        raise ca.StreamStarted("cut", partial="### 핵심 요약 부분")
+
+    state = {
+        "query": "q",
+        "reviewer": ReviewerResult(violation="위반 없음", risk_level=RiskLevel.LOW, reasoning="r", recommendation="c"),
+        "auditor": AuditorResult(compliance="준수", sanction_likelihood=RiskLevel.LOW, reasoning="r", recommendation="c"),
+    }
+    with patch.object(gr, "MOCK_MODE", False), patch.object(gr, "AGENT_PROVIDER", "claude"), patch.object(
+        ca, "coordinate", cut
+    ):
+        out = _run(gr.coordinator_node(state))
+    assert out["final_markdown"].startswith("### 핵심 요약 부분"), out
+    assert gr.PARTIAL_ANSWER_NOTICE.strip() in out["final_markdown"]
+
+
+@case("custom 스트림 토큰은 마스킹돼 SSE로 나가고, Claude 사용량은 Claude 단가로 요청 비용에 들어간다")
+def _():
+    class FakeGraph:
+        async def astream(self, *a, **kw):
+            yield ("updates", {"router": {"route": "regulation", "standalone_query": "q"}})
+            yield ("custom", {"token": "연락처는 010-1234-5678 "})
+            yield ("custom", {"token": "입니다."})
+            yield ("custom", {"usage": {"input_tokens": 1_000_000, "output_tokens": 0}})
+            yield ("updates", {"coordinator": {"final_markdown": "연락처는 010-1234-5678 입니다."}})
+
+    with patch.object(main, "graph", FakeGraph()):
+        r = client.post("/api/chat", json={"query": "custom 스트림 비용 테스트"})
+    body = r.text
+    assert "1234-5678" not in body, "custom 토큰이 마스킹되지 않았다"
+    assert '"type": "token"' in body
+    with db._connect() as conn:
+        cost = conn.execute("SELECT cost_usd FROM metrics ORDER BY id DESC LIMIT 1").fetchone()[0]
+    assert abs(cost - main.CLAUDE_PRICE_INPUT_PER_1M) < 1e-9, cost
+    stats = client.get("/api/stats", headers=AUTH).json()["cost"]
+    assert stats["total_usd"] >= round(main.CLAUDE_PRICE_INPUT_PER_1M, 4) - 1e-4, stats
+
+
 @case("/api/history의 limit은 1~100으로 고정된다 (음수는 SQLite 무제한)")
 def _():
     for _i in range(105):
