@@ -40,12 +40,25 @@ def _normalize(model: str) -> str:
     return model.removeprefix("models/").strip().lower()
 
 
+def _lookup(key: str) -> str | None:
+    """정확히 같은 이름, 없으면 가장 긴 접두사가 맞는 이름.
+
+    Gemini는 요청한 이름이 아니라 응답의 modelVersion으로 사용량을 남긴다. 버전 접미사
+    (예: gemini-3.7-flash-001)가 붙어 오면 정확 일치만으로는 전부 '모르는 모델'이 된다.
+    """
+    if key in PRICES:
+        return key
+    matches = [k for k in PRICES if key.startswith(k)]
+    return max(matches, key=len) if matches else None
+
+
 def rates(model: str, on: date | None = None) -> tuple[float, float, float]:
     """(입력, 출력, 캐시 적중 입력) 단가."""
-    key = _normalize(model)
-    if key not in PRICES:
-        if key not in _warned:
-            _warned.add(key)
+    raw = _normalize(model)
+    key = _lookup(raw)
+    if key is None:
+        if raw not in _warned:
+            _warned.add(raw)
             print(f"단가표에 없는 모델 {model!r} — {_UNKNOWN} 단가로 비용을 매긴다 (app/pricing.py에 추가)")
         key = _UNKNOWN
     day = on or datetime.now(timezone.utc).date()

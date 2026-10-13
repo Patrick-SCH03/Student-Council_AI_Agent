@@ -568,6 +568,9 @@ def _():
     cached = pricing.cost_usd("gemini-3.7-flash", 1_000_000, 0, cached_tokens=800_000, on=oct_)
     assert abs(cached - (0.2 * 0.75 + 0.8 * 0.075)) < 1e-9, cached
     assert abs(pricing.cost_usd("gemini-3.7-flash", 0, 1_000_000, on=date(2027, 1, 1)) - 7.50) < 1e-9
+    # 응답의 modelVersion에 버전 접미사가 붙어 와도 같은 모델 단가 (최고 단가로 새지 않음)
+    assert abs(pricing.cost_usd("gemini-3.7-flash-001", 1_000_000, 0, on=oct_) - 0.75) < 1e-9
+    assert abs(pricing.cost_usd("gemini-3.5-flash-lite-preview-09", 1_000_000, 0, on=oct_) - 0.30) < 1e-9
     unknown = pricing.cost_usd("gemini-9-ultra", 1_000_000, 0, on=oct_)
     assert unknown >= max(r[0][1] for r in pricing.PRICES.values()), "모르는 모델을 싸게 매겼다"
     usage = {
