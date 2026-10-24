@@ -13,8 +13,10 @@ import tempfile
 
 # app 모듈을 import하기 전에 환경을 고정한다 — 실제 키·실제 색인·실명 목록을 쓰지 않는다
 os.environ.update(
-    GEMINI_API_KEY="",
-    GOOGLE_API_KEY="",
+    # 두 모델 키를 모두 비워 목업을 강제한다 (api/.env에 실키가 있어도)
+    CLAUDE_API_KEY="",
+    ANTHROPIC_API_KEY="",
+    VOYAGE_API_KEY="",
     ADMIN_TOKEN="t0ken",
     PRIVATE_NAMES="홍길동,김테스트",
     GRAPH_EXPANSION="0",
@@ -77,18 +79,13 @@ def _():
     assert main.app.version == APP_VERSION, main.app.version
 
 
-@case("/api/health가 분석 모델을 실제 공급자 기준으로 알려준다 (Claude로 돌면서 Gemini로 표시하지 않음)")
+@case("/api/health가 실제로 쓰는 Claude 모델과 임베딩 모델을 알려준다")
 def _():
-    from app.config import CLAUDE_MODEL, GEMINI_MODEL, GEMINI_ROUTER_MODEL
+    from app.config import CLAUDE_MODEL, VOYAGE_EMBEDDING_MODEL
 
-    with patch.object(main, "AGENT_PROVIDER", "claude"), patch.object(main, "AGENT_MODEL", CLAUDE_MODEL), \
-            patch.object(main, "ROUTER_MODEL", CLAUDE_MODEL):
-        body = client.get("/api/health").json()
-    assert body["agent_provider"] == "claude" and body["model"] == CLAUDE_MODEL, body
-    assert body["router_model"] == CLAUDE_MODEL, body
-    body = client.get("/api/health").json()  # 테스트 환경 기본값 (키 없음 → gemini)
-    assert body["agent_provider"] == "gemini" and body["model"] == GEMINI_MODEL, body
-    assert body["router_model"] == GEMINI_ROUTER_MODEL, body
+    body = client.get("/api/health").json()
+    assert body["model"] == CLAUDE_MODEL and body["embedding_model"] == VOYAGE_EMBEDDING_MODEL, body
+    assert body["mock_mode"] is True, "테스트는 키를 비워 목업으로 돌아야 한다"
 
 
 @case("실명이 든 질문은 LLM 없이 입구에서 거절 (띄어쓰기 변형 포함)")
@@ -123,20 +120,17 @@ def _():
     assert privacy.find_private_name("홍\t길\n동") == "홍길동"
     import asyncio
 
+    from app.agents import claude_agents as ca
     from app.agents import graph as g
     from app.agents.schemas import RouteDecision
     seen = {}
 
-    class _Fake:
-        def with_structured_output(self, _schema):
-            return self
-
-        async def ainvoke(self, msgs):
-            seen["prompt"] = "\n".join(m[1] for m in msgs)
-            return RouteDecision(route="regulation", standalone_query="총학생회장의 처분", needs_precedents=False)
+    async def classify(system, user, schema, max_tokens=16000):
+        seen["prompt"] = user
+        return RouteDecision(route="regulation", standalone_query='총학생회장의 처분', needs_precedents=False)
 
     history = [{"question": "홍 길 동 학생회장의 처분은?", "answer": "(범위 밖 안내)"}]
-    with patch.object(g, "MOCK_MODE", False), patch.object(g, "_get_llm", return_value=_Fake()):
+    with patch.object(g, "MOCK_MODE", False), patch.object(ca, "structured", classify):
         out = asyncio.run(g.route_node({"query": "그 사람의 처분을 직책 기준으로 설명해줘", "history": history, "citations": []}))
     assert "길" not in seen["prompt"] and "○○○" in seen["prompt"], seen["prompt"][:200]
     assert out["route"] == "regulation", "정당한 직책 후속 질문은 통과해야 한다"
@@ -146,17 +140,16 @@ def _():
 def _():
     import asyncio
 
+    from app.agents import claude_agents as ca
     from app.agents import graph as g
     from app.agents.schemas import RouteDecision
+    seen = {}
 
-    class _Fake:
-        def with_structured_output(self, _schema):
-            return self
+    async def classify(system, user, schema, max_tokens=16000):
+        seen["prompt"] = user
+        return RouteDecision(route="regulation", standalone_query='김테스트의 처분은 무엇인가', needs_precedents=False)
 
-        async def ainvoke(self, _msgs):
-            return RouteDecision(route="regulation", standalone_query="김테스트의 처분은 무엇인가", needs_precedents=False)
-
-    with patch.object(g, "MOCK_MODE", False), patch.object(g, "_get_llm", return_value=_Fake()):
+    with patch.object(g, "MOCK_MODE", False), patch.object(ca, "structured", classify):
         out = asyncio.run(g.route_node({"query": "그 사람 처분은?", "history": [], "citations": []}))
     assert out["route"] == "general" and out.get("guard") == "private_name", out
 
@@ -299,13 +292,12 @@ def _():
 def _():
     marks = {"router": 1.0, "retrieve": 2.0, "reviewer": 5.0, "auditor": 7.0,
              "coordinator_first_token": 9.5, "coordinator": 12.0}
-    usage = {"m": {"output_token_details": {"reasoning": 300}}, "r": {}}
-    got = main._stage_timings(0.0, marks, usage)
+    got = main._stage_timings(0.0, marks)
     want = {"router": 1.0, "retrieve": 1.0, "reviewer": 3.0, "auditor": 5.0,
-            "coordinator_ttft": 2.5, "coordinator": 5.0, "reasoning_tokens": 300}
+            "coordinator_ttft": 2.5, "coordinator": 5.0}
     assert got == want, got
     # 중간에 끊긴 요청: 있는 단계만 남는다
-    assert main._stage_timings(0.0, {"router": 0.5}, {}) == {"router": 0.5}
+    assert main._stage_timings(0.0, {"router": 0.5}) == {"router": 0.5}
 
 
 @case("규정 질의는 단계별 시간을 지표에 남기고 대시보드가 중앙값을 보여준다")
@@ -401,47 +393,7 @@ def _():
             pass
 
 
-@case("AGENT_PROVIDER=claude: Claude가 실패하면 그 단계만 Gemini로, 부분 출력 뒤 실패는 폴백하지 않는다")
-def _():
-    from app.agents import claude_agents as ca
-    from app.agents import graph as gr
-
-    calls = []
-
-    async def gemini():
-        calls.append("gemini")
-        return "G"
-
-    async def ok(_ca):
-        calls.append("claude")
-        return "C"
-
-    async def boom(_ca):
-        calls.append("claude")
-        raise RuntimeError("credit exhausted")
-
-    async def partial(_ca):
-        raise ca.StreamStarted("cut")
-
-    with patch.object(gr, "AGENT_PROVIDER", "gemini"):
-        assert _run(gr._with_claude("x", ok, gemini)) == "G" and calls == ["gemini"]
-    calls.clear()
-    with patch.object(gr, "AGENT_PROVIDER", "claude"):
-        assert _run(gr._with_claude("x", ok, gemini)) == "C" and calls == ["claude"]
-        calls.clear()
-        sent = []
-        with patch.object(ca, "_writer", return_value=sent.append):
-            assert _run(gr._with_claude("x", boom, gemini)) == "G" and calls == ["claude", "gemini"]
-        assert sent == [{"fallback": "x"}], f"폴백이 지표로 전달되지 않았다: {sent}"
-        calls.clear()
-        try:
-            _run(gr._with_claude("x", partial, gemini))
-            raise AssertionError("부분 출력 뒤 Gemini로 다시 써 답이 중복될 수 있다")
-        except ca.StreamStarted:
-            assert calls == []
-
-
-@case("AGENT_PROVIDER=claude면 질문 분류도 Claude로 하고, Claude·Gemini가 모두 실패하면 규정 경로로 이어간다")
+@case("질문 분류는 Claude 구조화 출력(짧은 max_tokens)으로 하고, 실패하면 규정 경로로 이어가며 기록한다")
 def _():
     from app.agents import claude_agents as ca
     from app.agents import graph as gr
@@ -450,12 +402,10 @@ def _():
     seen = {}
 
     async def classify(system, user, schema, max_tokens=16000):
-        seen.update(schema=schema, max_tokens=max_tokens, user=user)
+        seen.update(schema=schema, max_tokens=max_tokens)
         return RouteDecision(route="general", standalone_query="오늘 날씨", needs_precedents=False)
 
-    with patch.object(gr, "MOCK_MODE", False), patch.object(gr, "AGENT_PROVIDER", "claude"), \
-            patch.object(ca, "structured", classify), \
-            patch.object(gr, "_get_llm", side_effect=AssertionError("Gemini를 부르면 안 된다")):
+    with patch.object(gr, "MOCK_MODE", False), patch.object(ca, "structured", classify):
         out = _run(gr.route_node({"query": "오늘 날씨 어때?"}))
     assert out["route"] == "general", out
     assert seen["schema"] is RouteDecision and seen["max_tokens"] <= 2048, seen
@@ -463,20 +413,12 @@ def _():
     async def boom(*a, **kw):
         raise RuntimeError("down")
 
-    class DeadLLM:
-        def with_structured_output(self, _schema):
-            return self
-
-        async def ainvoke(self, _msgs):
-            raise RuntimeError("403 suspended")
-
     sent = []
-    with patch.object(gr, "MOCK_MODE", False), patch.object(gr, "AGENT_PROVIDER", "claude"), \
-            patch.object(ca, "structured", boom), patch.object(gr, "_get_llm", return_value=DeadLLM()), \
+    with patch.object(gr, "MOCK_MODE", False), patch.object(ca, "structured", boom), \
             patch.object(ca, "_writer", return_value=sent.append):
         out = _run(gr.route_node({"query": "예산 변경 절차는?"}))
     assert out["route"] == "regulation", out
-    assert {"fallback": "router"} in sent and {"fallback": "router_failed"} in sent, sent
+    assert sent == [{"fallback": "router_failed"}], sent
 
 
 @case("Claude 종합 조정이 중간에 끊기면 받은 데까지에 안내를 붙여 완결한다 (요청 전체를 버리지 않음)")
@@ -493,9 +435,7 @@ def _():
         "reviewer": ReviewerResult(violation="위반 없음", risk_level=RiskLevel.LOW, reasoning="r", recommendation="c"),
         "auditor": AuditorResult(compliance="준수", sanction_likelihood=RiskLevel.LOW, reasoning="r", recommendation="c"),
     }
-    with patch.object(gr, "MOCK_MODE", False), patch.object(gr, "AGENT_PROVIDER", "claude"), patch.object(
-        ca, "coordinate", cut
-    ):
+    with patch.object(gr, "MOCK_MODE", False), patch.object(ca, "coordinate", cut):
         out = _run(gr.coordinator_node(state))
     assert out["final_markdown"].startswith("### 핵심 요약 부분"), out
     assert gr.PARTIAL_ANSWER_NOTICE.strip() in out["final_markdown"]
@@ -542,13 +482,14 @@ def _():
     assert stats["total_usd"] >= 0.10 - 1e-4, stats
 
 
-@case("Gemini 폴백은 요청 지표에 단계별로 남고 대시보드 집계·최근 질의에 보인다")
+@case("낮춘 경로(검색 키워드만·분류 실패)는 요청 지표에 남고 대시보드 집계·최근 질의에 보인다")
 def _():
     class FakeGraph:
         async def astream(self, *a, **kw):
             yield ("updates", {"router": {"route": "regulation", "standalone_query": "q"}})
-            yield ("custom", {"fallback": "reviewer"})
-            yield ("custom", {"fallback": "auditor"})
+            yield ("custom", {"fallback": "router_failed"})
+            yield ("custom", {"fallback": "retrieve"})
+            yield ("custom", {"fallback": "retrieve"})
             yield ("updates", {"coordinator": {"final_markdown": "답변"}})
 
     before = client.get("/api/stats", headers=AUTH).json()["totals"]["fallbacks"]
@@ -556,12 +497,12 @@ def _():
         client.post("/api/chat", json={"query": "폴백 기록 테스트 질문"})
     with db._connect() as conn:
         fallback = conn.execute("SELECT fallback FROM metrics ORDER BY id DESC LIMIT 1").fetchone()[0]
-    assert fallback == "reviewer,auditor", fallback
+    assert fallback == "router_failed,retrieve", fallback
     stats = client.get("/api/stats", headers=AUTH).json()
     assert stats["totals"]["fallbacks"] == before + 1, stats["totals"]
     assert stats["today"]["fallbacks"] >= 1, stats["today"]
-    assert stats["recent"][0]["fallback"] == "reviewer,auditor", stats["recent"][0]
-    assert stats["agent"]["provider"] in ("gemini", "claude"), stats.get("agent")
+    assert stats["recent"][0]["fallback"] == "router_failed,retrieve", stats["recent"][0]
+    assert stats["agent"]["model"] and stats["agent"]["embedding_model"], stats.get("agent")
 
 
 @case("/api/backup은 관리자만 받고, 열리는 SQLite 스냅샷과 OCR 캐시를 zip으로 내려준다")
@@ -594,31 +535,19 @@ def _():
     assert n == 1, "스냅샷에 최근 기록이 없다"
 
 
-@case("비용은 모델별 단가·캐시 적중 할인·할인 종료일을 반영한다 (한 단가로 뭉뚱그리지 않음)")
+@case("비용은 모델별 단가·캐시 적중 할인을 반영하고, 모르는 모델은 최고 단가로 매긴다")
 def _():
-    from datetime import date
-
     from app import pricing
 
-    oct_ = date(2026, 10, 14)
-    flash = pricing.cost_usd("gemini-3.7-flash", 1_000_000, 0, on=oct_)
-    lite = pricing.cost_usd("models/gemini-3.5-flash-lite", 1_000_000, 0, on=oct_)
-    assert abs(flash - 0.75) < 1e-9 and abs(lite - 0.30) < 1e-9, (flash, lite)
+    assert abs(pricing.cost_usd("claude-haiku-5-5", 1_000_000, 0) - 0.10) < 1e-9
+    assert abs(pricing.cost_usd("claude-haiku-5-5", 0, 1_000_000) - 0.50) < 1e-9
     # 입력 100만 중 80만이 캐시 적중이면 20만 × 정가 + 80만 × 캐시 단가
-    cached = pricing.cost_usd("gemini-3.7-flash", 1_000_000, 0, cached_tokens=800_000, on=oct_)
-    assert abs(cached - (0.2 * 0.75 + 0.8 * 0.075)) < 1e-9, cached
-    assert abs(pricing.cost_usd("gemini-3.7-flash", 0, 1_000_000, on=date(2027, 1, 1)) - 7.50) < 1e-9
-    # 응답의 modelVersion에 버전 접미사가 붙어 와도 같은 모델 단가 (최고 단가로 새지 않음)
-    assert abs(pricing.cost_usd("gemini-3.7-flash-001", 1_000_000, 0, on=oct_) - 0.75) < 1e-9
-    assert abs(pricing.cost_usd("gemini-3.5-flash-lite-preview-09", 1_000_000, 0, on=oct_) - 0.30) < 1e-9
-    unknown = pricing.cost_usd("gemini-9-ultra", 1_000_000, 0, on=oct_)
+    cached = pricing.cost_usd("claude-haiku-5-5", 1_000_000, 0, cached_tokens=800_000)
+    assert abs(cached - (0.2 * 0.10 + 0.8 * 0.01)) < 1e-9, cached
+    # 날짜·버전 접미사가 붙은 모델 ID도 같은 단가 (최고 단가로 새지 않음)
+    assert abs(pricing.cost_usd("claude-haiku-5-5-20261001", 1_000_000, 0) - 0.10) < 1e-9
+    unknown = pricing.cost_usd("some-new-model", 1_000_000, 0)
     assert unknown >= max(r[0][1] for r in pricing.PRICES.values()), "모르는 모델을 싸게 매겼다"
-    usage = {
-        "gemini-3.5-flash-lite": {"input_tokens": 1000, "output_tokens": 100},
-        "gemini-3.7-flash": {"input_tokens": 2000, "output_tokens": 200, "input_token_details": {"cache_read": 1000}},
-    }
-    expected = pricing.cost_usd("gemini-3.5-flash-lite", 1000, 100) + pricing.cost_usd("gemini-3.7-flash", 2000, 200, 1000)
-    assert abs(pricing.langchain_usage_cost(usage) - expected) < 1e-12
 
 
 @case("대시보드 비용은 달러로만 내려주고, 캐시 응답은 비용 0으로 기록된다")
@@ -633,7 +562,7 @@ def _():
     assert set(c) == {"total_usd", "today_usd", "estimated_usd"}, c
 
 
-@case("임베딩(Gemini)이 막혀도 키워드 검색만으로 근거를 찾아 답을 이어가고, 검색 폴백으로 기록한다")
+@case("임베딩이 막혀도 키워드 검색만으로 근거를 찾아 답을 이어가고, 검색 폴백으로 기록한다")
 def _():
     from app.agents import claude_agents as ca
     from app.agents import graph as gr
@@ -660,10 +589,169 @@ def _():
         masked = privacy.mask_text(text)
         assert "AIza" not in masked and "sk-ant-" not in masked, masked
     db.record_metric(route="regulation", risk_level=None, status="error", elapsed=0.1, input_tokens=0,
-                     output_tokens=0, query_preview="키 마스킹 확인", error=f"GoogleGenerativeAIError: {google}")
+                     output_tokens=0, query_preview="키 마스킹 확인", error=f"UpstreamError: {google}")
     with db._connect() as conn:
         err = conn.execute("SELECT error FROM metrics ORDER BY id DESC LIMIT 1").fetchone()[0]
     assert "AIza" not in err and "(API 키 비공개)" in err, err
+
+
+@case("지금 쓰지 않는 임베딩 모델의 옛 색인 컬렉션은 기동 시 지우고, 현재·목업 컬렉션은 남긴다")
+def _():
+    client_ = store._get_client()
+    for name in ("regulations", "regulations_old-model", "regulations_voyage-test"):
+        client_.get_or_create_collection(name)
+    try:
+        with patch.object(store, "MOCK_MODE", False), patch.object(store, "COLLECTION_NAME", "regulations_voyage-test"):
+            dropped = store.drop_stale_collections()
+        names = {c.name if hasattr(c, "name") else c for c in client_.list_collections()}
+        assert set(dropped) == {"regulations", "regulations_old-model"}, dropped
+        assert "regulations_voyage-test" in names and "regulations_mock" in names, names
+        assert store.drop_stale_collections() == [], "목업 모드에서는 지우지 않는다"
+    finally:
+        for name in ("regulations", "regulations_old-model", "regulations_voyage-test"):
+            try:
+                client_.delete_collection(name)
+            except Exception:  # noqa: BLE001
+                pass
+
+
+@case("Voyage 임베딩은 문서·질의를 input_type으로 구분해 요청한다")
+def _():
+    calls = []
+
+    def fake(texts, input_type):
+        calls.append(input_type)
+        return [[0.1, 0.2] for _ in texts]
+
+    with patch.object(store, "MOCK_MODE", False), patch.object(store, "_voyage_embed", fake):
+        store.embed_query("증빙서류")
+        store._embed(["본문"])
+    assert calls == ["query", "document"], calls
+
+
+@case("전체 재색인 준비(/api/index/reset)는 관리자·confirm이 있어야 하고 문서·색인·OCR 캐시를 비운다")
+def _():
+    from app.config import OCR_CACHE_DIR
+
+    store.add_chunks("reset-doc", "재정세칙.pdf", ["제1조 목적"])
+    db.add_document("reset-doc", "재정세칙.pdf", 1)
+    (OCR_CACHE_DIR / "reset-test.txt").write_text("ocr", encoding="utf-8")
+    assert client.post("/api/index/reset?confirm=true").status_code == 401
+    assert client.post("/api/index/reset", headers=AUTH).status_code == 400, "confirm 없이 지웠다"
+    r = client.post("/api/index/reset?confirm=true", headers=AUTH)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["documents"] >= 1 and body["chunks"] >= 1 and body["ocr_cache_files"] >= 1, body
+    assert store.chunk_count() == 0 and db.list_documents() == [], "비워지지 않았다"
+    assert not list(OCR_CACHE_DIR.glob("*.txt")), "OCR 캐시가 남았다"
+
+
+@case("Claude OCR은 잘린 추출본(max_tokens)을 받아들이지 않는다 — 문서 뒷부분이 색인에서 빠지므로")
+def _():
+    from app.agents import claude_agents as ca
+
+    class Final:
+        def __init__(self, stop):
+            self.stop_reason, self.stop_details = stop, None
+            self.usage = type("U", (), {"input_tokens": 10, "output_tokens": 5})()
+            self.content = [type("B", (), {"type": "text", "text": "추출본"})()]
+
+    class Stream:
+        def __init__(self, stop):
+            self.stop = stop
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def get_final_message(self):
+            return Final(self.stop)
+
+    class Client:
+        def __init__(self, stop):
+            self.messages = type("M", (), {"stream": lambda _self, **kw: Stream(stop)})()
+
+    with patch.object(ca, "_sync_client", Client("end_turn")):
+        assert ca.ocr_pdf(b"%PDF", "추출") == "추출본"
+    with patch.object(ca, "_sync_client", Client("max_tokens")):
+        try:
+            ca.ocr_pdf(b"%PDF", "추출")
+            raise AssertionError("잘린 추출본을 그대로 돌려줬다")
+        except RuntimeError as e:
+            assert "잘렸다" in str(e)
+
+
+@case("Voyage 429(무료 한도)를 받으면 저속 모드로 바꿔 작은 배치·요청 간격으로 문서 색인을 끝낸다")
+def _():
+    calls, sleeps = [], []
+
+    def fake(texts, input_type):
+        calls.append(len(texts))
+        if len(calls) == 1:
+            raise RuntimeError("Voyage 임베딩 오류 429: reduced rate limits of 3 RPM and 10K TPM")
+        return [[0.0] for _ in texts]
+
+    texts = ["가" * 1000] * 20  # 2만 자 — 저속 모드 배치(6천 자)로 4번 이상 나뉘어야 한다
+    with patch.object(store, "MOCK_MODE", False), patch.object(store, "_voyage_embed", fake),             patch.object(store, "_throttled", False), patch.object(store.time, "sleep", sleeps.append):
+        vecs = store._embed(texts)
+    assert len(vecs) == 20, len(vecs)
+    assert calls[0] == 20 and max(calls[1:]) <= 6, calls
+    assert sum(calls[1:]) == 20, calls
+    assert any(w >= 15 for w in sleeps), f"요청 간격을 두지 않았다: {sleeps}"
+
+
+@case("로컬에서 만든 청크·임베딩을 그대로 옮겨 넣는다 (/api/index/import) — 검증·중복 거절·왕복 동일")
+def _():
+    vec = [0.1] * 256
+    body = {"filename": "옮김세칙.pdf", "chunks": ["제1조 목적", "제2조 정의"], "embeddings": [vec, vec]}
+    assert client.post("/api/index/import", json=body).status_code == 401
+    bad = {**body, "embeddings": [vec]}
+    assert client.post("/api/index/import", json=bad, headers=AUTH).status_code == 422, "개수 불일치 통과"
+    assert client.post("/api/index/import", json={**body, "filename": "../x.pdf"}, headers=AUTH).status_code == 422
+    r = client.post("/api/index/import", json=body, headers=AUTH)
+    assert r.status_code == 200, r.text
+    doc_id = r.json()["doc_id"]
+    assert client.post("/api/index/import", json=body, headers=AUTH).status_code == 409, "중복 문서 통과"
+    chunks, embs = store.export_doc(doc_id)
+    assert chunks == body["chunks"] and len(embs) == 2 and abs(embs[0][0] - 0.1) < 1e-6, (chunks, embs[0][:2])
+    client.delete(f"/api/documents/{doc_id}", headers=AUTH)
+
+
+@case("잘린 OCR은 재시도하지 않고(과금 반복 방지), Voyage 네트워크 타임아웃은 재시도한다")
+def _():
+    import httpx
+
+    from app.agents import claude_agents as ca
+    from app.rag import ingest
+
+    calls = []
+
+    def truncated(_b, _p):
+        calls.append(1)
+        raise ca.OcrTruncated("cut")
+
+    with patch.object(ca, "ocr_pdf", truncated), patch.object(ingest.time, "sleep", lambda _s: None):
+        try:
+            ingest._extract_with_llm(b"%PDF-unique-for-test")
+            raise AssertionError("잘린 OCR을 받아들였다")
+        except ca.OcrTruncated:
+            pass
+    assert len(calls) == 1, f"잘린 OCR을 {len(calls)}번 불렀다"
+
+    attempts = []
+
+    def flaky(texts, input_type):
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise httpx.ReadTimeout("")
+        return [[0.0] for _ in texts]
+
+    with patch.object(store, "MOCK_MODE", False), patch.object(store, "_voyage_embed", flaky), \
+            patch.object(store.time, "sleep", lambda _s: None):
+        assert len(store._embed(["본문"])) == 1
+    assert len(attempts) == 2, attempts
 
 
 @case("/api/history의 limit은 1~100으로 고정된다 (음수는 SQLite 무제한)")
@@ -812,7 +900,9 @@ def _():
 def _():
     with patch.object(store, "_embed", wraps=store._embed) as spy:
         store.embed_query("테스트")
-    assert spy.call_args.kwargs == {"max_retries": 2, "backoff_base": 2}, spy.call_args.kwargs
+    kw = spy.call_args.kwargs
+    assert (kw["max_retries"], kw["backoff_base"]) == (2, 2), kw
+    assert kw.get("input_type") == "query", kw  # Voyage는 질의·문서 임베딩을 구분한다
 
 
 @case("BM25 검색은 같은 스냅샷의 본문을 돌려준다 (인덱스 번호 재조회 없음)")
@@ -836,13 +926,13 @@ def _():
     assert start.endswith("T15:00:00"), start  # KST 00:00 == UTC 15:00 (전날)
 
 
-@case("smoke는 두 외부 키와 DATA_DIR이 주입돼도 목업과 임시 폴더만 사용한다")
+@case("smoke는 두 모델 키와 DATA_DIR이 주입돼도 목업과 임시 폴더만 사용한다")
 def _():
     with tempfile.TemporaryDirectory(prefix="smoke-watch-", dir=_SCRATCH) as watch_dir:
         env = os.environ.copy()
         env.update(
-            GEMINI_API_KEY="dummy-not-a-real-key",
-            GOOGLE_API_KEY="dummy-not-a-real-key",
+            CLAUDE_API_KEY="dummy-not-a-real-key",
+            VOYAGE_API_KEY="dummy-not-a-real-key",
             DATA_DIR=watch_dir,
             PYTHONIOENCODING="utf-8",
         )

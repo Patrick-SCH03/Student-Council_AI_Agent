@@ -1,7 +1,7 @@
 """PDF 인제스천: 텍스트 추출 → 청킹 → 임베딩 → 벡터 스토어 저장.
 
 질의 경로와 분리된 관리자 전용 파이프라인으로, 문서 업로드 시점에 색인한다.
-텍스트 레이어가 없는 스캔본 PDF는 Gemini 멀티모달로 추출하는 폴백을 거친다.
+텍스트 레이어가 없는 스캔본 PDF와 표가 핵심인 감사보고서는 Claude에 PDF를 넣어 추출한다.
 """
 
 import hashlib
@@ -15,7 +15,7 @@ from pathlib import Path
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from pypdf import PdfReader
 
-from app.config import GEMINI_API_KEY, GEMINI_MODEL, MOCK_MODE, OCR_CACHE_DIR
+from app.config import MOCK_MODE, OCR_CACHE_DIR
 from app.rag import store
 
 # 스캔본 PDF 판별 기준
@@ -89,8 +89,8 @@ def _ocr_cache_path(file_bytes: bytes) -> Path:
     return OCR_CACHE_DIR / f"{key}.txt"
 
 
-def _extract_with_gemini(file_bytes: bytes) -> str:
-    """스캔본 PDF 폴백: Gemini 멀티모달에 PDF를 직접 넣어 텍스트를 추출한다.
+def _extract_with_llm(file_bytes: bytes) -> str:
+    """스캔본·표 구조 추출: Claude에 PDF를 직접 넣어 텍스트를 추출한다.
 
     결과는 파일 내용 해시로 캐싱한다. 같은 PDF에도 매번 다른 텍스트가 나와
     재색인마다 청크 경계가 달라지므로, 캐시로 재현성과 비용을 함께 잡는다.
@@ -102,19 +102,15 @@ def _extract_with_gemini(file_bytes: bytes) -> str:
             print(f"  OCR 캐시 사용 ({len(text)}자)")
             return text
 
-    from google import genai
-    from google.genai import types
-
-    client = genai.Client(api_key=GEMINI_API_KEY)
-    part = types.Part.from_bytes(data=file_bytes, mime_type="application/pdf")
+    from app.agents import claude_agents
 
     # 빈 응답이 한 번 오면 문서가 통째로 색인에서 빠진다. 실제로 겪어서 재시도를 둔다.
     text = ""
     for attempt in range(1, _OCR_MAX_RETRIES + 1):
         try:
-            text = client.models.generate_content(
-                model=GEMINI_MODEL, contents=[part, _OCR_PROMPT]
-            ).text or ""
+            text = claude_agents.ocr_pdf(file_bytes, _OCR_PROMPT)
+        except (claude_agents.OcrTruncated, claude_agents.ClaudeRefusal):
+            raise  # 같은 입력이면 결과도 같다 — 다시 불러 과금만 늘리지 않는다
         except Exception as e:  # noqa: BLE001 - 마지막 시도까지 실패하면 그대로 올린다
             if attempt == _OCR_MAX_RETRIES:
                 raise
@@ -187,7 +183,7 @@ MULTIMODAL_MIN_RATIO = 0.8
 def extract_text_from_pdf(file_bytes: bytes, *, prefer_multimodal: bool = False) -> str:
     """PDF에서 텍스트를 추출한다.
 
-    prefer_multimodal이면 텍스트 레이어가 있어도 Gemini 멀티모달을 먼저 시도한다.
+    prefer_multimodal이면 텍스트 레이어가 있어도 Claude PDF 추출을 먼저 시도한다.
     감사보고서는 표가 핵심인데 pypdf는 셀 경계를 잃어 "교육학과 학생회시정조치
     요구안 송부감사 처분 없음"처럼 붙어 나온다. 기구와 처분의 연결이 모호해진다.
     """
@@ -208,16 +204,16 @@ def extract_text_from_pdf(file_bytes: bytes, *, prefer_multimodal: bool = False)
         if MOCK_MODE:
             raise IngestError(
                 "텍스트를 추출할 수 없는 스캔본 PDF입니다. "
-                "목업 모드에서는 스캔본 파싱이 불가하니 GEMINI_API_KEY를 설정하세요."
+                "목업 모드에서는 스캔본 파싱이 불가하니 CLAUDE_API_KEY·VOYAGE_API_KEY를 설정하세요."
             )
         print(
             f"본문 추출 부족 ({page_count}페이지, 페이지당 {chars_per_page:.0f}자) "
-            "— Gemini 멀티모달로 재추출합니다..."
+            "— Claude로 재추출합니다..."
         )
         try:
-            text = clean_text(_extract_with_gemini(file_bytes))
+            text = clean_text(_extract_with_llm(file_bytes))
         except Exception as e:
-            raise IngestError(f"스캔본 텍스트 추출 실패 (Gemini): {e}") from e
+            raise IngestError(f"스캔본 텍스트 추출 실패 (Claude): {e}") from e
 
         if len(text.strip()) < MIN_TEXT_LENGTH:
             raise IngestError(
@@ -237,9 +233,9 @@ def extract_text_from_pdf(file_bytes: bytes, *, prefer_multimodal: bool = False)
 
 
 def _with_table_structure(file_bytes: bytes, fallback: str) -> str:
-    """Gemini로 표 구조를 살려 재추출한다. 결과가 미덥지 않으면 fallback을 쓴다."""
+    """Claude로 표 구조를 살려 재추출한다. 결과가 미덥지 않으면 fallback을 쓴다."""
     try:
-        text = clean_text(_extract_with_gemini(file_bytes))
+        text = clean_text(_extract_with_llm(file_bytes))
     except Exception as e:  # noqa: BLE001 - 추출 실패가 색인 전체를 막지 않도록
         print(f"  표 구조 추출 실패, pypdf 결과 사용: {type(e).__name__}: {e}")
         return fallback

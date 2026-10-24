@@ -6,8 +6,9 @@
             └─(general)───> general ─────────────────────────────────> END
     (reviewer/auditor 병렬 실행, 검색은 retrieve에서 한 번만)
 
-라우팅과 각 에이전트의 판정은 구조화 출력으로 받아, 위험도를 코드에서 계산한다.
-MOCK_MODE에서는 LLM 호출 없이 고정 응답으로 전체 플로우를 검증할 수 있다.
+모든 LLM 단계는 Claude(app/agents/claude_agents.py)가 맡는다. 라우팅과 각 에이전트의 판정은
+구조화 출력으로 받아 위험도를 코드에서 계산한다. MOCK_MODE에서는 LLM 호출 없이 고정 응답으로
+전체 플로우를 검증할 수 있다.
 """
 
 import asyncio
@@ -17,7 +18,7 @@ from typing import Annotated, TypedDict
 
 from langgraph.graph import END, StateGraph
 
-from app.agents import prompts
+from app.agents import claude_agents, prompts
 from app.agents.schemas import (
     AuditorResult,
     Citation,
@@ -25,15 +26,7 @@ from app.agents.schemas import (
     RiskLevel,
     RouteDecision,
 )
-from app.config import (
-    AGENT_PROVIDER,
-    AGENT_THINKING,
-    GEMINI_API_KEY,
-    GEMINI_MODEL,
-    GEMINI_ROUTER_MODEL,
-    LLM_TIMEOUT,
-    MOCK_MODE,
-)
+from app.config import MOCK_MODE
 from app.privacy import find_private_name, mask_text
 from app.rag import citation_graph, store
 
@@ -72,68 +65,9 @@ class AgentState(TypedDict, total=False):
     partial: bool
 
 
-_llm_cache: dict = {}
-
-
-def _get_llm(model: str | None = None, thinking: str | None = None):
-    """역할별 LLM 인스턴스 (같은 설정은 재사용).
-
-    temperature는 지정하지 않는다. Gemini 3 공식 가이드가 기본값 1.0 유지를
-    강력 권장하며(낮추면 루핑·품질 저하 위험), 사실성 제어는 temperature가
-    아니라 thinking_level과 프롬프트의 근거 강제로 한다.
-
-    thinking_level: 사고 토큰은 첫 응답 토큰 전에 생성되고 출력 단가로 과금된다.
-    분류·요약 병합처럼 사실 처리에 가까운 역할은 'low'로 제한해 지연·비용을 줄인다.
-    """
-    key = (model or GEMINI_MODEL, thinking)
-    if key not in _llm_cache:
-        from langchain_google_genai import ChatGoogleGenerativeAI
-
-        # 기본값(timeout 없음, 재시도 6회)은 상류가 느려질 때 요청을 몇 분씩 붙잡는다.
-        kwargs: dict = {"timeout": LLM_TIMEOUT, "max_retries": 2}
-        if thinking:
-            kwargs["thinking_level"] = thinking
-        _llm_cache[key] = ChatGoogleGenerativeAI(
-            model=key[0], google_api_key=GEMINI_API_KEY, **kwargs
-        )
-    return _llm_cache[key]
-
-
-async def _with_claude(stage: str, claude_call, gemini_call):
-    """AGENT_PROVIDER=claude면 Claude로, 실패하면 그 단계만 Gemini로 돌린다.
-
-    토큰을 이미 흘린 뒤 실패한 종합 조정(StreamStarted)은 다시 쓰면 답이 두 번 나오므로 폴백하지 않는다.
-    """
-    if AGENT_PROVIDER != "claude":
-        return await gemini_call()
-    from app.agents import claude_agents
-
-    try:
-        return await claude_call(claude_agents)
-    except claude_agents.StreamStarted:
-        raise
-    # 안전 분류기 거절(ClaudeRefusal)도 폴백한다: 학생회 규정 질의에서 거절은 오탐일 가능성이 높고,
-    # 사용자에게는 답이 끊기는 것보다 같은 규칙(프롬프트·출력 마스킹)으로 Gemini가 답하는 편이 낫다.
-    except Exception as e:  # noqa: BLE001 - 상류 장애·거절·크레딧 소진 모두 Gemini로 넘긴다
-        print(f"Claude {stage} 실패, Gemini로 폴백: {type(e).__name__}: {mask_text(str(e))[:200]}")
-        # 로그만 남기면 폴백이 매 요청 일어나도 대시보드엔 정상으로 보인다 (느려지고 비용 ~5배)
-        claude_agents._writer()({"fallback": stage})
-        return await gemini_call()
-
-
-def content_to_text(content) -> str:
-    """LLM 응답 content 정규화. Gemini는 문자열 대신 블록 리스트를 반환할 수 있다."""
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts = []
-        for part in content:
-            if isinstance(part, str):
-                parts.append(part)
-            elif isinstance(part, dict) and part.get("type") == "text":
-                parts.append(part.get("text", ""))
-        return "".join(parts)
-    return str(content)
+def _report_fallback(stage: str) -> None:
+    """요청이 낮춘 경로로 이어졌음을 지표에 남긴다 (로그만 남기면 대시보드엔 정상으로 보인다)."""
+    claude_agents._writer()({"fallback": stage})
 
 
 # 인용문(snippet)은 원문 복사가 아니라 에이전트가 실명 금지 규칙 아래에서 쓴다.
@@ -141,11 +75,14 @@ def content_to_text(content) -> str:
 # 감사보고서 곳곳(명단·의결 의견·서명)의 실명이 근거 패널에 노출된다 — 평가셋
 # forbid_names 검사에 걸려 되돌렸다. 질의당 1~3원 절감과 바꿀 수 있는 위험이 아니다.
 def _format_hits(hits: list[dict]) -> str:
+    """검색 결과를 문서 태그로 감싼다 — Claude는 긴 근거를 XML 태그로 구분할 때 출처를 덜 섞는다."""
     if not hits:
-        return "(검색된 규정이 없습니다. 문서가 색인되어 있는지 확인이 필요합니다.)"
-    return "\n\n".join(
-        f"--- 출처: {h['source_file']}\n{h['text']}" for h in hits
+        return "<documents>(검색된 문서가 없습니다. 문서가 색인되어 있는지 확인이 필요합니다.)</documents>"
+    body = "\n".join(
+        f"<document index=\"{i}\">\n<source>{h['source_file']}</source>\n<content>\n{h['text']}\n</content>\n</document>"
+        for i, h in enumerate(hits, 1)
     )
+    return f"<documents>\n{body}\n</documents>"
 
 
 # ---------------------------------------------------------------- 노드 정의
@@ -154,13 +91,14 @@ def _format_history(history: list[dict]) -> str:
     """이전 대화를 프롬프트용 텍스트로 변환. 없으면 빈 문자열."""
     if not history:
         return ""
-    lines = ["**이전 대화:**"]
+    lines = ["<history>"]
     for item in history[-3:]:
         # 이력은 클라이언트가 보내는 값이다. 거절된 이전 질문의 이름이 여기 남아 있으므로
         # 마스킹해서 넣는다 — 라우터(LLM)에도 실명이 닿지 않게.
         lines.append(f"- 질문: {mask_text(item.get('question', ''))}")
         answer = mask_text((item.get("answer") or "")[:500])
         lines.append(f"  답변 요약: {answer}")
+    lines.append("</history>")
     return "\n".join(lines) + "\n\n"
 
 
@@ -209,27 +147,16 @@ async def route_node(state: AgentState) -> AgentState:
         return {"route": route, "standalone_query": query, "needs_precedents": precedents}
 
     user = prompts.ROUTER_USER.format(history=_format_history(history), query=query)
-
-    async def gemini():
-        # 분류 + 한 문장 재작성뿐이라 경량 모델로 충분하다 (단가 1/3, 첫 토큰 지연 최단)
-        llm = _get_llm(GEMINI_ROUTER_MODEL).with_structured_output(RouteDecision)
-        return await llm.ainvoke([("system", prompts.ROUTER_SYSTEM), ("user", user)])
-
     try:
-        # AGENT_PROVIDER=claude면 분류도 Claude로 한다 — 2026-10-24 Gemini 프로젝트 정지 때 분류가
-        # 매번 실패해 범위 밖 질문까지 규정 분석(유료)으로 흘렀다. 출력은 짧아 max_tokens를 낮게 둔다.
-        decision: RouteDecision = await _with_claude(
-            "router",
-            lambda ca: ca.structured(prompts.ROUTER_SYSTEM, user, RouteDecision, max_tokens=1024),
-            gemini,
+        # 분류 + 한 문장 재작성뿐이라 출력이 짧다 — max_tokens를 낮게 둬 지연 상한을 묶는다
+        decision: RouteDecision = await claude_agents.structured(
+            prompts.ROUTER_SYSTEM, user, RouteDecision, max_tokens=1024
         )
     except Exception as e:  # noqa: BLE001 - 라우터 실패가 전체 응답을 막지 않도록
         # 분류가 안 되면 규정 경로로 보낸다. 규정 질문을 잘라내는 것보다
         # 범위 밖 질문에 한 번 성실히 답하는 쪽이 덜 해롭다.
         print(f"라우터 호출 실패, regulation 경로로 폴백: {type(e).__name__}: {mask_text(str(e))[:200]}")
-        from app.agents import claude_agents
-
-        claude_agents._writer()({"fallback": "router_failed"})
+        _report_fallback("router_failed")
         return {
             "route": "regulation",
             "standalone_query": _fallback_query(query, history),
@@ -259,13 +186,11 @@ async def retrieve_node(state: AgentState) -> AgentState:
     try:
         query_vec = await asyncio.to_thread(store.embed_query, query)
         keyword_only = False
-    except Exception as e:  # noqa: BLE001 - 임베딩(Gemini) 장애에도 키워드 검색으로 답한다
-        # 2026-10-24 Gemini 프로젝트 정지로 임베딩이 403을 내자 답변(Claude)까지 전부 실패했다.
-        # 키워드(BM25)만으로도 조항 번호·용어가 맞는 근거는 찾으므로, 응답을 멈추기보다 낮춰서 이어간다.
+    except Exception as e:  # noqa: BLE001 - 임베딩 장애에도 키워드 검색으로 답한다
+        # 2026-10-24 임베딩 API가 막히자 답변까지 전부 실패했다. 키워드(BM25)만으로도
+        # 조항 번호·용어가 맞는 근거는 찾으므로, 응답을 멈추기보다 낮춰서 이어간다.
         print(f"질의 임베딩 실패, 키워드 검색만으로 진행: {type(e).__name__}: {mask_text(str(e))[:200]}")
-        from app.agents import claude_agents
-
-        claude_agents._writer()({"fallback": "retrieve"})
+        _report_fallback("retrieve")
         query_vec, keyword_only = None, True
     reg_hits, audit_brief, audit_full = await asyncio.gather(
         asyncio.to_thread(
@@ -273,9 +198,10 @@ async def retrieve_node(state: AgentState) -> AgentState:
         ),
         # 검토 에이전트가 참고할 감사 선례 (실제 적용 사례 확인용)
         asyncio.to_thread(store.search, query, 2, "audit", 3, query_vec, keyword_only),
-        # 접미사를 붙인 질의는 의도적으로 다른 벡터가 되므로 자체 임베딩을 유지한다
+        # 접미사는 키워드 검색 쪽에만 붙는다 — 벡터는 같은 질의 임베딩을 재사용해 질의당 임베딩 호출을 1회로 묶는다
+        # (Voyage 무료 한도가 분당 3요청이라, 호출을 2회로 두면 동시 질문 하나에도 한도를 넘는다)
         asyncio.to_thread(
-            store.search, f"{query} 감사 처분 사례", K_AUDIT, "audit", 3, None, keyword_only
+            store.search, f"{query} 감사 처분 사례", K_AUDIT, "audit", 3, query_vec, keyword_only
         ),
     )
     # 한 사안에 대한 처분이 여러 건이면 보고서에 연속으로 나열된다.
@@ -323,16 +249,7 @@ async def reviewer_node(state: AgentState) -> AgentState:
         return {"reviewer": result, "citations": result.citations}
 
     user = prompts.REVIEWER_USER.format(query=query, regulations=_format_hits(hits))
-
-    async def gemini():
-        llm = _get_llm(thinking=AGENT_THINKING).with_structured_output(ReviewerResult)
-        return await llm.ainvoke([("system", prompts.REVIEWER_SYSTEM), ("user", user)])
-
-    result: ReviewerResult = await _with_claude(
-        "reviewer",
-        lambda ca: ca.structured(prompts.REVIEWER_SYSTEM, user, ReviewerResult),
-        gemini,
-    )
+    result: ReviewerResult = await claude_agents.structured(prompts.REVIEWER_SYSTEM, user, ReviewerResult)
     return {"reviewer": result, "citations": result.citations}
 
 
@@ -362,16 +279,7 @@ async def auditor_node(state: AgentState) -> AgentState:
         regulations=_format_hits(reg_hits),
         audit_records=_format_hits(audit_hits),
     )
-
-    async def gemini():
-        llm = _get_llm(thinking=AGENT_THINKING).with_structured_output(AuditorResult)
-        return await llm.ainvoke([("system", prompts.AUDITOR_SYSTEM), ("user", user)])
-
-    result: AuditorResult = await _with_claude(
-        "auditor",
-        lambda ca: ca.structured(prompts.AUDITOR_SYSTEM, user, AuditorResult),
-        gemini,
-    )
+    result: AuditorResult = await claude_agents.structured(prompts.AUDITOR_SYSTEM, user, AuditorResult)
     return {"auditor": result, "citations": result.citations}
 
 
@@ -384,7 +292,7 @@ async def coordinator_node(state: AgentState) -> AgentState:
         markdown = (
             "### 핵심 요약\n(목업 응답) 규정 검토와 감사 분석 모두 위반 가능성이 높다고 판단했습니다.\n\n"
             "### 최종 권고\n회식비 대신 공식 활동비 항목으로 집행하고, 사전에 감사위원회 서면 확인을 받으십시오.\n\n"
-            "> ⚠️ GEMINI_API_KEY가 설정되지 않아 목업 모드로 동작 중입니다.\n\n"
+            "> ⚠️ CLAUDE_API_KEY·VOYAGE_API_KEY가 설정되지 않아 목업 모드로 동작 중입니다.\n\n"
             "<followups>\n- 공식 활동비 항목은 어떻게 인준받나요?\n- 예산 초과 시 처분 수위는 어떻게 되나요?\n- 증빙서류는 무엇을 준비해야 하나요?\n</followups>"
         )
         return {"final_markdown": markdown}
@@ -400,23 +308,9 @@ async def coordinator_node(state: AgentState) -> AgentState:
         auditor_reasoning=auditor.reasoning if auditor else "-",
         auditor_recommendation=auditor.recommendation if auditor else "-",
     )
-    # 조정은 이미 구조화된 두 분석을 병합하는 작업이라 깊은 사고가 필요 없다.
-    # 사고 토큰은 첫 응답 토큰을 늦추고 출력 단가로 과금되므로 low로 제한한다.
-    async def gemini():
-        response = await _get_llm(thinking="low").ainvoke(
-            [("system", prompts.COORDINATOR_SYSTEM), ("user", user_prompt)]
-        )
-        return content_to_text(response.content)
-
-    from app.agents.claude_agents import StreamStarted
-
     try:
-        markdown = await _with_claude(
-            "coordinator",
-            lambda ca: ca.coordinate(prompts.COORDINATOR_SYSTEM, user_prompt),
-            gemini,
-        )
-    except StreamStarted as e:
+        markdown = await claude_agents.coordinate(prompts.COORDINATOR_SYSTEM, user_prompt)
+    except claude_agents.StreamStarted as e:
         # 이미 화면에 나간 글을 지우고 다시 쓸 수는 없다. 받은 데까지에 안내를 붙여 끝내고,
         # 두 분석·근거·위험도는 그대로 결과로 보낸다 (요청 전체를 오류로 버리지 않는다).
         print(f"Claude 종합 조정이 중간에 끊김: {e}")

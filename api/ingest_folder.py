@@ -34,7 +34,7 @@ def main() -> None:
         sys.exit(1)
 
     if MOCK_MODE:
-        print("경고: GEMINI_API_KEY가 없어 목업 임베딩으로 색인됩니다. (실서비스용 아님)")
+        print("경고: CLAUDE_API_KEY·VOYAGE_API_KEY가 없어 목업 임베딩으로 색인됩니다. (실서비스용 아님)")
 
     pdfs = {p.name: p for p in sorted(folder.glob("*.pdf"))}
     indexed = {d["filename"]: d for d in db.list_documents()}

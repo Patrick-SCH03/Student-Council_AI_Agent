@@ -44,3 +44,7 @@ legacy/
 api/data-mock/
 # 운영 데이터 백업 (backup_remote.py) — 마스킹된 질의·IP 해시 포함
 api/backups/
+
+# 작업 메모·운영 문서는 로컬에만 둔다 (공개 저장소에 운영 세부를 올리지 않음)
+CLAUDE.md
+CONTRIBUTING.md

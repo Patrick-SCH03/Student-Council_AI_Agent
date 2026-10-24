@@ -32,7 +32,7 @@ type RecentRow = {
   tokens: number;
   query_preview: string;
   error: string | null;
-  // Claude가 실패해 Gemini로 넘어간 단계 (쉼표 구분)
+  // 낮춘 경로로 이어간 단계 (쉼표 구분)
   fallback: string | null;
   helpful: number | null;
 };
@@ -79,33 +79,23 @@ type Stats = {
   limits: Limits;
   feedback: Feedback;
   cache: { entries: number; hits: number };
-  // 최근 완료된 규정 질의의 단계별 중앙값 (초, 사고 토큰은 개수)
+  // 최근 완료된 규정 질의의 단계별 중앙값 (초)
   stages?: Partial<Record<StageKey, number>> & { samples: number };
   // 규정 검토·감사 분석·종합 조정을 돌리는 모델
-  agent?: { provider: string; model: string };
+  agent?: { model: string; embedding_model: string };
 };
 
-const FALLBACK_STAGE_LABELS: Record<string, string> = {
-  reviewer: "규정 검토",
-  auditor: "감사 분석",
-  coordinator: "종합 조정",
-  router: "질문 분류",
-};
-
-// 검색 폴백은 Claude가 아니라 임베딩(Gemini) 장애라 문구를 따로 둔다
 const FALLBACK_STAGE_NOTES: Record<string, string> = {
   retrieve: "임베딩 실패로 키워드 검색만 사용",
   router_failed: "질문 분류 실패로 규정 질의로 처리",
 };
 
 function fallbackTitle(fallback: string): string {
-  const parts = fallback.split(",");
-  const notes = parts.filter((s) => s in FALLBACK_STAGE_NOTES).map((s) => FALLBACK_STAGE_NOTES[s]);
-  const stages = parts
-    .filter((s) => !(s in FALLBACK_STAGE_NOTES))
-    .map((s) => FALLBACK_STAGE_LABELS[s] ?? s);
-  if (stages.length) notes.unshift(`Claude 실패로 Gemini가 처리: ${stages.join(", ")}`);
-  return notes.join(" · ");
+  // 목록에 없는 값은 이전 버전의 기록이다 (분석 단계가 다른 모델로 대체 처리됨)
+  return fallback
+    .split(",")
+    .map((s) => FALLBACK_STAGE_NOTES[s] ?? `이전 버전 대체 처리: ${s}`)
+    .join(" · ");
 }
 
 type StageKey =
@@ -114,8 +104,7 @@ type StageKey =
   | "reviewer"
   | "auditor"
   | "coordinator_ttft"
-  | "coordinator"
-  | "reasoning_tokens";
+  | "coordinator";
 
 const STAGE_LABELS: { key: StageKey; label: string }[] = [
   { key: "router", label: "질문 분류" },
@@ -147,14 +136,6 @@ function StageBreakdown({ stages }: { stages: NonNullable<Stats["stages"]> }) {
               </dd>
             </div>
           ),
-        )}
-        {stages.reasoning_tokens !== undefined && (
-          <div>
-            <dt className="text-xs font-medium text-slate-500">사고 토큰</dt>
-            <dd className="text-lg font-bold tabular-nums text-slate-800">
-              {fmt(stages.reasoning_tokens)}
-            </dd>
-          </div>
         )}
       </dl>
     </div>
@@ -613,8 +594,8 @@ export default function StatsPage() {
           value={`${fmt(stats.totals.count)}건`}
           sub={[
             stats.totals.errors ? `오류 ${stats.totals.errors}건` : "오류 0건",
-            // Claude 장애로 Gemini가 대신 답한 건수 — 늘면 응답이 느려지고 비용이 커진다
-            stats.totals.fallbacks ? `Gemini 폴백 ${stats.totals.fallbacks}건` : null,
+            // 검색·분류를 낮춘 경로로 처리한 건수 — 늘면 임베딩·Claude 쪽 장애를 의심한다
+            stats.totals.fallbacks ? `폴백 ${stats.totals.fallbacks}건` : null,
           ]
             .filter(Boolean)
             .join(" · ")}

@@ -138,25 +138,25 @@
       "id": "offtopic-shopping",
       "query": "쿠팡에서 실수로 포인트 적립을 했어",
       "expect_route": "general",
-      "max_tokens": 3000
+      "max_tokens": 5000
     },
     {
       "id": "offtopic-weather",
       "query": "오늘 날씨 어때?",
       "expect_route": "general",
-      "max_tokens": 3000
+      "max_tokens": 5000
     },
     {
       "id": "offtopic-personal-receipt",
       "query": "카페 영수증 환불받는 방법 알려줘",
       "expect_route": "general",
-      "max_tokens": 3000
+      "max_tokens": 5000
     },
     {
       "id": "greeting",
       "query": "안녕하세요",
       "expect_route": "general",
-      "max_tokens": 3000
+      "max_tokens": 5000
     },
     {
       "id": "fin-fiscal-year",
@@ -395,7 +395,7 @@
       "id": "offtopic-coding",
       "query": "파이썬으로 파일 읽는 코드 알려줘",
       "expect_route": "general",
-      "max_tokens": 3000
+      "max_tokens": 5000
     }
   ]
 }

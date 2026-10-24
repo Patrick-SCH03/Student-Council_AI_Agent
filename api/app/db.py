@@ -87,7 +87,7 @@ def _connect() -> sqlite3.Connection:
         "ALTER TABLE metrics ADD COLUMN stage_timings TEXT",
         # 요청별 추정 비용(USD). 모델 공급자가 섞이면 토큰 합 × 한 단가로는 비용을 낼 수 없다.
         "ALTER TABLE metrics ADD COLUMN cost_usd REAL",
-        # Claude가 실패해 Gemini로 넘어간 단계 (쉼표 구분). 폴백은 조용히 일어나 로그만으로는 놓친다.
+        # 낮춘 경로로 이어간 단계 (쉼표 구분: 검색 키워드만·분류 실패). 조용히 일어나 로그만으로는 놓친다.
         "ALTER TABLE metrics ADD COLUMN fallback TEXT",
     ):
         try:
@@ -127,6 +127,12 @@ def list_documents() -> list[dict]:
             "SELECT doc_id, filename, chunks, created_at FROM documents ORDER BY created_at DESC"
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def delete_all_documents() -> int:
+    with _connect() as conn:
+        cur = conn.execute("DELETE FROM documents")
+    return cur.rowcount
 
 
 def delete_document(doc_id: str) -> bool:
@@ -379,7 +385,7 @@ def get_stats(days: int = 14) -> dict:
             "COALESCE(SUM(input_tokens), 0) AS input_tokens, "
             "COALESCE(SUM(output_tokens), 0) AS output_tokens, "
             "COALESCE(SUM(cost_usd), 0) AS cost_usd, "
-            # cost_usd 도입 전 행은 토큰으로 비용을 추정한다 (main.py가 Gemini 단가로 환산)
+            # cost_usd 도입 전 행은 토큰으로 비용을 추정한다 (main.py가 당시 단가로 환산)
             "COALESCE(SUM(CASE WHEN cost_usd IS NULL THEN input_tokens END), 0) AS legacy_input_tokens, "
             "COALESCE(SUM(CASE WHEN cost_usd IS NULL THEN output_tokens END), 0) AS legacy_output_tokens, "
             # 'cached'는 정상 응답이므로 오류로 세지 않는다
@@ -395,7 +401,7 @@ def get_stats(days: int = 14) -> dict:
             "COALESCE(SUM(input_tokens), 0) AS input_tokens, "
             "COALESCE(SUM(output_tokens), 0) AS output_tokens, "
             "COALESCE(SUM(cost_usd), 0) AS cost_usd, "
-            # cost_usd 도입 전 행은 토큰으로 비용을 추정한다 (main.py가 Gemini 단가로 환산)
+            # cost_usd 도입 전 행은 토큰으로 비용을 추정한다 (main.py가 당시 단가로 환산)
             "COALESCE(SUM(CASE WHEN cost_usd IS NULL THEN input_tokens END), 0) AS legacy_input_tokens, "
             "COALESCE(SUM(CASE WHEN cost_usd IS NULL THEN output_tokens END), 0) AS legacy_output_tokens, "
             # IP 상한이 실제로 클라이언트를 구분하는지 확인하는 용도.
@@ -481,7 +487,7 @@ def get_stats(days: int = 14) -> dict:
 
 
 STAGE_SAMPLE = 50
-STAGE_KEYS = ("router", "retrieve", "reviewer", "auditor", "coordinator_ttft", "coordinator", "reasoning_tokens")
+STAGE_KEYS = ("router", "retrieve", "reviewer", "auditor", "coordinator_ttft", "coordinator")
 
 
 def summarize_stages(rows: list[dict]) -> dict:

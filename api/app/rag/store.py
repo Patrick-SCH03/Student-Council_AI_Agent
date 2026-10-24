@@ -12,16 +12,17 @@ import time
 
 import chromadb
 
-from app.config import CHROMA_DIR, GEMINI_API_KEY, GEMINI_EMBEDDING_MODEL, MOCK_MODE
+from app.config import CHROMA_DIR, MOCK_MODE, VOYAGE_API_KEY, VOYAGE_EMBEDDING_MODEL
 
-# 목업(256차원)과 실제 Gemini 임베딩(3072차원)은 호환되지 않으므로 컬렉션을 분리한다.
-COLLECTION_NAME = "regulations_mock" if MOCK_MODE else "regulations"
+# 목업(256차원)과 실제 임베딩은 호환되지 않고, 임베딩 모델마다 벡터 공간이 달라 컬렉션 이름에 모델을 넣는다.
+# 모델을 바꾸면 새 컬렉션이 비어 있으므로 문서를 다시 색인한다 (옛 컬렉션은 기동 시 정리).
+COLLECTION_NAME = "regulations_mock" if MOCK_MODE else f"regulations_{VOYAGE_EMBEDDING_MODEL}".replace(".", "-")
 _EMBED_DIM = 256  # 목업 임베딩 차원
 
 # 재진입 가능해야 한다: BM25 색인을 만드는 도중 컬렉션 접근이 다시 락을 요구한다
 _lock = threading.RLock()
 _client: chromadb.ClientAPI | None = None
-_embedder = None
+_voyage = None
 
 
 def _get_client() -> chromadb.ClientAPI:
@@ -32,10 +33,24 @@ def _get_client() -> chromadb.ClientAPI:
         return _client
 
 
-def _get_collection():
+def _get_collection(name: str | None = None):
     return _get_client().get_or_create_collection(
-        COLLECTION_NAME, metadata={"hnsw:space": "cosine"}
+        name or COLLECTION_NAME, metadata={"hnsw:space": "cosine"}
     )
+
+
+def drop_stale_collections() -> list[str]:
+    """지금 쓰지 않는 실제 색인 컬렉션(옛 임베딩 모델의 벡터)을 지운다. 목업 컬렉션은 건드리지 않는다.
+
+    임베딩 모델을 바꾸면 옛 벡터는 쓸모가 없고 디스크만 차지한다.
+    """
+    if MOCK_MODE:
+        return []
+    names = [c.name if hasattr(c, "name") else c for c in _get_client().list_collections()]
+    stale = [n for n in names if n.startswith("regulations") and n != COLLECTION_NAME and "mock" not in n]
+    for name in stale:
+        _get_client().delete_collection(name)
+    return stale
 
 
 def _mock_embed(texts: list[str]) -> list[list[float]]:
@@ -51,10 +66,56 @@ def _mock_embed(texts: list[str]) -> list[list[float]]:
     return vectors
 
 
-# 무료 티어 쿼터(429) 대응: 작은 배치 + 지수 백오프 재시도
-_EMBED_BATCH = 20
+# 쿼터(429)·일시 장애 대응: 배치 + 지수 백오프 재시도
+_EMBED_BATCH = 64
 _EMBED_MAX_RETRIES = 5
-_EMBED_BACKOFF_BASE = 30  # 초
+_EMBED_BACKOFF_BASE = 20  # 초
+
+# Voyage는 결제 수단이 없으면 분당 3요청·1만 토큰으로 묶인다. 첫 429를 보면 이 프로세스는
+# 저속 모드로 바꿔, 문서 임베딩을 작은 배치(글자 수 기준)로 나눠 요청 간격을 벌린다.
+# (결제 수단을 등록하면 429가 나지 않아 저속 모드로 들어가지 않는다)
+_THROTTLE_BATCH_CHARS = 6000  # 한국어 기준 대략 1만 토큰 아래
+_THROTTLE_INTERVAL = 21.0  # 초 (분당 3요청)
+_throttled = False
+_last_request = 0.0
+
+
+def _batches(texts: list[str]) -> list[list[str]]:
+    if not _throttled:
+        return [texts[i : i + _EMBED_BATCH] for i in range(0, len(texts), _EMBED_BATCH)]
+    out: list[list[str]] = []
+    cur: list[str] = []
+    size = 0
+    for t in texts:
+        if cur and size + len(t) > _THROTTLE_BATCH_CHARS:
+            out.append(cur)
+            cur, size = [], 0
+        cur.append(t)
+        size += len(t)
+    if cur:
+        out.append(cur)
+    return out
+
+
+def _voyage_embed(texts: list[str], input_type: str) -> list[list[float]]:
+    """Voyage 임베딩 (공식 HTTP API). 문서와 질의를 input_type으로 구분해야 검색 품질이 나온다."""
+    global _voyage
+    if _voyage is None:
+        import httpx
+
+        _voyage = httpx.Client(
+            base_url="https://api.voyageai.com/v1",
+            headers={"Authorization": f"Bearer {VOYAGE_API_KEY}"},
+            timeout=60,
+        )
+    res = _voyage.post("/embeddings", json={
+        "input": texts, "model": VOYAGE_EMBEDDING_MODEL, "input_type": input_type,
+    })
+    if res.status_code >= 400:
+        # 응답 본문만 남긴다 — 요청 헤더(키)는 예외 문구에 싣지 않는다
+        raise RuntimeError(f"Voyage 임베딩 오류 {res.status_code}: {res.text[:200]}")
+    data = sorted(res.json()["data"], key=lambda d: d["index"])
+    return [d["embedding"] for d in data]
 
 
 def _embed(
@@ -62,36 +123,45 @@ def _embed(
     *,
     max_retries: int = _EMBED_MAX_RETRIES,
     backoff_base: int = _EMBED_BACKOFF_BASE,
+    input_type: str = "document",
 ) -> list[list[float]]:
     if MOCK_MODE:
         return _mock_embed(texts)
-    global _embedder
-    if _embedder is None:
-        from langchain_google_genai import GoogleGenerativeAIEmbeddings
-
-        _embedder = GoogleGenerativeAIEmbeddings(
-            model=GEMINI_EMBEDDING_MODEL, google_api_key=GEMINI_API_KEY
-        )
-
+    global _throttled, _last_request
     vectors: list[list[float]] = []
-    for start in range(0, len(texts), _EMBED_BATCH):
-        batch = texts[start : start + _EMBED_BATCH]
+    pending = list(texts)
+    while pending:
+        batch = _batches(pending)[0]
         for attempt in range(max_retries):
+            # 저속 모드에서 문서 색인은 요청 간격을 지킨다. 질의는 기다리지 않는다 — 막히면 키워드 검색으로 간다
+            if _throttled and input_type == "document":
+                wait = _THROTTLE_INTERVAL - (time.time() - _last_request)
+                if wait > 0:
+                    time.sleep(wait)
             try:
-                vectors.extend(_embedder.embed_documents(batch))
+                _last_request = time.time()
+                vectors.extend(_voyage_embed(batch, input_type))
                 break
             except Exception as e:
                 msg = str(e)
-                # 쿼터 제한(429)과 일시적 서버 장애(500/503)는 재시도 대상
-                retryable = any(
-                    token in msg
-                    for token in ("429", "RESOURCE_EXHAUSTED", "503", "UNAVAILABLE", "500", "INTERNAL")
+                if " 429" in msg and not _throttled:
+                    print("Voyage 처리 한도(429) — 저속 모드로 전환 (작은 배치, 요청 간격 21초)")
+                    _throttled = True
+                    if input_type == "document":
+                        batch = _batches(batch)[0]  # 이번 배치부터 작게 다시 나눈다
+                # 쿼터 제한(429)·일시적 서버 장애(5xx)·네트워크 타임아웃은 재시도 대상
+                # (httpx 타임아웃은 메시지가 "timed out"이나 빈 문자열이라 예외 종류로 본다)
+                import httpx
+
+                retryable = isinstance(e, httpx.TransportError) or any(
+                    token in msg for token in (" 429", " 500", " 502", " 503", " 504")
                 )
                 if not retryable or attempt == max_retries - 1:
                     raise
                 wait = backoff_base * (2**attempt)
                 print(f"임베딩 일시 오류. {wait}초 대기 후 재시도 ({attempt + 1}/{max_retries})...")
                 time.sleep(wait)
+        pending = pending[len(batch):]
     return vectors
 
 
@@ -106,12 +176,20 @@ def classify_doc(source_file: str) -> str:
     return "regulation"
 
 
-def add_chunks(doc_id: str, source_file: str, chunks: list[str]) -> int:
-    """청크를 임베딩하여 컬렉션에 추가하고 추가된 개수를 반환한다."""
+def add_chunks(
+    doc_id: str, source_file: str, chunks: list[str], embeddings: list[list[float]] | None = None
+) -> int:
+    """청크를 컬렉션에 추가하고 추가된 개수를 반환한다.
+
+    embeddings를 주면 그대로 쓴다 — 로컬에서 만든 색인을 운영 서버로 옮길 때(/api/index/import).
+    """
     if not chunks:
         return 0
     collection = _get_collection()
-    embeddings = _embed(chunks)
+    if embeddings is None:
+        embeddings = _embed(chunks)
+    elif len(embeddings) != len(chunks):
+        raise ValueError("청크와 임베딩 개수가 다르다")
     doc_type = classify_doc(source_file)
     collection.add(
         ids=[f"{doc_id}:{i}" for i in range(len(chunks))],
@@ -233,7 +311,7 @@ def embed_query(text: str) -> list[float]:
     색인용 백오프(최대 450초)를 그대로 쓰면 사용자 요청이 그만큼 붙잡힌다.
     질의는 짧게 두 번만 시도하고 실패를 빨리 돌려준다.
     """
-    return _embed([text], max_retries=2, backoff_base=2)[0]
+    return _embed([text], max_retries=2, backoff_base=2, input_type="query")[0]
 
 
 def _vector_search(
@@ -241,7 +319,7 @@ def _vector_search(
 ) -> list[dict]:
     collection = _get_collection()
     result = collection.query(
-        query_embeddings=[embedding] if embedding is not None else _embed([query]),
+        query_embeddings=[embedding] if embedding is not None else _embed([query], input_type="query"),
         n_results=min(k, collection.count()),
         where={"doc_type": doc_type} if doc_type else None,
         include=["documents", "metadatas"],
@@ -382,9 +460,26 @@ def expand_neighbors(hits: list[dict], radius: int = 1, top_n: int | None = None
     return expanded
 
 
+def export_doc(doc_id: str) -> tuple[list[str], list[list[float]]]:
+    """한 문서의 청크·임베딩을 청크 순서대로 돌려준다 (운영 서버로 옮기는 용도)."""
+    got = _get_collection().get(where={"doc_id": doc_id}, include=["documents", "metadatas", "embeddings"])
+    rows = sorted(zip(got["metadatas"], got["documents"], got["embeddings"]), key=lambda r: r[0]["chunk_index"])
+    return [r[1] for r in rows], [list(map(float, r[2])) for r in rows]
+
+
 def delete_doc(doc_id: str) -> None:
     _get_collection().delete(where={"doc_id": doc_id})
     _invalidate_bm25()
+
+
+def reset_collection() -> int:
+    """현재 색인 컬렉션을 비운다 (전체 재색인 전). 지운 청크 수를 돌려준다."""
+    with _lock:
+        removed = _get_collection().count()
+        _get_client().delete_collection(COLLECTION_NAME)
+        _get_collection()
+    _invalidate_bm25()
+    return removed
 
 
 def chunk_count() -> int:

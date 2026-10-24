@@ -70,7 +70,7 @@ def _run_child():
 def _run_isolated():
     scratch = tempfile.TemporaryDirectory(prefix="smoke-test-")
     child_env = os.environ.copy()
-    child_env.update(GEMINI_API_KEY="", GOOGLE_API_KEY="", DATA_DIR=scratch.name)
+    child_env.update(CLAUDE_API_KEY="", ANTHROPIC_API_KEY="", VOYAGE_API_KEY="", DATA_DIR=scratch.name)
 
     try:
         result = subprocess.run(

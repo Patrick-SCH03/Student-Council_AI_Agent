@@ -733,7 +733,7 @@ export default function ChatPage() {
         <div className="mb-4 flex items-center gap-2 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-2.5 text-sm font-medium text-amber-700">
           <Icon path={paths.alert} className="h-4 w-4" />
           <span>
-            API 키(GEMINI_API_KEY)가 없어 <b>목업 모드</b>로 동작 중이에요.
+            API 키(CLAUDE_API_KEY·VOYAGE_API_KEY)가 없어 <b>목업 모드</b>로 동작 중이에요.
           </span>
         </div>
       )}

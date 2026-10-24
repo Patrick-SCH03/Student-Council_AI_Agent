@@ -35,7 +35,9 @@ needs_precedents에는 질문이 '과거 감사 사례·판례·처분 이력을
 - "학생회비로 회식비 사용이 가능한가요?" → false"""
 
 ROUTER_USER = """\
-{history}**현재 질문:** {query}"""
+{history}<question>
+{query}
+</question>"""
 
 # 감사보고서에는 처분 대상자의 실명이 기재되어 있다. 규정 해석에는 실명이 필요하지
 # 않으므로, 모든 답변 생성 단계에서 직책·소속으로만 지칭하도록 강제한다.
@@ -85,14 +87,16 @@ REVIEWER_SYSTEM = """\
 - 제공된 규정에 없는 내용을 지어내지 마라. 규정에서 확인할 수 없으면 그렇게 말하라.
 - citations에는 실제로 판단에 사용한 문서만 포함하라. 인용문에도 개인 실명을 옮기지 마라.""" + JUDGMENT_RULE + PRIVACY_RULE
 
-# 검색 결과를 앞에, 가변 질의를 뒤에 둔다. Gemini implicit caching은 프리픽스
-# 일치 기반이라, 짧은 질의가 앞에 오면 뒤의 대용량 블록 전체가 캐시 대상에서 빠진다.
+# 긴 근거 문서를 앞에, 질문을 맨 뒤에 둔다 — Claude 공식 권장 배치로, 질문이 끝에 있을 때
+# 긴 문맥에서의 답변 품질이 가장 좋다. 문서는 _format_hits가 <documents> 태그로 감싼다.
 REVIEWER_USER = """\
-**관련 규정 (검색 결과):**
+<regulations>
 {regulations}
+</regulations>
 
-**사용자 질의:**
-{query}"""
+<question>
+{query}
+</question>"""
 
 AUDITOR_SYSTEM = """\
 너는 학생회 재정 감사 전문가다.
@@ -108,14 +112,17 @@ AUDITOR_SYSTEM = """\
 - citations에는 실제로 판단에 사용한 문서만 포함하라. 인용문에도 개인 실명을 옮기지 마라.""" + JUDGMENT_RULE + PRIVACY_RULE
 
 AUDITOR_USER = """\
-**관련 규정 (검색 결과):**
+<regulations>
 {regulations}
+</regulations>
 
-**과거 감사 기록 (검색 결과):**
+<audit_records>
 {audit_records}
+</audit_records>
 
-**사용자 질의:**
-{query}"""
+<question>
+{query}
+</question>"""
 
 COORDINATOR_SYSTEM = """\
 너는 학생회 규정 관련 사안을 종합 판단하는 최고 조정자다.
@@ -147,18 +154,21 @@ COORDINATOR_SYSTEM = """\
 </followups>"""
 
 COORDINATOR_USER = """\
-**사용자 질의:**
-{query}
-
-**규정 검토 에이전트 분석:**
+<reviewer_analysis>
 - 위반 판단: {violation}
 - 위험도: {reviewer_risk}
 - 근거: {reviewer_reasoning}
 - 권고: {reviewer_recommendation}
+</reviewer_analysis>
 
-**감사 에이전트 분석:**
+<auditor_analysis>
 - 감사 기준: {compliance}
 - 처분 가능성: {sanction_likelihood}
 - 근거: {auditor_reasoning}
-- 권고: {auditor_recommendation}"""
+- 권고: {auditor_recommendation}
+</auditor_analysis>
+
+<question>
+{query}
+</question>"""
 

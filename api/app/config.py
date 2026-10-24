@@ -1,4 +1,4 @@
-"""앱 전역 설정. .env를 로드하고, API 키가 없으면 목업 모드로 동작한다."""
+"""앱 전역 설정. .env를 로드하고, 모델 키가 없으면 목업 모드로 동작한다."""
 
 import os
 from pathlib import Path
@@ -7,54 +7,29 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-GEMINI_API_KEY: str | None = (
-    os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or None
-)
-# 릴리스 태그(v2.7.0)와 같이 올린다. /api/health로 배포본이 어떤 버전인지 확인한다.
-APP_VERSION = "2.14.0"
+# 릴리스 태그와 같이 올린다. /api/health로 배포본이 어떤 버전인지 확인한다.
+APP_VERSION = "2.15.0"
 
-GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-3.7-flash")
-# 라우터는 분류 + 한 문장 재작성만 하므로 경량 모델을 쓴다.
-# flash-lite는 공식 문서가 classification·routing 용례로 명시하는 티어로,
-# 단가가 본 모델의 1/3 수준이고 첫 토큰 지연도 가장 짧다.
-GEMINI_ROUTER_MODEL: str = os.getenv("GEMINI_ROUTER_MODEL", "gemini-3.5-flash-lite")
-GEMINI_EMBEDDING_MODEL: str = os.getenv(
-    "GEMINI_EMBEDDING_MODEL", "models/gemini-embedding-2"
-)
-# 규정 검토·감사 분석의 사고 수준 (low/medium/high). 비우면 모델 기본값.
-# 사고 토큰은 첫 응답 전에 만들어져 지연의 주원인이라, 속도·품질 A/B를 코드 수정 없이 돌린다.
-AGENT_THINKING: str | None = os.getenv("AGENT_THINKING") or None
-
-# 규정 검토·감사 분석·종합 조정을 돌릴 모델 공급자 (gemini | claude). 라우터·임베딩은 항상 Gemini.
-# claude로 켜도 Claude 호출이 실패하면 그 단계만 Gemini로 돌아간다 (가용성 우선).
-AGENT_PROVIDER: str = (os.getenv("AGENT_PROVIDER") or "gemini").strip().lower()
+# 질문 분류·규정 검토·감사 분석·종합 조정·문서 OCR은 Claude, 검색 임베딩은 Voyage가 맡는다.
 CLAUDE_API_KEY: str | None = os.getenv("CLAUDE_API_KEY") or os.getenv("ANTHROPIC_API_KEY") or None
 CLAUDE_MODEL: str = os.getenv("CLAUDE_MODEL", "claude-haiku-5-5")
 # effort는 사고 깊이·출력량을 함께 정한다. 2026-10-13 A/B에서 low가 지연 목표에 맞았다.
 CLAUDE_EFFORT: str = os.getenv("CLAUDE_EFFORT", "low")
 # Claude 호출 타임아웃(초). Haiku·low는 단계당 5~10초라 30초면 충분하다. 더 큰 모델이나 높은 effort로
-# 바꾸면 함께 올린다 — 낮으면 매번 타임아웃 → 재시도 → Gemini 폴백으로 비용만 겹친다.
+# 바꾸면 함께 올린다 — 낮으면 매번 타임아웃 → 재시도로 지연·비용만 겹친다.
 CLAUDE_TIMEOUT: float = float(os.getenv("CLAUDE_TIMEOUT") or (30 if CLAUDE_EFFORT == "low" else 90))
-if AGENT_PROVIDER not in ("gemini", "claude"):
-    print(f"AGENT_PROVIDER={AGENT_PROVIDER!r}는 알 수 없는 값이라 gemini로 동작한다")
-    AGENT_PROVIDER = "gemini"
-if AGENT_PROVIDER == "claude" and not CLAUDE_API_KEY:
-    # 켠 줄 알았는데 매 요청이 조용히 Gemini로 폴백하면 결과·비용을 잘못 읽는다
-    print("AGENT_PROVIDER=claude인데 CLAUDE_API_KEY가 없어 gemini로 동작한다")
-    AGENT_PROVIDER = "gemini"
-# 규정 검토·감사 분석·종합 조정이 실제로 쓰는 모델 (/api/health·대시보드 표시용)
-AGENT_MODEL: str = CLAUDE_MODEL if AGENT_PROVIDER == "claude" else GEMINI_MODEL
-# 질문 분류도 같은 공급자를 따른다 (claude면 CLAUDE_MODEL, 실패 시에만 GEMINI_ROUTER_MODEL)
-ROUTER_MODEL: str = CLAUDE_MODEL if AGENT_PROVIDER == "claude" else GEMINI_ROUTER_MODEL
 
-# 키가 없으면 LLM·임베딩 호출 없이 전체 플로우를 검증하는 목업 모드로 동작한다.
-MOCK_MODE: bool = GEMINI_API_KEY is None
+VOYAGE_API_KEY: str | None = os.getenv("VOYAGE_API_KEY") or None
+VOYAGE_EMBEDDING_MODEL: str = os.getenv("VOYAGE_EMBEDDING_MODEL", "voyage-4")
+
+# 두 키가 모두 있어야 실제로 동작한다. 하나라도 없으면 LLM·임베딩 호출 없이 전체 플로우를 검증하는 목업 모드.
+MOCK_MODE: bool = not (CLAUDE_API_KEY and VOYAGE_API_KEY)
 
 DATA_DIR = Path(os.getenv("DATA_DIR", Path(__file__).resolve().parent.parent / "data"))
 UPLOAD_DIR = DATA_DIR / "uploads"
 CHROMA_DIR = DATA_DIR / "chroma"
 SQLITE_PATH = DATA_DIR / "app.sqlite3"
-# Gemini OCR은 같은 PDF에도 매번 다른 텍스트를 내놓는다. 결과를 남겨 재색인 시 재사용한다.
+# LLM OCR은 같은 PDF에도 매번 다른 텍스트를 내놓는다. 결과를 남겨 재색인 시 재사용한다.
 OCR_CACHE_DIR = DATA_DIR / "ocr_cache"
 
 # 최초 실행 시 적용되는 기본값 (0 = 무제한).
@@ -85,8 +60,6 @@ RETENTION_DAYS: int = int(os.getenv("RETENTION_DAYS", "365"))
 # 동시에 LLM 파이프라인을 돌리는 요청 상한. 한도는 완료된 요청만 세므로,
 # 응답이 끝나기 전에 몰려오는 요청을 여기서 막는다 (비용 폭주 방지).
 MAX_INFLIGHT_TOTAL: int = int(os.getenv("MAX_INFLIGHT_TOTAL", "5"))
-# LLM 호출 타임아웃(초). 상류가 느려져도 요청이 무기한 붙잡히지 않도록.
-LLM_TIMEOUT: int = int(os.getenv("LLM_TIMEOUT", "60"))
 
 CORS_ORIGINS: list[str] = [
     o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",") if o.strip()

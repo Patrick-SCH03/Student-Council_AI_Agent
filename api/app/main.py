@@ -10,33 +10,31 @@ import secrets
 import tempfile
 import time
 import zipfile
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse, Response, StreamingResponse
-from langchain_core.callbacks import UsageMetadataCallbackHandler
 from pydantic import BaseModel, Field, field_validator
 from starlette.datastructures import MutableHeaders
 
 from app import db, pricing
-from app.agents.graph import content_to_text, graph
+from app.agents.graph import graph
 from app.agents.schemas import overall_risk
 from app.config import (
     ADMIN_TOKEN,
-    AGENT_MODEL,
-    AGENT_PROVIDER,
     APP_VERSION,
+    CLAUDE_MODEL,
     CORS_ORIGINS,
     DEFAULT_LIMITS,
-    ROUTER_MODEL,
     IP_HASH_SALT,
     MAX_INFLIGHT_TOTAL,
     MOCK_MODE,
     OCR_CACHE_DIR,
     RETENTION_DAYS,
     SIGNING_KEY_IS_PUBLIC,
+    VOYAGE_EMBEDDING_MODEL,
 )
 from app.privacy import PRIVATE_NAMES, StreamMasker, mask_obj, mask_text
 from app.rag import citation_graph, store
@@ -126,12 +124,11 @@ def _feedback_token(analysis_id: int) -> str:
     return hmac.new(IP_HASH_SALT.encode(), msg, hashlib.sha256).hexdigest()[:32]
 
 
-def _stage_timings(start: float, marks: dict[str, float], usage: dict) -> dict:
+def _stage_timings(start: float, marks: dict[str, float]) -> dict:
     """노드 완료 시각으로 단계별 소요 시간(초)을 계산한다.
 
     규정 검토·감사 분석은 동시에 돌므로 각자 검색 완료 시점부터 잰다. 종합 조정은 두 분석이
-    모두 끝난 시점부터 첫 글자(ttft)와 끝까지를 잰다. 사고 토큰은 첫 글자 전에 생성돼
-    지연의 주원인이 되므로 함께 남긴다 (모델 구분 없이 합계).
+    모두 끝난 시점부터 첫 글자(ttft)와 끝까지를 잰다.
     """
     t: dict = {}
 
@@ -147,11 +144,6 @@ def _stage_timings(start: float, marks: dict[str, float], usage: dict) -> dict:
     if "coordinator_first_token" in marks and agents_done is not None:
         t["coordinator_ttft"] = round(marks["coordinator_first_token"] - agents_done, 2)
     gap("coordinator", agents_done)
-    reasoning = sum(
-        (u.get("output_token_details") or {}).get("reasoning", 0) for u in usage.values()
-    )
-    if reasoning:
-        t["reasoning_tokens"] = reasoning
     return t
 
 
@@ -197,10 +189,9 @@ def health():
         "version": APP_VERSION,
         "mock_mode": MOCK_MODE,
         "admin_protected": bool(ADMIN_TOKEN),
-        # 분석·종합을 실제로 돌리는 모델. 질문 분류(router)는 공급자와 무관하게 Gemini다
-        "agent_provider": AGENT_PROVIDER,
-        "model": AGENT_MODEL,
-        "router_model": ROUTER_MODEL,
+        # 질문 분류·분석·종합·OCR을 돌리는 모델과 검색 임베딩 모델
+        "model": CLAUDE_MODEL,
+        "embedding_model": VOYAGE_EMBEDDING_MODEL,
         "indexed_chunks": store.chunk_count(),
     }
 
@@ -359,48 +350,36 @@ async def chat(
     async def event_stream():
         start = time.time()
         merged: dict = {"citations": []}
-        usage_handler = UsageMetadataCallbackHandler()
         # 프롬프트의 실명 금지 규칙은 확률적이다. 나가는 모든 텍스트를 코드가 한 번 더 지운다.
         masker = StreamMasker()
         recorded = False  # 정상·오류 경로에서 지표를 남겼는지
         marks: dict[str, float] = {}  # 노드별 완료 시각 (단계별 소요 시간 계산용)
 
         def _timings() -> dict:
-            return _stage_timings(start, marks, usage_handler.usage_metadata or {})
+            return _stage_timings(start, marks)
 
-        # Claude 단계는 LangChain 콜백에 잡히지 않아 custom 스트림으로 받은 사용량을 따로 모은다
+        # 각 Claude 호출이 custom 스트림으로 흘린 사용량을 모은다 (요청 비용·토큰 집계)
         claude_usage = {"input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0}
-        fallbacks: list[str] = []  # Claude가 실패해 Gemini로 넘어간 단계
+        fallbacks: list[str] = []  # 낮춘 경로로 이어간 단계 (검색 키워드만·분류 실패)
 
         def _fallback() -> str | None:
-            # 같은 단계가 두 번 남을 수 있다 (Claude 실패 → Gemini도 실패)
             return ",".join(dict.fromkeys(fallbacks)) or None
 
-        def _gemini_totals() -> tuple[int, int]:
-            usage = usage_handler.usage_metadata or {}
-            return (
-                sum(u.get("input_tokens", 0) for u in usage.values()),
-                sum(u.get("output_tokens", 0) for u in usage.values()),
-            )
-
         def _token_totals() -> tuple[int, int]:
-            g_in, g_out = _gemini_totals()
-            return g_in + claude_usage["input_tokens"], g_out + claude_usage["output_tokens"]
+            return claude_usage["input_tokens"], claude_usage["output_tokens"]
 
         def _request_cost() -> float:
-            # 모델별 단가 + 캐시 적중 할인. 질문 분류(Flash-Lite)와 폴백(Flash)이 섞여도 각각 매긴다
-            return pricing.langchain_usage_cost(usage_handler.usage_metadata) + claude_usage["cost_usd"]
+            return claude_usage["cost_usd"]
 
         try:
             yield _sse({"type": "stage", "label": "질문 분석 중..."})
 
             async for mode, payload in graph.astream(
                 {"query": query, "history": history, "citations": []},
-                config={"callbacks": [usage_handler]},
-                stream_mode=["updates", "messages", "custom"],
+                stream_mode=["updates", "custom"],
             ):
                 if mode == "custom":
-                    # Claude 단계가 직접 흘리는 토큰·사용량 (LangChain 모델이 아니라 messages에 안 잡힘)
+                    # Claude 단계가 직접 흘리는 토큰·사용량
                     if isinstance(payload, dict):
                         if text := payload.get("token"):
                             marks.setdefault("coordinator_first_token", time.time())
@@ -412,20 +391,11 @@ async def chat(
                             claude_usage["input_tokens"] += in_tok
                             claude_usage["output_tokens"] += out_tok
                             claude_usage["cost_usd"] += pricing.cost_usd(
-                                usage.get("model") or AGENT_MODEL, in_tok, out_tok,
+                                usage.get("model") or CLAUDE_MODEL, in_tok, out_tok,
                                 int(usage.get("cached_tokens", 0)),
                             )
                         if stage := payload.get("fallback"):
                             fallbacks.append(str(stage))
-                    continue
-                if mode == "messages":
-                    chunk, meta = payload
-                    node = meta.get("langgraph_node", "")
-                    content = content_to_text(getattr(chunk, "content", ""))
-                    if node in ("coordinator", "general") and content:
-                        marks.setdefault("coordinator_first_token", time.time())
-                        if visible := masker.feed(content):
-                            yield _sse({"type": "token", "content": visible})
                     continue
 
                 # mode == "updates": {node_name: state_delta}
@@ -686,6 +656,67 @@ def track_visit(request: TrackRequest):
     return {"ok": True}
 
 
+class ImportRequest(BaseModel):
+    filename: str = Field(min_length=5, max_length=200)
+    chunks: list[str] = Field(min_length=1, max_length=2000)
+    embeddings: list[list[float]] = Field(min_length=1, max_length=2000)
+
+    @field_validator("filename")
+    @classmethod
+    def _pdf_name(cls, v: str) -> str:
+        if not v.lower().endswith(".pdf") or "/" in v or "\\" in v:
+            raise ValueError("PDF 파일 이름만 받는다")
+        return v
+
+
+@app.post("/api/index/import", dependencies=[admin_only])
+def import_document(request: ImportRequest):
+    """로컬에서 추출·임베딩까지 끝낸 문서를 그대로 색인에 넣는다 (sync_index_to_remote.py가 부른다).
+
+    업로드(/api/documents)는 서버가 OCR·임베딩을 직접 해 큰 문서는 프록시 제한(무전송 5분)에 걸린다.
+    여기서는 외부 API를 부르지 않아 몇 초 안에 끝나고, 로컬과 운영 색인이 똑같아진다.
+    """
+    if len(request.chunks) != len(request.embeddings):
+        raise HTTPException(status_code=422, detail="청크와 임베딩 개수가 달라요.")
+    dims = {len(e) for e in request.embeddings}
+    if len(dims) != 1 or not 64 <= dims.pop() <= 8192:
+        raise HTTPException(status_code=422, detail="임베딩 차원이 올바르지 않아요.")
+    if any(len(c) > 5000 for c in request.chunks):
+        raise HTTPException(status_code=422, detail="청크가 너무 길어요.")
+    if any(d["filename"] == request.filename for d in db.list_documents()):
+        raise HTTPException(status_code=409, detail="이미 색인된 문서예요.")
+    import uuid
+
+    doc_id = uuid.uuid4().hex
+    try:
+        added = store.add_chunks(doc_id, request.filename, request.chunks, request.embeddings)
+        db.add_document(doc_id, request.filename, added)
+    except Exception:
+        store.delete_doc(doc_id)
+        raise
+    _after_index_change()
+    return {"doc_id": doc_id, "filename": request.filename, "chunks": added}
+
+
+@app.post("/api/index/reset", dependencies=[admin_only])
+def reset_index(confirm: bool = False):
+    """전체 재색인 준비: 문서 목록·색인·OCR 캐시·답변 캐시·인용 그래프를 모두 비운다.
+
+    추출 모델이나 임베딩 모델을 바꾼 뒤 upload_to_remote.py로 문서를 다시 올리기 전에 부른다.
+    되돌릴 수 없어 confirm=true를 요구한다 (먼저 backup_remote.py로 백업할 것).
+    """
+    if not confirm:
+        raise HTTPException(status_code=400, detail="되돌릴 수 없는 작업이라 confirm=true가 필요해요.")
+    chunks = store.reset_collection()
+    documents = db.delete_all_documents()
+    ocr_files = 0
+    for f in OCR_CACHE_DIR.glob("*.txt"):
+        f.unlink()
+        ocr_files += 1
+    _after_index_change()
+    return {"documents": documents, "chunks": chunks, "ocr_cache_files": ocr_files}
+
+
 @app.get("/api/backup", dependencies=[admin_only])
 def download_backup():
     """되살릴 수 없는 운영 데이터를 zip 하나로 내려준다 (backup_remote.py가 받아 로컬에 보관).
@@ -765,12 +796,12 @@ def _memory_mb() -> dict:
 
 # 요청별 비용(cost_usd)을 남기기 전(~v2.8) 행은 모델·캐시 구분 없이 토큰 합만 있다. 그때 분석 모델이던
 # Flash의 당시 단가로 한 번에 매긴다 — 질문 분류(Flash-Lite)까지 Flash로 세므로 실제보다 약간 높다.
-_LEGACY_MODEL = "gemini-3.7-flash"
-_LEGACY_PRICED_ON = date(2026, 10, 13)
+# (입력, 출력) USD / 1M 토큰 — 그 시기 분석 모델의 단가. 새 행에는 쓰지 않는다.
+_LEGACY_RATES = (0.75, 3.75)
 
 
 def _legacy_cost_usd(input_tokens: int, output_tokens: int) -> float:
-    return pricing.cost_usd(_LEGACY_MODEL, input_tokens, output_tokens, on=_LEGACY_PRICED_ON)
+    return (input_tokens * _LEGACY_RATES[0] + output_tokens * _LEGACY_RATES[1]) / 1_000_000
 
 
 class SettingsRequest(BaseModel):
@@ -822,7 +853,7 @@ def get_stats(days: int = 14):
         # 위 합계 중 모델별 기록 없이 토큰 합으로 추정한 몫
         "estimated_usd": round(legacy_usd, 4),
     }
-    stats["agent"] = {"provider": AGENT_PROVIDER, "model": AGENT_MODEL}
+    stats["agent"] = {"model": CLAUDE_MODEL, "embedding_model": VOYAGE_EMBEDDING_MODEL}
     return stats
 
 
@@ -830,3 +861,9 @@ def get_stats(days: int = 14):
 db.purge_old(RETENTION_DAYS)
 # 원문 마스킹 이전에 쌓인 행을 소급해 지운다 (멱등 — 바뀔 행이 없으면 0건)
 db.mask_stored_text()
+# 지금 쓰지 않는 임베딩 모델의 옛 색인을 지운다 (멱등)
+try:
+    if dropped := store.drop_stale_collections():
+        print(f"옛 색인 컬렉션 삭제: {dropped}")
+except Exception as e:  # noqa: BLE001 - 정리 실패가 기동(헬스체크)을 막으면 크래시 루프가 된다
+    print(f"옛 색인 컬렉션 정리 실패, 건너뜀: {type(e).__name__}: {e}")

@@ -6,11 +6,11 @@ python-dotenv>=1.0
 
 # --- Agent orchestration (LangGraph 1.0) ---
 langgraph>=1.0
-langchain-google-genai>=2.0
-langchain-core>=1.0
 langchain-text-splitters>=1.0
-# AGENT_PROVIDER=claude일 때 규정 검토·감사 분석·종합 조정 (공식 SDK)
+# 질문 분류·규정 검토·감사 분석·종합 조정·문서 OCR (공식 SDK)
 anthropic>=1.13
+# Voyage 임베딩 HTTP 호출 (app/rag/store.py)
+httpx>=0.27
 
 # --- RAG ---
 chromadb>=1.0
@@ -23,5 +23,5 @@ networkx>=3.0
 # 2.8.0 미만에 청크 응답 무한 버퍼링·프록시 TLS 무시 권고 (높음 2건 포함)
 urllib3>=2.8.0
 # 2026.10.18 미만은 개인키가 유출된 eMudhra 중간 인증서로 이어지는 루트(emSign ECC Root CA - G3)를
-# 신뢰한다 — Gemini·Claude API로 가는 TLS를 중간자가 가로챌 수 있다 (GHSA-6q48-6c7w-9gw2)
+# 신뢰한다 — 외부 API로 가는 TLS를 중간자가 가로챌 수 있다 (GHSA-6q48-6c7w-9gw2)
 certifi>=2026.10.18

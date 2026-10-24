@@ -1,11 +1,8 @@
-"""Claude로 도는 규정 검토·감사 분석·종합 조정 (AGENT_PROVIDER=claude일 때).
+"""Claude 호출: 질문 분류·규정 검토·감사 분석(구조화 출력), 종합 조정(스트리밍), 문서 OCR.
 
-프롬프트·출력 스키마는 Gemini 경로와 같다 — 바뀌는 것은 모델뿐이다. 이 파일은 공식
-anthropic SDK 호출만 담고, 언제 쓸지(디스패치·폴백)는 graph.py가 정한다.
-
-LangChain 모델이 아니라서 LangGraph의 "messages" 스트림에 토큰이 잡히지 않는다.
-그래서 종합 조정의 토큰과 각 호출의 사용량을 LangGraph custom 스트림으로 직접 흘린다
-(main.py가 stream_mode "custom"으로 받는다).
+이 파일은 공식 anthropic SDK 호출만 담고, 언제 쓸지는 graph.py·ingest.py가 정한다.
+종합 조정의 토큰과 각 호출의 사용량은 LangGraph custom 스트림으로 흘린다
+(main.py가 stream_mode "custom"으로 받아 SSE·지표로 옮긴다).
 """
 
 from __future__ import annotations
@@ -17,13 +14,17 @@ from pydantic import BaseModel
 
 from app.config import CLAUDE_API_KEY, CLAUDE_EFFORT, CLAUDE_MODEL, CLAUDE_TIMEOUT
 
-# SDK는 타임아웃도 재시도한다. Gemini 폴백이 가용성 장치로 동작하려면 Claude 쪽 대기는 짧아야 한다.
-# 상류가 멈추면 CLAUDE_TIMEOUT × 2회 안에 Gemini로 넘어간다.
-CLAUDE_MAX_RETRIES = 1
+# SDK는 타임아웃도 재시도한다. 상류가 멈추면 CLAUDE_TIMEOUT × 3회 안에 사용자에게 오류를 돌려준다.
+CLAUDE_MAX_RETRIES = 2
+# 문서 OCR은 업로드 때만 돌고 한 번에 수십 쪽을 읽어 질의보다 오래 걸린다
+OCR_TIMEOUT = 600
+# 50쪽 감사보고서 추출본이 3만 토큰을 넘는다 (Haiku 5.5 출력 상한 128K)
+OCR_MAX_TOKENS = 64000
 
 T = TypeVar("T", bound=BaseModel)
 
 _client = None
+_sync_client = None
 
 
 def _get_client():
@@ -64,6 +65,10 @@ def _report_usage(write: Callable[[dict], None], usage) -> None:
 
 class ClaudeRefusal(RuntimeError):
     """안전 분류기가 응답을 거절했다 (stop_reason == "refusal")."""
+
+
+class OcrTruncated(RuntimeError):
+    """OCR 출력이 max_tokens에서 잘렸다. 같은 PDF로 다시 불러도 다시 잘리므로 재시도하지 않는다."""
 
 
 async def structured(system: str, user: str, schema: type[T], max_tokens: int = 16000) -> T:
@@ -133,3 +138,41 @@ async def coordinate(system: str, user: str) -> str:
             raise StreamStarted("refusal after partial output", partial="".join(parts))
         raise ClaudeRefusal(str(final.stop_details))
     return "".join(parts)
+
+
+def ocr_pdf(file_bytes: bytes, prompt: str) -> str:
+    """PDF를 Claude에 문서로 넣어 텍스트를 추출한다 (스캔본·감사보고서 표 구조 보존용).
+
+    업로드 경로는 동기 함수라 동기 클라이언트를 쓴다. 출력이 길어 스트리밍으로 받는다
+    (긴 비스트리밍 요청은 SDK가 거부한다).
+    """
+    import base64
+
+    global _sync_client
+    if _sync_client is None:
+        import anthropic
+
+        _sync_client = anthropic.Anthropic(
+            api_key=CLAUDE_API_KEY, timeout=OCR_TIMEOUT, max_retries=CLAUDE_MAX_RETRIES
+        )
+    document = {
+        "type": "document",
+        "source": {"type": "base64", "media_type": "application/pdf",
+                   "data": base64.standard_b64encode(file_bytes).decode()},
+    }
+    with _sync_client.messages.stream(
+        model=CLAUDE_MODEL,
+        max_tokens=OCR_MAX_TOKENS,
+        messages=[{"role": "user", "content": [document, {"type": "text", "text": prompt}]}],
+        # 받아 적는 작업이라 깊은 사고가 필요 없다 — 사고 토큰은 출력 단가로 과금된다
+        output_config={"effort": "low"},
+    ) as stream:
+        final = stream.get_final_message()
+    usage = final.usage
+    print(f"  Claude OCR 사용량: 입력 {usage.input_tokens:,} · 출력 {usage.output_tokens:,} 토큰")
+    if final.stop_reason == "refusal":
+        raise ClaudeRefusal(str(final.stop_details))
+    if final.stop_reason == "max_tokens":
+        # 잘린 추출본을 색인하면 문서 뒷부분이 통째로 빠진다 — 호출 쪽이 pypdf 결과로 대신하게 알린다
+        raise OcrTruncated(f"OCR 출력이 {OCR_MAX_TOKENS:,}토큰 한도에서 잘렸다")
+    return "".join(b.text for b in final.content if getattr(b, "type", "") == "text")
