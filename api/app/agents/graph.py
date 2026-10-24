@@ -115,7 +115,7 @@ async def _with_claude(stage: str, claude_call, gemini_call):
     # 안전 분류기 거절(ClaudeRefusal)도 폴백한다: 학생회 규정 질의에서 거절은 오탐일 가능성이 높고,
     # 사용자에게는 답이 끊기는 것보다 같은 규칙(프롬프트·출력 마스킹)으로 Gemini가 답하는 편이 낫다.
     except Exception as e:  # noqa: BLE001 - 상류 장애·거절·크레딧 소진 모두 Gemini로 넘긴다
-        print(f"Claude {stage} 실패, Gemini로 폴백: {type(e).__name__}: {e}")
+        print(f"Claude {stage} 실패, Gemini로 폴백: {type(e).__name__}: {mask_text(str(e))[:200]}")
         # 로그만 남기면 폴백이 매 요청 일어나도 대시보드엔 정상으로 보인다 (느려지고 비용 ~5배)
         claude_agents._writer()({"fallback": stage})
         return await gemini_call()
@@ -222,7 +222,10 @@ async def route_node(state: AgentState) -> AgentState:
     except Exception as e:  # noqa: BLE001 - 라우터 실패가 전체 응답을 막지 않도록
         # 분류가 안 되면 규정 경로로 보낸다. 규정 질문을 잘라내는 것보다
         # 범위 밖 질문에 한 번 성실히 답하는 쪽이 덜 해롭다.
-        print(f"라우터 호출 실패, regulation 경로로 폴백: {type(e).__name__}: {e}")
+        print(f"라우터 호출 실패, regulation 경로로 폴백: {type(e).__name__}: {mask_text(str(e))[:200]}")
+        from app.agents import claude_agents
+
+        claude_agents._writer()({"fallback": "router"})
         return {
             "route": "regulation",
             "standalone_query": _fallback_query(query, history),
@@ -249,15 +252,27 @@ async def retrieve_node(state: AgentState) -> AgentState:
     query = state.get("standalone_query") or state["query"]
     # 같은 질의를 쓰는 두 검색이 각각 임베딩 API를 부르지 않도록 한 번만 임베딩한다.
     # (임베딩 호출 감소는 무료 티어 분당 쿼터 초과 확률도 함께 낮춘다)
-    query_vec = await asyncio.to_thread(store.embed_query, query)
+    try:
+        query_vec = await asyncio.to_thread(store.embed_query, query)
+        keyword_only = False
+    except Exception as e:  # noqa: BLE001 - 임베딩(Gemini) 장애에도 키워드 검색으로 답한다
+        # 2026-10-24 Gemini 프로젝트 정지로 임베딩이 403을 내자 답변(Claude)까지 전부 실패했다.
+        # 키워드(BM25)만으로도 조항 번호·용어가 맞는 근거는 찾으므로, 응답을 멈추기보다 낮춰서 이어간다.
+        print(f"질의 임베딩 실패, 키워드 검색만으로 진행: {type(e).__name__}: {mask_text(str(e))[:200]}")
+        from app.agents import claude_agents
+
+        claude_agents._writer()({"fallback": "retrieve"})
+        query_vec, keyword_only = None, True
     reg_hits, audit_brief, audit_full = await asyncio.gather(
         asyncio.to_thread(
-            store.search, query, K_REGULATION, "regulation", 3, query_vec
+            store.search, query, K_REGULATION, "regulation", 3, query_vec, keyword_only
         ),
         # 검토 에이전트가 참고할 감사 선례 (실제 적용 사례 확인용)
-        asyncio.to_thread(store.search, query, 2, "audit", 3, query_vec),
+        asyncio.to_thread(store.search, query, 2, "audit", 3, query_vec, keyword_only),
         # 접미사를 붙인 질의는 의도적으로 다른 벡터가 되므로 자체 임베딩을 유지한다
-        asyncio.to_thread(store.search, f"{query} 감사 처분 사례", K_AUDIT, "audit"),
+        asyncio.to_thread(
+            store.search, f"{query} 감사 처분 사례", K_AUDIT, "audit", 3, None, keyword_only
+        ),
     )
     # 한 사안에 대한 처분이 여러 건이면 보고서에 연속으로 나열된다.
     # 인접 청크를 붙여야 목록 일부만 답변되는 일을 막을 수 있다.

@@ -19,11 +19,15 @@ _PHONE = re.compile(r"01[016789][-.\s]?\d{3,4}[-.\s]?\d{4}")
 _ACCOUNT = re.compile(r"(?<!\d)\d{3,6}-\d{2,6}-\d{4,8}(?:-\d{1,4})?(?!\d)")
 # 길이를 제한한다 — 무한정이면 스트림 보류 길이보다 긴 이메일의 앞부분이 먼저 나간다
 _EMAIL = re.compile(r"[\w.+-]{1,64}@[\w-]{1,63}(?:\.[\w-]{1,63}){1,4}")
+# API 키. 상류 오류 문구(예: Google 403 "Consumer 'api_key:AIza...'")에 키가 그대로 실려 와
+# 지표의 오류 사유·대시보드 툴팁에 남은 적이 있다 (2026-10-24). 잘린 앞부분도 지운다.
+_API_KEY = re.compile(r"AIza[0-9A-Za-z_\-]{8,}|sk-ant-[0-9A-Za-z_\-]{8,}")
 
 _PATTERNS: list[tuple[re.Pattern, str]] = [
     (_PHONE, "010-****-****"),
     (_ACCOUNT, "(계좌번호 비공개)"),
     (_EMAIL, "(이메일 비공개)"),
+    (_API_KEY, "(API 키 비공개)"),
 ]
 
 NAME_MASK = "○○○"

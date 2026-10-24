@@ -91,9 +91,20 @@ const FALLBACK_STAGE_LABELS: Record<string, string> = {
   coordinator: "종합 조정",
 };
 
+// 검색 폴백은 Claude가 아니라 임베딩(Gemini) 장애라 문구를 따로 둔다
+const FALLBACK_STAGE_NOTES: Record<string, string> = {
+  retrieve: "임베딩 실패로 키워드 검색만 사용",
+  router: "질문 분류 실패로 규정 질의로 처리",
+};
+
 function fallbackTitle(fallback: string): string {
-  const stages = fallback.split(",").map((s) => FALLBACK_STAGE_LABELS[s] ?? s);
-  return `Claude 실패로 Gemini가 처리: ${stages.join(", ")}`;
+  const parts = fallback.split(",");
+  const notes = parts.filter((s) => s in FALLBACK_STAGE_NOTES).map((s) => FALLBACK_STAGE_NOTES[s]);
+  const stages = parts
+    .filter((s) => !(s in FALLBACK_STAGE_NOTES))
+    .map((s) => FALLBACK_STAGE_LABELS[s] ?? s);
+  if (stages.length) notes.unshift(`Claude 실패로 Gemini가 처리: ${stages.join(", ")}`);
+  return notes.join(" · ");
 }
 
 type StageKey =

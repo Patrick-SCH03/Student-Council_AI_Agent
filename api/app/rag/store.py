@@ -282,6 +282,7 @@ def search(
     doc_type: str | None = None,
     max_per_source: int = 3,
     query_embedding: list[float] | None = None,
+    keyword_only: bool = False,
 ) -> list[dict]:
     """하이브리드 검색: 벡터 + 키워드 결과를 RRF로 융합하고 문서 편중을 완화한다.
 
@@ -293,7 +294,8 @@ def search(
         return []
 
     pool = max(k * 3, 15)  # 융합 전 후보를 넉넉히 확보
-    vector_hits = _vector_search(query, pool, doc_type, query_embedding)
+    # 임베딩 API가 막히면(쿼터·키 정지) 키워드 검색만으로 답한다 — 검색 실패가 응답 전체를 막지 않게
+    vector_hits = [] if keyword_only else _vector_search(query, pool, doc_type, query_embedding)
     keyword_hits = _keyword_search(query, pool, doc_type)
 
     # 같은 청크를 (문서, 청크번호)로 식별해 두 결과를 합친다

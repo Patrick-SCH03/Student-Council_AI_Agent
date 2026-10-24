@@ -593,6 +593,37 @@ def _():
     assert set(c) == {"total_usd", "today_usd", "estimated_usd"}, c
 
 
+@case("임베딩(Gemini)이 막혀도 키워드 검색만으로 근거를 찾아 답을 이어가고, 검색 폴백으로 기록한다")
+def _():
+    from app.agents import claude_agents as ca
+    from app.agents import graph as gr
+
+    store.add_chunks("kw-only-doc", "재정세칙.pdf", ["제10조 행사 물품 구매 시 증빙서류로 영수증과 품의서를 제출한다"])
+    sent = []
+    try:
+        with patch.object(gr.store, "embed_query", side_effect=RuntimeError("403 PERMISSION_DENIED suspended")),                 patch.object(gr.store, "_vector_search", side_effect=AssertionError("벡터 검색을 부르면 안 된다")),                 patch.object(ca, "_writer", return_value=sent.append):
+            out = _run(gr.retrieve_node({"query": "행사 물품 구매 증빙서류", "standalone_query": "행사 물품 구매 증빙서류"}))
+    finally:
+        store.delete_doc("kw-only-doc")
+    assert any("증빙서류" in h["text"] for h in out["reg_hits"]), out["reg_hits"]
+    assert {"fallback": "retrieve"} in sent, sent
+
+
+@case("상류 오류 문구에 실린 API 키는 지표·로그에 남기 전에 지운다 (잘린 앞부분 포함)")
+def _():
+    google = "Permission denied: Consumer 'api_key:AIzaSyDUMMYDUMMYDUMMYDUMMYDUMMY12345' has been suspended"
+    cut = "Consumer 'api_key:AIzaSyDUMMYDUM"
+    claude = "invalid x-api-key sk-ant-api03-DUMMYDUMMYDUMMY"
+    for text in (google, cut, claude):
+        masked = privacy.mask_text(text)
+        assert "AIza" not in masked and "sk-ant-" not in masked, masked
+    db.record_metric(route="regulation", risk_level=None, status="error", elapsed=0.1, input_tokens=0,
+                     output_tokens=0, query_preview="키 마스킹 확인", error=f"GoogleGenerativeAIError: {google}")
+    with db._connect() as conn:
+        err = conn.execute("SELECT error FROM metrics ORDER BY id DESC LIMIT 1").fetchone()[0]
+    assert "AIza" not in err and "(API 키 비공개)" in err, err
+
+
 @case("/api/history의 limit은 1~100으로 고정된다 (음수는 SQLite 무제한)")
 def _():
     for _i in range(105):
