@@ -208,16 +208,20 @@ async def route_node(state: AgentState) -> AgentState:
         precedents = any(k in query for k in ("사례", "판례", "처분 내역", "이력"))
         return {"route": route, "standalone_query": query, "needs_precedents": precedents}
 
-    # 분류 + 한 문장 재작성뿐이라 경량 모델로 충분하다 (단가 1/3, 첫 토큰 지연 최단)
-    llm = _get_llm(GEMINI_ROUTER_MODEL).with_structured_output(RouteDecision)
+    user = prompts.ROUTER_USER.format(history=_format_history(history), query=query)
+
+    async def gemini():
+        # 분류 + 한 문장 재작성뿐이라 경량 모델로 충분하다 (단가 1/3, 첫 토큰 지연 최단)
+        llm = _get_llm(GEMINI_ROUTER_MODEL).with_structured_output(RouteDecision)
+        return await llm.ainvoke([("system", prompts.ROUTER_SYSTEM), ("user", user)])
+
     try:
-        decision: RouteDecision = await llm.ainvoke(
-            [
-                ("system", prompts.ROUTER_SYSTEM),
-                ("user", prompts.ROUTER_USER.format(
-                    history=_format_history(history), query=query
-                )),
-            ]
+        # AGENT_PROVIDER=claude면 분류도 Claude로 한다 — 2026-10-24 Gemini 프로젝트 정지 때 분류가
+        # 매번 실패해 범위 밖 질문까지 규정 분석(유료)으로 흘렀다. 출력은 짧아 max_tokens를 낮게 둔다.
+        decision: RouteDecision = await _with_claude(
+            "router",
+            lambda ca: ca.structured(prompts.ROUTER_SYSTEM, user, RouteDecision, max_tokens=1024),
+            gemini,
         )
     except Exception as e:  # noqa: BLE001 - 라우터 실패가 전체 응답을 막지 않도록
         # 분류가 안 되면 규정 경로로 보낸다. 규정 질문을 잘라내는 것보다
@@ -225,7 +229,7 @@ async def route_node(state: AgentState) -> AgentState:
         print(f"라우터 호출 실패, regulation 경로로 폴백: {type(e).__name__}: {mask_text(str(e))[:200]}")
         from app.agents import claude_agents
 
-        claude_agents._writer()({"fallback": "router"})
+        claude_agents._writer()({"fallback": "router_failed"})
         return {
             "route": "regulation",
             "standalone_query": _fallback_query(query, history),

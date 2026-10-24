@@ -79,14 +79,16 @@ def _():
 
 @case("/api/health가 분석 모델을 실제 공급자 기준으로 알려준다 (Claude로 돌면서 Gemini로 표시하지 않음)")
 def _():
-    from app.config import CLAUDE_MODEL, GEMINI_MODEL
+    from app.config import CLAUDE_MODEL, GEMINI_MODEL, GEMINI_ROUTER_MODEL
 
-    with patch.object(main, "AGENT_PROVIDER", "claude"), patch.object(main, "AGENT_MODEL", CLAUDE_MODEL):
+    with patch.object(main, "AGENT_PROVIDER", "claude"), patch.object(main, "AGENT_MODEL", CLAUDE_MODEL), \
+            patch.object(main, "ROUTER_MODEL", CLAUDE_MODEL):
         body = client.get("/api/health").json()
     assert body["agent_provider"] == "claude" and body["model"] == CLAUDE_MODEL, body
-    assert body["router_model"] and body["router_model"] != CLAUDE_MODEL, body
+    assert body["router_model"] == CLAUDE_MODEL, body
     body = client.get("/api/health").json()  # 테스트 환경 기본값 (키 없음 → gemini)
     assert body["agent_provider"] == "gemini" and body["model"] == GEMINI_MODEL, body
+    assert body["router_model"] == GEMINI_ROUTER_MODEL, body
 
 
 @case("실명이 든 질문은 LLM 없이 입구에서 거절 (띄어쓰기 변형 포함)")
@@ -439,6 +441,44 @@ def _():
             assert calls == []
 
 
+@case("AGENT_PROVIDER=claude면 질문 분류도 Claude로 하고, Claude·Gemini가 모두 실패하면 규정 경로로 이어간다")
+def _():
+    from app.agents import claude_agents as ca
+    from app.agents import graph as gr
+    from app.agents.schemas import RouteDecision
+
+    seen = {}
+
+    async def classify(system, user, schema, max_tokens=16000):
+        seen.update(schema=schema, max_tokens=max_tokens, user=user)
+        return RouteDecision(route="general", standalone_query="오늘 날씨", needs_precedents=False)
+
+    with patch.object(gr, "MOCK_MODE", False), patch.object(gr, "AGENT_PROVIDER", "claude"), \
+            patch.object(ca, "structured", classify), \
+            patch.object(gr, "_get_llm", side_effect=AssertionError("Gemini를 부르면 안 된다")):
+        out = _run(gr.route_node({"query": "오늘 날씨 어때?"}))
+    assert out["route"] == "general", out
+    assert seen["schema"] is RouteDecision and seen["max_tokens"] <= 2048, seen
+
+    async def boom(*a, **kw):
+        raise RuntimeError("down")
+
+    class DeadLLM:
+        def with_structured_output(self, _schema):
+            return self
+
+        async def ainvoke(self, _msgs):
+            raise RuntimeError("403 suspended")
+
+    sent = []
+    with patch.object(gr, "MOCK_MODE", False), patch.object(gr, "AGENT_PROVIDER", "claude"), \
+            patch.object(ca, "structured", boom), patch.object(gr, "_get_llm", return_value=DeadLLM()), \
+            patch.object(ca, "_writer", return_value=sent.append):
+        out = _run(gr.route_node({"query": "예산 변경 절차는?"}))
+    assert out["route"] == "regulation", out
+    assert {"fallback": "router"} in sent and {"fallback": "router_failed"} in sent, sent
+
+
 @case("Claude 종합 조정이 중간에 끊기면 받은 데까지에 안내를 붙여 완결한다 (요청 전체를 버리지 않음)")
 def _():
     from app.agents import claude_agents as ca
@@ -611,9 +651,11 @@ def _():
 
 @case("상류 오류 문구에 실린 API 키는 지표·로그에 남기 전에 지운다 (잘린 앞부분 포함)")
 def _():
-    google = "Permission denied: Consumer 'api_key:AIzaSyDUMMYDUMMYDUMMYDUMMYDUMMY12345' has been suspended"
-    cut = "Consumer 'api_key:AIzaSyDUMMYDUM"
-    claude = "invalid x-api-key sk-ant-api03-DUMMYDUMMYDUMMY"
+    # 가짜 키도 소스에 통째로 두지 않는다 — 비밀값 스캐너(GitHub·Google)가 실제 키로 오인해 신고할 수 있다
+    g_key = "AI" + "za" + "Sy" + "X" * 33
+    google = f"Permission denied: Consumer 'api_key:{g_key}' has been suspended"
+    cut = f"Consumer 'api_key:{g_key[:14]}"
+    claude = "invalid x-api-key " + "sk-" + "ant-" + "api03-" + "X" * 16
     for text in (google, cut, claude):
         masked = privacy.mask_text(text)
         assert "AIza" not in masked and "sk-ant-" not in masked, masked

@@ -66,12 +66,12 @@ class ClaudeRefusal(RuntimeError):
     """안전 분류기가 응답을 거절했다 (stop_reason == "refusal")."""
 
 
-async def structured(system: str, user: str, schema: type[T]) -> T:
-    """규정 검토·감사 분석: 스키마로 검증된 구조화 출력."""
+async def structured(system: str, user: str, schema: type[T], max_tokens: int = 16000) -> T:
+    """질문 분류·규정 검토·감사 분석: 스키마로 검증된 구조화 출력."""
     write = _writer()
     response = await _get_client().messages.parse(
         model=CLAUDE_MODEL,
-        max_tokens=16000,
+        max_tokens=max_tokens,
         system=system,
         messages=[{"role": "user", "content": user}],
         output_config={"effort": CLAUDE_EFFORT},

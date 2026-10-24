@@ -30,7 +30,7 @@ from app.config import (
     APP_VERSION,
     CORS_ORIGINS,
     DEFAULT_LIMITS,
-    GEMINI_ROUTER_MODEL,
+    ROUTER_MODEL,
     IP_HASH_SALT,
     MAX_INFLIGHT_TOTAL,
     MOCK_MODE,
@@ -200,7 +200,7 @@ def health():
         # 분석·종합을 실제로 돌리는 모델. 질문 분류(router)는 공급자와 무관하게 Gemini다
         "agent_provider": AGENT_PROVIDER,
         "model": AGENT_MODEL,
-        "router_model": GEMINI_ROUTER_MODEL,
+        "router_model": ROUTER_MODEL,
         "indexed_chunks": store.chunk_count(),
     }
 
@@ -373,7 +373,8 @@ async def chat(
         fallbacks: list[str] = []  # Claude가 실패해 Gemini로 넘어간 단계
 
         def _fallback() -> str | None:
-            return ",".join(fallbacks) or None
+            # 같은 단계가 두 번 남을 수 있다 (Claude 실패 → Gemini도 실패)
+            return ",".join(dict.fromkeys(fallbacks)) or None
 
         def _gemini_totals() -> tuple[int, int]:
             usage = usage_handler.usage_metadata or {}

@@ -89,12 +89,13 @@ const FALLBACK_STAGE_LABELS: Record<string, string> = {
   reviewer: "규정 검토",
   auditor: "감사 분석",
   coordinator: "종합 조정",
+  router: "질문 분류",
 };
 
 // 검색 폴백은 Claude가 아니라 임베딩(Gemini) 장애라 문구를 따로 둔다
 const FALLBACK_STAGE_NOTES: Record<string, string> = {
   retrieve: "임베딩 실패로 키워드 검색만 사용",
-  router: "질문 분류 실패로 규정 질의로 처리",
+  router_failed: "질문 분류 실패로 규정 질의로 처리",
 };
 
 function fallbackTitle(fallback: string): string {
