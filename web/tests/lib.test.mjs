@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { ChatBlockedError, streamChat } from "../src/lib/api.ts";
+import { fmt, usd } from "../src/lib/format.ts";
 import { LIMIT_MAX, parseLimit } from "../src/lib/limits.ts";
 
 test("parseLimit: 빈 값·소수·음수·문자·상한 초과는 저장하지 않는다 (빈 칸이 0=무제한이 되지 않게)", () => {
@@ -79,4 +80,12 @@ test("streamChat: 429는 서버가 준 사유로 ChatBlockedError, 그 밖의 �
     withFetch(new Response("x", { status: 502 }), () => collect(streamChat("질문"))),
     /서버 오류 \(502\)/,
   );
+});
+
+test("usd: 달러로만 표기하고, 1달러 미만은 소수 넷째 자리까지 보인다", () => {
+  assert.equal(usd(0), "$0");
+  assert.equal(usd(0.0053), "$0.0053");
+  assert.equal(usd(9.1311), "$9.13");
+  assert.equal(usd(1234.5), "$1,234.50");
+  assert.equal(fmt(12345), "12,345");
 });

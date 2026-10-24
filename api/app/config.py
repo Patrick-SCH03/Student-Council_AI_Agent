@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # 릴리스 태그와 같이 올린다. /api/health로 배포본이 어떤 버전인지 확인한다.
-APP_VERSION = "2.15.0"
+APP_VERSION = "2.16.0"
 
 # 질문 분류·규정 검토·감사 분석·종합 조정·문서 OCR은 Claude, 검색 임베딩은 Voyage가 맡는다.
 CLAUDE_API_KEY: str | None = os.getenv("CLAUDE_API_KEY") or os.getenv("ANTHROPIC_API_KEY") or None

@@ -48,3 +48,5 @@ api/backups/
 # 작업 메모·운영 문서는 로컬에만 둔다 (공개 저장소에 운영 세부를 올리지 않음)
 CLAUDE.md
 CONTRIBUTING.md
+# 로컬 보관용 (옛 문서 압축본 등)
+archive/

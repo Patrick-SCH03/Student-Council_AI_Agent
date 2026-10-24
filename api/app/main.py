@@ -1,25 +1,19 @@
-"""FastAPI 서버: SSE 스트리밍 채팅 + 문서 관리 API."""
+"""FastAPI 서버: 공개 API(헬스·SSE 채팅·피드백·방문 기록). 관리자 API는 app/admin.py."""
 
-import asyncio
 import hashlib
 import hmac
-import io
 import json
 import re
 import secrets
-import tempfile
 import time
-import zipfile
-from datetime import datetime, timezone
-from pathlib import Path
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request, UploadFile
+from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import PlainTextResponse, Response, StreamingResponse
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 from starlette.datastructures import MutableHeaders
 
-from app import db, pricing
+from app import admin, db, pricing
 from app.agents.graph import graph
 from app.agents.schemas import overall_risk
 from app.config import (
@@ -31,16 +25,14 @@ from app.config import (
     IP_HASH_SALT,
     MAX_INFLIGHT_TOTAL,
     MOCK_MODE,
-    OCR_CACHE_DIR,
     RETENTION_DAYS,
     SIGNING_KEY_IS_PUBLIC,
     VOYAGE_EMBEDDING_MODEL,
 )
-from app.privacy import PRIVATE_NAMES, StreamMasker, mask_obj, mask_text
-from app.rag import citation_graph, store
-from app.rag.ingest import IngestError, ingest_pdf
+from app.privacy import StreamMasker, mask_obj, mask_text
+from app.rag import store
+from app.security import is_admin_request
 
-MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 MAX_QUERY_LENGTH = 1000
 
 app = FastAPI(
@@ -87,6 +79,7 @@ class _SecurityHeaders:
 
 
 app.add_middleware(_SecurityHeaders)
+app.include_router(admin.router)
 
 
 class HistoryItem(BaseModel):
@@ -149,37 +142,6 @@ def _stage_timings(start: float, marks: dict[str, float]) -> dict:
 
 def _sse(payload: dict) -> str:
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
-
-
-def require_admin(authorization: str | None = Header(default=None)) -> None:
-    """관리자 전용 엔드포인트 보호.
-
-    문서 관리와 운영 지표(전체 질의 로그 포함)는 공개되면 안 되므로,
-    ADMIN_TOKEN이 설정되지 않은 경우 열어두지 않고 차단한다.
-    """
-    if not ADMIN_TOKEN:
-        raise HTTPException(
-            status_code=503,
-            detail="ADMIN_TOKEN이 설정되지 않아 관리자 API를 열지 않았어요.",
-        )
-    expected = f"Bearer {ADMIN_TOKEN}"
-    # 바이트로 비교한다. 문자열 비교는 비ASCII 헤더에서 TypeError → 500이 된다.
-    if not authorization or not secrets.compare_digest(authorization.encode(), expected.encode()):
-        raise HTTPException(status_code=401, detail="관리자 인증이 필요해요.")
-
-
-admin_only = Depends(require_admin)
-
-
-def is_admin_request(authorization: str | None) -> bool:
-    """관리자 토큰이 실린 요청인지 판별한다 (차단하지 않고 참/거짓만 돌려준다).
-
-    회귀 테스트처럼 운영자가 직접 돌리는 질의까지 일일 한도에 걸리면
-    정작 점검이 막힌다. 한도 계산에서만 빼고 지표에는 그대로 기록한다.
-    """
-    if not ADMIN_TOKEN or not authorization:
-        return False
-    return secrets.compare_digest(authorization.encode(), f"Bearer {ADMIN_TOKEN}".encode())
 
 
 @app.get("/api/health")
@@ -538,92 +500,6 @@ async def chat(
     )
 
 
-# ---------------------------------------------------------------- documents
-# 아래 엔드포인트는 모두 관리자 전용 (문서 색인 변조·질의 로그 유출 방지)
-
-@app.post("/api/documents", dependencies=[admin_only])
-async def upload_document(file: UploadFile):
-    if not (file.filename or "").lower().endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="PDF 파일만 올릴 수 있어요.")
-
-    content = await _read_limited(file, MAX_UPLOAD_BYTES)
-
-    # OCR·임베딩·그래프 재구축은 수 분이 걸리는 동기 작업이다. 이벤트 루프에서
-    # 돌리면 그동안 모든 채팅 스트림이 멈추므로 스레드로 보낸다.
-    try:
-        doc_id, chunks = await asyncio.to_thread(_index_upload, content, file.filename)
-    except IngestError as e:
-        raise HTTPException(status_code=422, detail=str(e)) from e
-    return {"doc_id": doc_id, "filename": file.filename, "chunks": chunks}
-
-
-async def _read_limited(file: UploadFile, limit: int) -> bytes:
-    """상한까지만 조금씩 읽는다. 통째로 읽고 나서 크기를 재면 큰 파일이 먼저 메모리에 다 올라간다."""
-    buf = bytearray()
-    while chunk := await file.read(1024 * 1024):
-        buf += chunk
-        if len(buf) > limit:
-            raise HTTPException(status_code=413, detail="파일이 너무 커요 (최대 20MB).")
-    return bytes(buf)
-
-
-def _after_index_change() -> None:
-    """색인이 바뀐 뒤 파생물(답변 캐시·인용 그래프)을 갱신한다. 업로드·삭제 공통.
-
-    문서 변경은 이미 끝난 뒤라, 여기서 실패해도 요청을 실패로 돌려주지 않는다.
-    실패로 알리면 운영자는 반영된 업로드를 다시 올리거나 삭제를 재시도한다.
-    """
-    # 색인이 바뀌면 이전 답변은 낡은 근거일 수 있으므로 캐시를 비운다
-    db.clear_cache()
-    # 인용 그래프도 색인의 파생물이므로 함께 재생성한다 (약 2초, 낡은 그래프 방지)
-    try:
-        citation_graph.get_graph(rebuild=True)
-    except Exception as e:  # noqa: BLE001 - 파생물 실패가 끝난 문서 변경을 되돌리지 않도록
-        print(f"인용 그래프 재생성 실패, 다음 조회 때 다시 만든다: {type(e).__name__}: {e}")
-        citation_graph.invalidate()
-
-
-def _index_upload(content: bytes, filename: str) -> tuple[str, int]:
-    doc_id, chunks = ingest_pdf(content, filename)
-    try:
-        db.add_document(doc_id, filename, chunks)
-    except Exception:
-        store.delete_doc(doc_id)  # 목록에 없는 청크가 검색에 섞이지 않도록 회수
-        raise
-    _after_index_change()
-    return doc_id, chunks
-
-
-@app.get("/api/documents", dependencies=[admin_only])
-def get_documents():
-    return {"documents": db.list_documents(), "indexed_chunks": store.chunk_count()}
-
-
-@app.delete("/api/documents/{doc_id}", dependencies=[admin_only])
-def delete_document(doc_id: str):
-    # 청크를 먼저 지운다. DB 행을 먼저 지우면 청크 삭제가 실패했을 때 재시도가 404가 된다.
-    store.delete_doc(doc_id)
-    if not db.delete_document(doc_id):
-        raise HTTPException(status_code=404, detail="문서를 찾을 수 없어요.")
-    _after_index_change()
-    return {"deleted": doc_id}
-
-
-# ---------------------------------------------------------------- history / stats
-
-@app.get("/api/history", dependencies=[admin_only])
-def get_history(limit: int = 20):
-    return {"analyses": db.list_analyses(max(1, min(limit, 100)))}
-
-
-@app.get("/api/analyses/{analysis_id}", dependencies=[admin_only])
-def get_analysis(analysis_id: int):
-    item = db.get_analysis(analysis_id)
-    if not item:
-        raise HTTPException(status_code=404, detail="분석 기록을 찾을 수 없어요.")
-    return item
-
-
 class FeedbackRequest(BaseModel):
     analysis_id: int = Field(ge=1)
     helpful: bool
@@ -654,207 +530,6 @@ class TrackRequest(BaseModel):
 def track_visit(request: TrackRequest):
     db.add_visit(request.visitor_id)
     return {"ok": True}
-
-
-class ImportRequest(BaseModel):
-    filename: str = Field(min_length=5, max_length=200)
-    chunks: list[str] = Field(min_length=1, max_length=2000)
-    embeddings: list[list[float]] = Field(min_length=1, max_length=2000)
-
-    @field_validator("filename")
-    @classmethod
-    def _pdf_name(cls, v: str) -> str:
-        if not v.lower().endswith(".pdf") or "/" in v or "\\" in v:
-            raise ValueError("PDF 파일 이름만 받는다")
-        return v
-
-
-@app.post("/api/index/import", dependencies=[admin_only])
-def import_document(request: ImportRequest):
-    """로컬에서 추출·임베딩까지 끝낸 문서를 그대로 색인에 넣는다 (sync_index_to_remote.py가 부른다).
-
-    업로드(/api/documents)는 서버가 OCR·임베딩을 직접 해 큰 문서는 프록시 제한(무전송 5분)에 걸린다.
-    여기서는 외부 API를 부르지 않아 몇 초 안에 끝나고, 로컬과 운영 색인이 똑같아진다.
-    """
-    if len(request.chunks) != len(request.embeddings):
-        raise HTTPException(status_code=422, detail="청크와 임베딩 개수가 달라요.")
-    dims = {len(e) for e in request.embeddings}
-    if len(dims) != 1 or not 64 <= dims.pop() <= 8192:
-        raise HTTPException(status_code=422, detail="임베딩 차원이 올바르지 않아요.")
-    if any(len(c) > 5000 for c in request.chunks):
-        raise HTTPException(status_code=422, detail="청크가 너무 길어요.")
-    if any(d["filename"] == request.filename for d in db.list_documents()):
-        raise HTTPException(status_code=409, detail="이미 색인된 문서예요.")
-    import uuid
-
-    doc_id = uuid.uuid4().hex
-    try:
-        added = store.add_chunks(doc_id, request.filename, request.chunks, request.embeddings)
-        db.add_document(doc_id, request.filename, added)
-    except Exception:
-        store.delete_doc(doc_id)
-        raise
-    _after_index_change()
-    return {"doc_id": doc_id, "filename": request.filename, "chunks": added}
-
-
-@app.post("/api/index/reset", dependencies=[admin_only])
-def reset_index(confirm: bool = False):
-    """전체 재색인 준비: 문서 목록·색인·OCR 캐시·답변 캐시·인용 그래프를 모두 비운다.
-
-    추출 모델이나 임베딩 모델을 바꾼 뒤 upload_to_remote.py로 문서를 다시 올리기 전에 부른다.
-    되돌릴 수 없어 confirm=true를 요구한다 (먼저 backup_remote.py로 백업할 것).
-    """
-    if not confirm:
-        raise HTTPException(status_code=400, detail="되돌릴 수 없는 작업이라 confirm=true가 필요해요.")
-    chunks = store.reset_collection()
-    documents = db.delete_all_documents()
-    ocr_files = 0
-    for f in OCR_CACHE_DIR.glob("*.txt"):
-        f.unlink()
-        ocr_files += 1
-    _after_index_change()
-    return {"documents": documents, "chunks": chunks, "ocr_cache_files": ocr_files}
-
-
-@app.get("/api/backup", dependencies=[admin_only])
-def download_backup():
-    """되살릴 수 없는 운영 데이터를 zip 하나로 내려준다 (backup_remote.py가 받아 로컬에 보관).
-
-    담는 것: SQLite(지표·분석·피드백·설정·방문)와 OCR 캐시. 색인(Chroma)·인용 그래프는 문서로
-    다시 만들 수 있어 뺀다 — OCR 캐시가 있으면 재색인 때 OCR(약 750원)을 다시 부르지 않는다.
-    Railway 볼륨 백업은 Pro 요금제 전용이라 쓰지 않는다.
-    """
-    buffer = io.BytesIO()
-    with tempfile.TemporaryDirectory() as tmp:
-        db_copy = Path(tmp) / "app.sqlite3"
-        db.snapshot(str(db_copy))
-        ocr_files = sorted(OCR_CACHE_DIR.glob("*.txt"))
-        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-            zf.write(db_copy, "app.sqlite3")
-            for f in ocr_files:
-                zf.write(f, f"ocr_cache/{f.name}")
-            zf.writestr("manifest.json", json.dumps({
-                "version": APP_VERSION,
-                "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                "ocr_cache_files": len(ocr_files),
-            }))
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    return Response(
-        buffer.getvalue(),
-        media_type="application/zip",
-        headers={"Content-Disposition": f"attachment; filename=backup-{stamp}.zip"},
-    )
-
-
-@app.get("/api/stats/export", dependencies=[admin_only])
-def export_stats():
-    csv = db.export_metrics_csv()
-    return PlainTextResponse(
-        csv,
-        media_type="text/csv; charset=utf-8",
-        headers={"Content-Disposition": "attachment; filename=metrics.csv"},
-    )
-
-
-def _memory_mb() -> dict:
-    """컨테이너 메모리 사용량. Railway 요금이 메모리 기준이라 지표로 남긴다.
-
-    Linux 컨테이너에서만 값이 나온다 (로컬 개발 환경에서는 None).
-    """
-
-    def _read(path: str) -> int | None:
-        try:
-            return int(Path(path).read_text().strip())
-        except (OSError, ValueError):
-            return None
-
-    rss = None
-    try:
-        for line in Path('/proc/self/status').read_text().splitlines():
-            if line.startswith('VmRSS:'):
-                rss = int(line.split()[1]) / 1024  # kB → MB
-                break
-    except OSError:
-        pass
-
-    # cgroup v2 우선, 없으면 v1
-    used = _read('/sys/fs/cgroup/memory.current') or _read(
-        '/sys/fs/cgroup/memory/memory.usage_in_bytes'
-    )
-    limit = _read('/sys/fs/cgroup/memory.max') or _read(
-        '/sys/fs/cgroup/memory/memory.limit_in_bytes'
-    )
-    # 상한이 없으면 호스트 전체 메모리가 찍히므로(수십 GB) 의미 없는 값은 버린다
-    limit_mb = limit / 1024 / 1024 if limit and limit < 1 << 43 else None
-    return {
-        "rss_mb": round(rss, 1) if rss else None,
-        "container_mb": round(used / 1024 / 1024, 1) if used else None,
-        "limit_mb": round(limit_mb, 1) if limit_mb else None,
-    }
-
-
-# 요청별 비용(cost_usd)을 남기기 전(~v2.8) 행은 모델·캐시 구분 없이 토큰 합만 있다. 그때 분석 모델이던
-# Flash의 당시 단가로 한 번에 매긴다 — 질문 분류(Flash-Lite)까지 Flash로 세므로 실제보다 약간 높다.
-# (입력, 출력) USD / 1M 토큰 — 그 시기 분석 모델의 단가. 새 행에는 쓰지 않는다.
-_LEGACY_RATES = (0.75, 3.75)
-
-
-def _legacy_cost_usd(input_tokens: int, output_tokens: int) -> float:
-    return (input_tokens * _LEGACY_RATES[0] + output_tokens * _LEGACY_RATES[1]) / 1_000_000
-
-
-class SettingsRequest(BaseModel):
-    daily_limit_total: int = Field(ge=0, le=100_000)
-    daily_limit_per_user: int = Field(ge=0, le=10_000)
-    daily_limit_per_ip: int = Field(default=60, ge=0, le=10_000)
-    cache_ttl_hours: int = Field(default=24, ge=0, le=720)
-
-
-@app.post("/api/cache/clear", dependencies=[admin_only])
-def clear_cache():
-    return {"cleared": db.clear_cache()}
-
-
-@app.get("/api/settings", dependencies=[admin_only])
-def get_settings():
-    return {
-        **db.get_settings(DEFAULT_LIMITS),
-        "used_today": db.count_today(),
-        # 마스킹 목록이 실제로 로드됐는지 운영자가 확인할 수 있게 개수만 노출한다
-        "private_names": len(PRIVATE_NAMES),
-    }
-
-
-@app.put("/api/settings", dependencies=[admin_only])
-def update_settings(request: SettingsRequest):
-    db.set_settings(request.model_dump())
-    return {
-        **db.get_settings(DEFAULT_LIMITS),
-        "used_today": db.count_today(),
-        # 마스킹 목록이 실제로 로드됐는지 운영자가 확인할 수 있게 개수만 노출한다
-        "private_names": len(PRIVATE_NAMES),
-    }
-
-
-@app.get("/api/stats", dependencies=[admin_only])
-def get_stats(days: int = 14):
-    stats = db.get_stats(min(max(days, 1), 90))
-    stats["limits"] = {**db.get_settings(DEFAULT_LIMITS), "used_today": db.count_today()}
-    stats["memory"] = _memory_mb()
-    # 요청별 비용(cost_usd)이 있는 행은 그 값을, 도입 전 행은 토큰 합으로 추정해 더한다 (USD만 쓴다)
-    legacy_usd = _legacy_cost_usd(
-        stats["totals"]["legacy_input_tokens"], stats["totals"]["legacy_output_tokens"])
-    today_legacy_usd = _legacy_cost_usd(
-        stats["today"]["legacy_input_tokens"], stats["today"]["legacy_output_tokens"])
-    stats["cost"] = {
-        "total_usd": round(stats["totals"]["cost_usd"] + legacy_usd, 4),
-        "today_usd": round(stats["today"]["cost_usd"] + today_legacy_usd, 4),
-        # 위 합계 중 모델별 기록 없이 토큰 합으로 추정한 몫
-        "estimated_usd": round(legacy_usd, 4),
-    }
-    stats["agent"] = {"model": CLAUDE_MODEL, "embedding_model": VOYAGE_EMBEDDING_MODEL}
-    return stats
 
 
 # 보존 기간이 지난 기록은 기동 시 정리한다 (지표·방문·분석·오래된 답변 캐시)

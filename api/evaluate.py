@@ -305,6 +305,10 @@ def main() -> None:
         "--retrieval", action="store_true",
         help="LLM 없이 검색 단계만 평가 (로컬 색인 대상, 비용 거의 없음)",
     )
+    parser.add_argument(
+        "--delay", type=float, default=0.0,
+        help="케이스 사이 대기(초). Voyage 무료 한도(분당 3요청)에서는 20 — 안 두면 일부가 키워드 검색으로 빠진다",
+    )
     args = parser.parse_args()
 
     cases = json.loads(EVALSET.read_text(encoding="utf-8"))["cases"]
@@ -334,6 +338,8 @@ def main() -> None:
     start_all = time.time()
 
     for i, case in enumerate(cases, 1):
+        if args.delay and i > 1:
+            time.sleep(args.delay)
         started = time.time()
         try:
             result = _run_remote(args.url, case["query"]) if args.url else asyncio.run(

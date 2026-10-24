@@ -754,6 +754,26 @@ def _():
     assert len(attempts) == 2, attempts
 
 
+@case("공개 4개(health·chat·feedback·track)를 뺀 모든 /api 라우트는 토큰 없이 401이다 (새 관리자 라우트 인증 누락 방지)")
+def _():
+    from app import admin
+
+    public = {"/api/health", "/api/chat", "/api/feedback", "/api/track"}
+    # 앱에 직접 붙은 라우트 + 관리자 라우터 (FastAPI가 포함한 라우터를 한 항목으로 묶어 보여줄 수 있다)
+    routes = [r for r in main.app.routes if getattr(r, "path", None)] + list(admin.router.routes)
+    checked = 0
+    for route in routes:
+        path = getattr(route, "path", "")
+        if not path.startswith("/api/") or path in public:
+            continue
+        url = path.replace("{doc_id}", "x").replace("{analysis_id}", "1")
+        for method in getattr(route, "methods", set()) - {"HEAD", "OPTIONS"}:
+            r = client.request(method, url, json={})
+            assert r.status_code == 401, f"{method} {path} → {r.status_code} (인증 없이 열림)"
+            checked += 1
+    assert checked >= 12, f"검사한 관리자 라우트가 너무 적다: {checked}"
+
+
 @case("/api/history의 limit은 1~100으로 고정된다 (음수는 SQLite 무제한)")
 def _():
     for _i in range(105):
@@ -774,7 +794,7 @@ def _():
 @case("문서 삭제 중 청크 삭제가 실패해도 재시도로 복구된다")
 def _():
     db.add_document("synthetic-doc", "synthetic.pdf", 1)
-    with patch.object(main.store, "delete_doc", side_effect=RuntimeError("synthetic failure")):
+    with patch.object(store, "delete_doc", side_effect=RuntimeError("synthetic failure")):
         assert client.delete("/api/documents/synthetic-doc", headers=AUTH).status_code == 500
     assert client.delete("/api/documents/synthetic-doc", headers=AUTH).status_code == 200, "재시도가 404"
     assert client.delete("/api/documents/synthetic-doc", headers=AUTH).status_code == 404
@@ -783,7 +803,7 @@ def _():
 @case("문서 삭제 뒤 그래프 재생성이 실패해도 삭제는 성공으로 끝나고 그래프는 다시 만들 대상이 된다")
 def _():
     db.add_document("graph-fail-doc", "graph-fail.pdf", 1)
-    with patch.object(main.citation_graph, "get_graph", side_effect=RuntimeError("graph down")):
+    with patch.object(citation_graph, "get_graph", side_effect=RuntimeError("graph down")):
         r = client.delete("/api/documents/graph-fail-doc", headers=AUTH)
     assert r.status_code == 200, f"이미 지운 문서를 실패로 알렸다 ({r.status_code})"
     assert citation_graph._graph is None and not citation_graph.GRAPH_PATH.exists(), "낡은 그래프가 남았다"
@@ -817,43 +837,20 @@ def _():
     assert not citation_graph.GRAPH_PATH.exists()
 
 
-@case("업로드 상한은 다 읽기 전에 끊는다 (413)")
-def _():
-    read_sizes: list[int] = []
-    from starlette.datastructures import UploadFile as StarletteUploadFile
-
-    original_read = StarletteUploadFile.read
-
-    async def counting_read(self, size=-1):
-        data = await original_read(self, size)
-        read_sizes.append(len(data))
-        return data
-
-    with patch.object(main, "MAX_UPLOAD_BYTES", 2 * 1024 * 1024), patch.object(
-        main, "ingest_pdf"
-    ) as ingest, patch.object(StarletteUploadFile, "read", counting_read):
-        big = b"%PDF-1.4\n" + b"0" * (5 * 1024 * 1024)
-        r = client.post("/api/documents", headers=AUTH, files={"file": ("big.pdf", big, "application/pdf")})
-        assert r.status_code == 413, r.status_code
-        assert not ingest.called, "상한을 넘은 파일을 색인했다"
-        assert sum(read_sizes) <= 3 * 1024 * 1024, f"상한을 넘겨 {sum(read_sizes)}바이트를 읽었다"
-        ok = client.post("/api/documents", headers=AUTH, files={"file": ("small.pdf", b"%PDF-1.4 tiny", "application/pdf")})
-        assert ok.status_code != 413, "상한 이하 파일을 거절했다"
-
-
-@case("업로드에서 DB 기록이 실패하면 이미 넣은 청크를 회수한다")
+@case("옮겨 넣기에서 DB 기록이 실패하면 이미 넣은 청크를 회수한다")
 def _():
     baseline = store.chunk_count()
-    fake_pdf = b"%PDF-1.4 not really"
-    with patch.object(main, "ingest_pdf", return_value=("orphan-doc", 2)), patch.object(
-        main.db, "add_document", side_effect=RuntimeError("db down")
-    ), patch.object(main.store, "delete_doc") as deleted:
-        try:
-            main._index_upload(fake_pdf, "x.pdf")
-        except RuntimeError:
-            pass
-        assert deleted.call_args.args == ("orphan-doc",), "회수 호출 없음"
-    assert store.chunk_count() == baseline
+    body = {"filename": "회수세칙.pdf", "chunks": ["제1조 목적"], "embeddings": [[0.1] * 256]}
+    with patch.object(main.db, "add_document", side_effect=RuntimeError("db down")):
+        r = client.post("/api/index/import", json=body, headers=AUTH)
+    assert r.status_code == 500, r.status_code
+    assert store.chunk_count() == baseline, "목록에 없는 청크가 색인에 남았다"
+
+
+@case("서버가 PDF를 직접 받아 색인하는 업로드 경로는 없다 (로컬 색인을 옮기는 방식만)")
+def _():
+    r = client.post("/api/documents", headers=AUTH)
+    assert r.status_code == 405, r.status_code
 
 
 @case("인용 그래프: 같은 청크의 뒤쪽 문서명이 앞 조항에 붙지 않는다")
