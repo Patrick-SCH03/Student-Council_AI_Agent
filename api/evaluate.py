@@ -307,7 +307,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--delay", type=float, default=0.0,
-        help="케이스 사이 대기(초). Voyage 무료 한도(분당 3요청)에서는 20 — 안 두면 일부가 키워드 검색으로 빠진다",
+        help="케이스 사이 대기(초). Voyage 무료 한도(분당 3요청)로 돌릴 때는 20 — 안 두면 일부가 키워드 검색으로 빠진다",
     )
     args = parser.parse_args()
 

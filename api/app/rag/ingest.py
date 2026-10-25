@@ -204,7 +204,7 @@ def extract_text_from_pdf(file_bytes: bytes, *, prefer_multimodal: bool = False)
         if MOCK_MODE:
             raise IngestError(
                 "텍스트를 추출할 수 없는 스캔본 PDF입니다. "
-                "목업 모드에서는 스캔본 파싱이 불가하니 CLAUDE_API_KEY·VOYAGE_API_KEY를 설정하세요."
+                "목업 모드에서는 스캔본 파싱이 불가하니 CLAUDE_API_KEY·GEMINI_API_KEY를 설정하세요."
             )
         print(
             f"본문 추출 부족 ({page_count}페이지, 페이지당 {chars_per_page:.0f}자) "

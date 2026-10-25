@@ -116,7 +116,7 @@
       "id": "procedural-execution-wait",
       "query": "사업 인준 후 며칠 뒤에 집행이 가능해?",
       "expect_route": "regulation",
-      "expect_sources": ["재정·회계 세칙"],
+      "expect_sources": ["감사처분에 관한 세칙"],
       "expect_keywords": ["인준", "집행"],
       "expect_risk": ["낮음"]
     },

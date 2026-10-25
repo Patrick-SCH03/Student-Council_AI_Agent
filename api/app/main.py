@@ -26,8 +26,8 @@ from app.config import (
     MAX_INFLIGHT_TOTAL,
     MOCK_MODE,
     RETENTION_DAYS,
+    EMBEDDING_MODEL,
     SIGNING_KEY_IS_PUBLIC,
-    VOYAGE_EMBEDDING_MODEL,
 )
 from app.privacy import StreamMasker, mask_obj, mask_text
 from app.rag import store
@@ -153,7 +153,7 @@ def health():
         "admin_protected": bool(ADMIN_TOKEN),
         # 질문 분류·분석·종합·OCR을 돌리는 모델과 검색 임베딩 모델
         "model": CLAUDE_MODEL,
-        "embedding_model": VOYAGE_EMBEDDING_MODEL,
+        "embedding_model": EMBEDDING_MODEL,
         "indexed_chunks": store.chunk_count(),
     }
 

@@ -8,9 +8,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # 릴리스 태그와 같이 올린다. /api/health로 배포본이 어떤 버전인지 확인한다.
-APP_VERSION = "2.16.0"
+APP_VERSION = "2.17.0"
 
-# 질문 분류·규정 검토·감사 분석·종합 조정·문서 OCR은 Claude, 검색 임베딩은 Voyage가 맡는다.
+# 질문 분류·규정 검토·감사 분석·종합 조정·문서 OCR은 Claude, 검색 임베딩은 Gemini(기본) 또는 Voyage가 맡는다.
 CLAUDE_API_KEY: str | None = os.getenv("CLAUDE_API_KEY") or os.getenv("ANTHROPIC_API_KEY") or None
 CLAUDE_MODEL: str = os.getenv("CLAUDE_MODEL", "claude-haiku-5-5")
 # effort는 사고 깊이·출력량을 함께 정한다. 2026-10-13 A/B에서 low가 지연 목표에 맞았다.
@@ -19,11 +19,25 @@ CLAUDE_EFFORT: str = os.getenv("CLAUDE_EFFORT", "low")
 # 바꾸면 함께 올린다 — 낮으면 매번 타임아웃 → 재시도로 지연·비용만 겹친다.
 CLAUDE_TIMEOUT: float = float(os.getenv("CLAUDE_TIMEOUT") or (30 if CLAUDE_EFFORT == "low" else 90))
 
+# 검색 임베딩 공급자 (gemini | voyage). 바꾸면 벡터 공간이 달라 전체 재색인이 필요하다.
+# Voyage는 Gemini 프로젝트가 막혔을 때(2026-10-24 정지)를 대비한 예비 경로로 남겨 둔다.
+EMBEDDING_PROVIDER: str = (os.getenv("EMBEDDING_PROVIDER") or "gemini").strip().lower()
+if EMBEDDING_PROVIDER not in ("gemini", "voyage"):
+    print(f"EMBEDDING_PROVIDER={EMBEDDING_PROVIDER!r}는 알 수 없는 값이라 gemini로 동작한다")
+    EMBEDDING_PROVIDER = "gemini"
+
+GEMINI_API_KEY: str | None = os.getenv("GEMINI_API_KEY") or None
+# 옛 설정값("models/gemini-embedding-2")도 받는다 — 접두어가 겹치면 요청 경로·컬렉션 이름이 깨진다
+GEMINI_EMBEDDING_MODEL: str = os.getenv("GEMINI_EMBEDDING_MODEL", "gemini-embedding-2").removeprefix("models/")
 VOYAGE_API_KEY: str | None = os.getenv("VOYAGE_API_KEY") or None
 VOYAGE_EMBEDDING_MODEL: str = os.getenv("VOYAGE_EMBEDDING_MODEL", "voyage-4")
 
-# 두 키가 모두 있어야 실제로 동작한다. 하나라도 없으면 LLM·임베딩 호출 없이 전체 플로우를 검증하는 목업 모드.
-MOCK_MODE: bool = not (CLAUDE_API_KEY and VOYAGE_API_KEY)
+EMBEDDING_API_KEY: str | None = GEMINI_API_KEY if EMBEDDING_PROVIDER == "gemini" else VOYAGE_API_KEY
+EMBEDDING_MODEL: str = GEMINI_EMBEDDING_MODEL if EMBEDDING_PROVIDER == "gemini" else VOYAGE_EMBEDDING_MODEL
+
+# Claude 키와 고른 공급자의 임베딩 키가 모두 있어야 실제로 동작한다.
+# 하나라도 없으면 LLM·임베딩 호출 없이 전체 플로우를 검증하는 목업 모드.
+MOCK_MODE: bool = not (CLAUDE_API_KEY and EMBEDDING_API_KEY)
 
 DATA_DIR = Path(os.getenv("DATA_DIR", Path(__file__).resolve().parent.parent / "data"))
 UPLOAD_DIR = DATA_DIR / "uploads"

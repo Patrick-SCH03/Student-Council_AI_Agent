@@ -199,7 +199,7 @@ async def retrieve_node(state: AgentState) -> AgentState:
         # 검토 에이전트가 참고할 감사 선례 (실제 적용 사례 확인용)
         asyncio.to_thread(store.search, query, 2, "audit", 3, query_vec, keyword_only),
         # 접미사는 키워드 검색 쪽에만 붙는다 — 벡터는 같은 질의 임베딩을 재사용해 질의당 임베딩 호출을 1회로 묶는다
-        # (Voyage 무료 한도가 분당 3요청이라, 호출을 2회로 두면 동시 질문 하나에도 한도를 넘는다)
+        # (무료 등급 한도(Voyage 분당 3요청 등)에서는 호출을 2회로 두면 동시 질문 하나에도 한도를 넘는다)
         asyncio.to_thread(
             store.search, f"{query} 감사 처분 사례", K_AUDIT, "audit", 3, query_vec, keyword_only
         ),
@@ -292,7 +292,7 @@ async def coordinator_node(state: AgentState) -> AgentState:
         markdown = (
             "### 핵심 요약\n(목업 응답) 규정 검토와 감사 분석 모두 위반 가능성이 높다고 판단했습니다.\n\n"
             "### 최종 권고\n회식비 대신 공식 활동비 항목으로 집행하고, 사전에 감사위원회 서면 확인을 받으십시오.\n\n"
-            "> ⚠️ CLAUDE_API_KEY·VOYAGE_API_KEY가 설정되지 않아 목업 모드로 동작 중입니다.\n\n"
+            "> ⚠️ CLAUDE_API_KEY·GEMINI_API_KEY가 설정되지 않아 목업 모드로 동작 중입니다.\n\n"
             "<followups>\n- 공식 활동비 항목은 어떻게 인준받나요?\n- 예산 초과 시 처분 수위는 어떻게 되나요?\n- 증빙서류는 무엇을 준비해야 하나요?\n</followups>"
         )
         return {"final_markdown": markdown}

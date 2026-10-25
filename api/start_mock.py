@@ -2,7 +2,7 @@
 
 셸 스크립트 대신 파이썬으로 환경을 고정한다 — 런처가 어떤 셸(bash/WSL/cmd)로
 실행하든 프로세스 안에서 직접 설정한 환경변수는 항상 적용된다.
-빈 CLAUDE_API_KEY·VOYAGE_API_KEY는 load_dotenv(기본 override=False)가 덮지 않아 목업이 강제된다.
+빈 CLAUDE_API_KEY·GEMINI_API_KEY·VOYAGE_API_KEY는 load_dotenv(기본 override=False)가 덮지 않아 목업이 강제된다.
 """
 
 import os
@@ -10,7 +10,7 @@ from pathlib import Path
 
 API_DIR = Path(__file__).resolve().parent
 os.chdir(API_DIR)
-for _k in ("CLAUDE_API_KEY", "ANTHROPIC_API_KEY", "VOYAGE_API_KEY"):
+for _k in ("CLAUDE_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "VOYAGE_API_KEY"):
     os.environ[_k] = ""
 os.environ["DATA_DIR"] = str(API_DIR / "data-mock")
 os.environ["CORS_ORIGINS"] = "http://localhost:3000"

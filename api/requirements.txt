@@ -8,7 +8,7 @@ langgraph>=1.0
 langchain-text-splitters>=1.0
 # 질문 분류·규정 검토·감사 분석·종합 조정·문서 OCR (공식 SDK)
 anthropic>=1.13
-# Voyage 임베딩 HTTP 호출 (app/rag/store.py)
+# Gemini·Voyage 임베딩 HTTP 호출 (app/rag/store.py)
 httpx>=0.27
 
 # --- RAG ---

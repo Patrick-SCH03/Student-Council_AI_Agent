@@ -12,17 +12,24 @@ import time
 
 import chromadb
 
-from app.config import CHROMA_DIR, MOCK_MODE, VOYAGE_API_KEY, VOYAGE_EMBEDDING_MODEL
+from app.config import (
+    CHROMA_DIR,
+    EMBEDDING_MODEL,
+    EMBEDDING_PROVIDER,
+    GEMINI_API_KEY,
+    MOCK_MODE,
+    VOYAGE_API_KEY,
+)
 
 # 목업(256차원)과 실제 임베딩은 호환되지 않고, 임베딩 모델마다 벡터 공간이 달라 컬렉션 이름에 모델을 넣는다.
 # 모델을 바꾸면 새 컬렉션이 비어 있으므로 문서를 다시 색인한다 (옛 컬렉션은 기동 시 정리).
-COLLECTION_NAME = "regulations_mock" if MOCK_MODE else f"regulations_{VOYAGE_EMBEDDING_MODEL}".replace(".", "-")
+COLLECTION_NAME = "regulations_mock" if MOCK_MODE else f"regulations_{EMBEDDING_MODEL}".replace(".", "-")
 _EMBED_DIM = 256  # 목업 임베딩 차원
 
 # 재진입 가능해야 한다: BM25 색인을 만드는 도중 컬렉션 접근이 다시 락을 요구한다
 _lock = threading.RLock()
 _client: chromadb.ClientAPI | None = None
-_voyage = None
+_http: dict = {}  # base_url → httpx.Client (공급자마다 키 헤더가 달라 따로 둔다)
 
 
 def _get_client() -> chromadb.ClientAPI:
@@ -71,9 +78,9 @@ _EMBED_BATCH = 64
 _EMBED_MAX_RETRIES = 5
 _EMBED_BACKOFF_BASE = 20  # 초
 
-# Voyage는 결제 수단이 없으면 분당 3요청·1만 토큰으로 묶인다. 첫 429를 보면 이 프로세스는
+# 처리 한도(429)에 걸리면(Voyage 무료: 분당 3요청·1만 토큰, Gemini 무료 등급) 이 프로세스는
 # 저속 모드로 바꿔, 문서 임베딩을 작은 배치(글자 수 기준)로 나눠 요청 간격을 벌린다.
-# (결제 수단을 등록하면 429가 나지 않아 저속 모드로 들어가지 않는다)
+# (유료 등급에서는 429가 거의 나지 않아 저속 모드로 들어가지 않는다)
 _THROTTLE_BATCH_CHARS = 6000  # 한국어 기준 대략 1만 토큰 아래
 _THROTTLE_INTERVAL = 21.0  # 초 (분당 3요청)
 _throttled = False
@@ -97,25 +104,67 @@ def _batches(texts: list[str]) -> list[list[str]]:
     return out
 
 
-def _voyage_embed(texts: list[str], input_type: str) -> list[list[float]]:
-    """Voyage 임베딩 (공식 HTTP API). 문서와 질의를 input_type으로 구분해야 검색 품질이 나온다."""
-    global _voyage
-    if _voyage is None:
+# Gemini 출력 차원. 3072(기본)·1536·768을 권장하고, 줄인 출력도 모델이 정규화해 준다.
+# 1536이면 품질 차이는 작고 색인 크기·운영 이전(/api/index/import) 요청이 절반이 된다.
+# 바꾸면 기존 벡터와 차원이 달라 전체 재색인이 필요하다.
+GEMINI_EMBED_DIM = 1536
+
+
+def _client_for(base_url: str, headers: dict):
+    if base_url not in _http:
         import httpx
 
-        _voyage = httpx.Client(
-            base_url="https://api.voyageai.com/v1",
-            headers={"Authorization": f"Bearer {VOYAGE_API_KEY}"},
-            timeout=60,
-        )
-    res = _voyage.post("/embeddings", json={
-        "input": texts, "model": VOYAGE_EMBEDDING_MODEL, "input_type": input_type,
-    })
+        _http[base_url] = httpx.Client(base_url=base_url, headers=headers, timeout=60)
+    return _http[base_url]
+
+
+def _gemini_embed(texts: list[str], input_type: str) -> list[list[float]]:
+    """Gemini 임베딩 (공식 REST API, batchEmbedContents).
+
+    gemini-embedding-2는 task_type 대신 본문 앞 접두어로 문서·질의를 구분한다.
+    키는 URL이 아니라 헤더로 보낸다 — 프록시·접속 기록에 키가 남지 않게.
+    """
+    client = _client_for(
+        "https://generativelanguage.googleapis.com/v1beta",
+        {"x-goog-api-key": GEMINI_API_KEY or ""},
+    )
+    if input_type == "query":
+        prefixed = [f"task: search result | query: {t}" for t in texts]
+    else:
+        prefixed = [f"title: none | text: {t}" for t in texts]
+    model = f"models/{EMBEDDING_MODEL}"
+    res = client.post(f"/{model}:batchEmbedContents", json={"requests": [
+        {"model": model, "content": {"parts": [{"text": t}]}, "output_dimensionality": GEMINI_EMBED_DIM}
+        for t in prefixed
+    ]})
     if res.status_code >= 400:
         # 응답 본문만 남긴다 — 요청 헤더(키)는 예외 문구에 싣지 않는다
+        raise RuntimeError(f"Gemini 임베딩 오류 {res.status_code}: {res.text[:200]}")
+    vectors = [e["values"] for e in res.json()["embeddings"]]
+    # 차원 지정이 무시되면(기본 3072) 색인과 차원이 달라 Chroma 질의가 요청 전체를 실패시킨다.
+    # 여기서 오류로 돌려 질의는 키워드 검색 폴백으로, 색인은 중단으로 이어지게 한다.
+    if len(vectors) != len(texts) or any(len(v) != GEMINI_EMBED_DIM for v in vectors):
+        raise RuntimeError(f"Gemini 임베딩 응답 형태가 다름 (기대 {len(texts)}개 × {GEMINI_EMBED_DIM}차원)")
+    return vectors
+
+
+def _voyage_embed(texts: list[str], input_type: str) -> list[list[float]]:
+    """Voyage 임베딩 (공식 HTTP API). 문서와 질의를 input_type으로 구분해야 검색 품질이 나온다."""
+    client = _client_for("https://api.voyageai.com/v1", {"Authorization": f"Bearer {VOYAGE_API_KEY}"})
+    res = client.post("/embeddings", json={
+        "input": texts, "model": EMBEDDING_MODEL, "input_type": input_type,
+    })
+    if res.status_code >= 400:
         raise RuntimeError(f"Voyage 임베딩 오류 {res.status_code}: {res.text[:200]}")
     data = sorted(res.json()["data"], key=lambda d: d["index"])
     return [d["embedding"] for d in data]
+
+
+def _remote_embed(texts: list[str], input_type: str) -> list[list[float]]:
+    """설정된 공급자로 임베딩한다. input_type은 'document' 또는 'query'."""
+    if EMBEDDING_PROVIDER == "gemini":
+        return _gemini_embed(texts, input_type)
+    return _voyage_embed(texts, input_type)
 
 
 def _embed(
@@ -140,12 +189,12 @@ def _embed(
                     time.sleep(wait)
             try:
                 _last_request = time.time()
-                vectors.extend(_voyage_embed(batch, input_type))
+                vectors.extend(_remote_embed(batch, input_type))
                 break
             except Exception as e:
                 msg = str(e)
                 if " 429" in msg and not _throttled:
-                    print("Voyage 처리 한도(429) — 저속 모드로 전환 (작은 배치, 요청 간격 21초)")
+                    print("임베딩 처리 한도(429) — 저속 모드로 전환 (작은 배치, 요청 간격 21초)")
                     _throttled = True
                     if input_type == "document":
                         batch = _batches(batch)[0]  # 이번 배치부터 작게 다시 나눈다

@@ -16,6 +16,7 @@ os.environ.update(
     # 두 모델 키를 모두 비워 목업을 강제한다 (api/.env에 실키가 있어도)
     CLAUDE_API_KEY="",
     ANTHROPIC_API_KEY="",
+    GEMINI_API_KEY="",
     VOYAGE_API_KEY="",
     ADMIN_TOKEN="t0ken",
     PRIVATE_NAMES="홍길동,김테스트",
@@ -81,10 +82,10 @@ def _():
 
 @case("/api/health가 실제로 쓰는 Claude 모델과 임베딩 모델을 알려준다")
 def _():
-    from app.config import CLAUDE_MODEL, VOYAGE_EMBEDDING_MODEL
+    from app.config import CLAUDE_MODEL, EMBEDDING_MODEL
 
     body = client.get("/api/health").json()
-    assert body["model"] == CLAUDE_MODEL and body["embedding_model"] == VOYAGE_EMBEDDING_MODEL, body
+    assert body["model"] == CLAUDE_MODEL and body["embedding_model"] == EMBEDDING_MODEL, body
     assert body["mock_mode"] is True, "테스트는 키를 비워 목업으로 돌아야 한다"
 
 
@@ -615,7 +616,7 @@ def _():
                 pass
 
 
-@case("Voyage 임베딩은 문서·질의를 input_type으로 구분해 요청한다")
+@case("임베딩은 문서·질의를 input_type으로 구분해 요청한다")
 def _():
     calls = []
 
@@ -623,10 +624,65 @@ def _():
         calls.append(input_type)
         return [[0.1, 0.2] for _ in texts]
 
-    with patch.object(store, "MOCK_MODE", False), patch.object(store, "_voyage_embed", fake):
+    with patch.object(store, "MOCK_MODE", False), patch.object(store, "_remote_embed", fake):
         store.embed_query("증빙서류")
         store._embed(["본문"])
     assert calls == ["query", "document"], calls
+
+
+@case("Gemini 임베딩: 문서·질의 접두어, 출력 차원, 키는 헤더로만 (URL·오류 문구에 없음)")
+def _():
+    import httpx
+
+    seen = []
+    vec = [0.5] * store.GEMINI_EMBED_DIM
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        body = json.loads(request.content)
+        text = body["requests"][0]["content"]["parts"][0]["text"]
+        if text.startswith("task: search result | query: 실패"):
+            return httpx.Response(403, json={"error": {"message": "denied"}})
+        if text.endswith("차원무시"):  # 차원 지정이 무시돼 기본 3072차원이 온 경우
+            return httpx.Response(200, json={"embeddings": [{"values": [0.5] * 3072}]})
+        return httpx.Response(200, json={"embeddings": [{"values": vec} for _ in body["requests"]]})
+
+    fake_key = "AI" + "za" + "x" * 30
+    mock_client = httpx.Client(base_url="https://generativelanguage.googleapis.com/v1beta",
+                               headers={"x-goog-api-key": fake_key}, transport=httpx.MockTransport(handler))
+    with patch.object(store, "_client_for", lambda *_a: mock_client), \
+            patch.object(store, "EMBEDDING_MODEL", "gemini-embedding-2"):
+        assert store._gemini_embed(["제1조", "제2조"], "document") == [vec, vec]
+        store._gemini_embed(["회식비"], "query")
+        for bad, why in ((["실패"], " 403"), (["차원무시"], "차원")):
+            try:
+                store._gemini_embed(bad, "query")
+                raise AssertionError(f"{why} 오류를 삼켰다")
+            except RuntimeError as e:
+                assert fake_key not in str(e) and why in str(e), str(e)
+    doc_req, query_req = seen[0], seen[1]
+    assert doc_req.url.path.endswith("/models/gemini-embedding-2:batchEmbedContents"), doc_req.url
+    assert fake_key not in str(doc_req.url), "키가 URL에 실렸다"
+    doc_body, query_body = json.loads(doc_req.content), json.loads(query_req.content)
+    assert doc_body["requests"][1]["content"]["parts"][0]["text"] == "title: none | text: 제2조", doc_body
+    assert doc_body["requests"][0]["output_dimensionality"] == store.GEMINI_EMBED_DIM
+    assert query_body["requests"][0]["content"]["parts"][0]["text"] == "task: search result | query: 회식비"
+
+
+@case("임베딩 공급자 설정에 따라 Gemini·Voyage 중 하나만 부르고, 공급자마다 HTTP 클라이언트(키 헤더)를 따로 둔다")
+def _():
+    hit = []
+    with patch.object(store, "_gemini_embed", lambda t, i: hit.append("gemini") or [[0.0]]), \
+            patch.object(store, "_voyage_embed", lambda t, i: hit.append("voyage") or [[0.0]]):
+        for provider in ("gemini", "voyage"):
+            with patch.object(store, "EMBEDDING_PROVIDER", provider):
+                store._remote_embed(["본문"], "document")
+    assert hit == ["gemini", "voyage"], hit
+    with patch.object(store, "_http", {}):
+        a = store._client_for("https://a.example", {"x-goog-api-key": "k1"})
+        b = store._client_for("https://b.example", {"Authorization": "Bearer k2"})
+        assert a is not b and "x-goog-api-key" not in b.headers, "다른 공급자에 키 헤더가 섞였다"
+        assert store._client_for("https://a.example", {}) is a
 
 
 @case("전체 재색인 준비(/api/index/reset)는 관리자·confirm이 있어야 하고 문서·색인·OCR 캐시를 비운다")
@@ -683,7 +739,7 @@ def _():
             assert "잘렸다" in str(e)
 
 
-@case("Voyage 429(무료 한도)를 받으면 저속 모드로 바꿔 작은 배치·요청 간격으로 문서 색인을 끝낸다")
+@case("임베딩 429(무료 한도)를 받으면 저속 모드로 바꿔 작은 배치·요청 간격으로 문서 색인을 끝낸다")
 def _():
     calls, sleeps = [], []
 
@@ -694,7 +750,7 @@ def _():
         return [[0.0] for _ in texts]
 
     texts = ["가" * 1000] * 20  # 2만 자 — 저속 모드 배치(6천 자)로 4번 이상 나뉘어야 한다
-    with patch.object(store, "MOCK_MODE", False), patch.object(store, "_voyage_embed", fake),             patch.object(store, "_throttled", False), patch.object(store.time, "sleep", sleeps.append):
+    with patch.object(store, "MOCK_MODE", False), patch.object(store, "_remote_embed", fake),             patch.object(store, "_throttled", False), patch.object(store.time, "sleep", sleeps.append):
         vecs = store._embed(texts)
     assert len(vecs) == 20, len(vecs)
     assert calls[0] == 20 and max(calls[1:]) <= 6, calls
@@ -719,7 +775,7 @@ def _():
     client.delete(f"/api/documents/{doc_id}", headers=AUTH)
 
 
-@case("잘린 OCR은 재시도하지 않고(과금 반복 방지), Voyage 네트워크 타임아웃은 재시도한다")
+@case("잘린 OCR은 재시도하지 않고(과금 반복 방지), 임베딩 네트워크 타임아웃은 재시도한다")
 def _():
     import httpx
 
@@ -748,7 +804,7 @@ def _():
             raise httpx.ReadTimeout("")
         return [[0.0] for _ in texts]
 
-    with patch.object(store, "MOCK_MODE", False), patch.object(store, "_voyage_embed", flaky), \
+    with patch.object(store, "MOCK_MODE", False), patch.object(store, "_remote_embed", flaky), \
             patch.object(store.time, "sleep", lambda _s: None):
         assert len(store._embed(["본문"])) == 1
     assert len(attempts) == 2, attempts
@@ -899,7 +955,7 @@ def _():
         store.embed_query("테스트")
     kw = spy.call_args.kwargs
     assert (kw["max_retries"], kw["backoff_base"]) == (2, 2), kw
-    assert kw.get("input_type") == "query", kw  # Voyage는 질의·문서 임베딩을 구분한다
+    assert kw.get("input_type") == "query", kw  # 질의·문서 임베딩을 구분한다
 
 
 @case("BM25 검색은 같은 스냅샷의 본문을 돌려준다 (인덱스 번호 재조회 없음)")
@@ -929,6 +985,7 @@ def _():
         env = os.environ.copy()
         env.update(
             CLAUDE_API_KEY="dummy-not-a-real-key",
+            GEMINI_API_KEY="dummy-not-a-real-key",
             VOYAGE_API_KEY="dummy-not-a-real-key",
             DATA_DIR=watch_dir,
             PYTHONIOENCODING="utf-8",

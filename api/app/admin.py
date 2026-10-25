@@ -18,7 +18,7 @@ from fastapi.responses import PlainTextResponse, Response
 from pydantic import BaseModel, Field, field_validator
 
 from app import db
-from app.config import APP_VERSION, CLAUDE_MODEL, DEFAULT_LIMITS, OCR_CACHE_DIR, VOYAGE_EMBEDDING_MODEL
+from app.config import APP_VERSION, CLAUDE_MODEL, DEFAULT_LIMITS, EMBEDDING_MODEL, OCR_CACHE_DIR
 from app.privacy import PRIVATE_NAMES
 from app.rag import citation_graph, store
 from app.security import admin_only
@@ -227,7 +227,7 @@ def get_stats(days: int = 14):
         # 위 합계 중 모델별 기록 없이 토큰 합으로 추정한 몫
         "estimated_usd": round(legacy_usd, 4),
     }
-    stats["agent"] = {"model": CLAUDE_MODEL, "embedding_model": VOYAGE_EMBEDDING_MODEL}
+    stats["agent"] = {"model": CLAUDE_MODEL, "embedding_model": EMBEDDING_MODEL}
     return stats
 
 

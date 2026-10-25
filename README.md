@@ -48,7 +48,7 @@ flowchart LR
 
 | 영역 | 사용 기술 |
 |---|---|
-| **AI** | Claude Haiku 5.5 (분류·분석·종합·문서 추출) · Voyage AI 임베딩 · LangGraph |
+| **AI** | Claude Haiku 5.5 (분류·분석·종합·문서 추출) · Gemini 임베딩 · LangGraph |
 | **백엔드** | Python · FastAPI · ChromaDB · SQLite · SSE 스트리밍 |
 | **프론트엔드** | Next.js · React · TypeScript · Tailwind CSS |
 | **운영** | Docker · Railway · Vercel · GitHub Actions |

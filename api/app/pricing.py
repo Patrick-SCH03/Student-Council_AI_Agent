@@ -4,7 +4,8 @@
 https://platform.claude.com/docs/en/about-claude/pricing
 
 호출마다 모델과 캐시 적중 토큰을 따로 받아 계산한다. 가격이 바뀌면 이 표에 시작일과 함께
-한 줄을 더한다. 검색 임베딩(Voyage)은 계정 무료 토큰 안에서 쓰여 요청 비용에 넣지 않는다.
+한 줄을 더한다. 검색 임베딩은 질의당 수십 토큰(Gemini $0.20/1M — 1건 $0.00001 미만)이라
+요청 비용에 넣지 않는다.
 """
 
 from __future__ import annotations

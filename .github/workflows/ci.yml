@@ -27,7 +27,7 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt -c requirements-lock.txt
 
-      # CLAUDE_API_KEY·VOYAGE_API_KEY가 없으면 목업 모드로 동작하므로 비밀값 없이 검증 가능
+      # CLAUDE_API_KEY·GEMINI_API_KEY가 없으면 목업 모드로 동작하므로 비밀값 없이 검증 가능
       - name: Smoke test (mock mode)
         run: python smoke_test.py
 
