@@ -620,7 +620,7 @@ def _():
 def _():
     calls = []
 
-    def fake(texts, input_type):
+    def fake(texts, input_type, title=None):
         calls.append(input_type)
         return [[0.1, 0.2] for _ in texts]
 
@@ -652,7 +652,7 @@ def _():
                                headers={"x-goog-api-key": fake_key}, transport=httpx.MockTransport(handler))
     with patch.object(store, "_client_for", lambda *_a: mock_client), \
             patch.object(store, "EMBEDDING_MODEL", "gemini-embedding-2"):
-        assert store._gemini_embed(["제1조", "제2조"], "document") == [vec, vec]
+        assert store._gemini_embed(["제1조", "제2조"], "document", "재정 회계 세칙") == [vec, vec]
         store._gemini_embed(["회식비"], "query")
         for bad, why in ((["실패"], " 403"), (["차원무시"], "차원")):
             try:
@@ -664,15 +664,32 @@ def _():
     assert doc_req.url.path.endswith("/models/gemini-embedding-2:batchEmbedContents"), doc_req.url
     assert fake_key not in str(doc_req.url), "키가 URL에 실렸다"
     doc_body, query_body = json.loads(doc_req.content), json.loads(query_req.content)
-    assert doc_body["requests"][1]["content"]["parts"][0]["text"] == "title: none | text: 제2조", doc_body
+    assert doc_body["requests"][1]["content"]["parts"][0]["text"] == "title: 재정 회계 세칙 | text: 제2조", doc_body
     assert doc_body["requests"][0]["output_dimensionality"] == store.GEMINI_EMBED_DIM
     assert query_body["requests"][0]["content"]["parts"][0]["text"] == "task: search result | query: 회식비"
+
+
+@case("문서 임베딩에는 파일명에서 만든 제목을 넣는다 (벡터 검색이 문서 종류·기구를 알게)")
+def _():
+    assert store.doc_title("25-2 총학생회_특별감사_보고서.pdf") == "25-2 총학생회 특별감사 보고서"
+    assert store.doc_title("재정·회계 세칙.pdf") == "재정·회계 세칙"
+    titles = []
+
+    def fake(texts, input_type, title=None):
+        titles.append((input_type, title))
+        return [[0.0] * 256 for _ in texts]
+
+    with patch.object(store, "MOCK_MODE", False), patch.object(store, "_remote_embed", fake):
+        store.add_chunks("title-doc", "26-1_중앙_정기감사_보고서.pdf", ["처분 목록"])
+        store.embed_query("처분")
+    store.delete_doc("title-doc")
+    assert titles == [("document", "26-1 중앙 정기감사 보고서"), ("query", None)], titles
 
 
 @case("임베딩 공급자 설정에 따라 Gemini·Voyage 중 하나만 부르고, 공급자마다 HTTP 클라이언트(키 헤더)를 따로 둔다")
 def _():
     hit = []
-    with patch.object(store, "_gemini_embed", lambda t, i: hit.append("gemini") or [[0.0]]), \
+    with patch.object(store, "_gemini_embed", lambda t, i, title=None: hit.append("gemini") or [[0.0]]), \
             patch.object(store, "_voyage_embed", lambda t, i: hit.append("voyage") or [[0.0]]):
         for provider in ("gemini", "voyage"):
             with patch.object(store, "EMBEDDING_PROVIDER", provider):
@@ -743,7 +760,7 @@ def _():
 def _():
     calls, sleeps = [], []
 
-    def fake(texts, input_type):
+    def fake(texts, input_type, title=None):
         calls.append(len(texts))
         if len(calls) == 1:
             raise RuntimeError("Voyage 임베딩 오류 429: reduced rate limits of 3 RPM and 10K TPM")
@@ -798,7 +815,7 @@ def _():
 
     attempts = []
 
-    def flaky(texts, input_type):
+    def flaky(texts, input_type, title=None):
         attempts.append(1)
         if len(attempts) == 1:
             raise httpx.ReadTimeout("")

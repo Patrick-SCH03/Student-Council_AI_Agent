@@ -118,10 +118,12 @@ def _client_for(base_url: str, headers: dict):
     return _http[base_url]
 
 
-def _gemini_embed(texts: list[str], input_type: str) -> list[list[float]]:
+def _gemini_embed(texts: list[str], input_type: str, title: str | None = None) -> list[list[float]]:
     """Gemini 임베딩 (공식 REST API, batchEmbedContents).
 
     gemini-embedding-2는 task_type 대신 본문 앞 접두어로 문서·질의를 구분한다.
+    문서 접두어의 title에는 문서 이름을 넣는다 — 청크 본문에는 "총학생회 특별감사" 같은
+    문서 종류·기구가 없어, 제목 없이는 그런 질문에 벡터 검색이 해당 보고서를 찾지 못했다.
     키는 URL이 아니라 헤더로 보낸다 — 프록시·접속 기록에 키가 남지 않게.
     """
     client = _client_for(
@@ -131,7 +133,7 @@ def _gemini_embed(texts: list[str], input_type: str) -> list[list[float]]:
     if input_type == "query":
         prefixed = [f"task: search result | query: {t}" for t in texts]
     else:
-        prefixed = [f"title: none | text: {t}" for t in texts]
+        prefixed = [f"title: {title or 'none'} | text: {t}" for t in texts]
     model = f"models/{EMBEDDING_MODEL}"
     res = client.post(f"/{model}:batchEmbedContents", json={"requests": [
         {"model": model, "content": {"parts": [{"text": t}]}, "output_dimensionality": GEMINI_EMBED_DIM}
@@ -160,10 +162,10 @@ def _voyage_embed(texts: list[str], input_type: str) -> list[list[float]]:
     return [d["embedding"] for d in data]
 
 
-def _remote_embed(texts: list[str], input_type: str) -> list[list[float]]:
-    """설정된 공급자로 임베딩한다. input_type은 'document' 또는 'query'."""
+def _remote_embed(texts: list[str], input_type: str, title: str | None = None) -> list[list[float]]:
+    """설정된 공급자로 임베딩한다. input_type은 'document' 또는 'query', title은 문서 이름(Gemini만 사용)."""
     if EMBEDDING_PROVIDER == "gemini":
-        return _gemini_embed(texts, input_type)
+        return _gemini_embed(texts, input_type, title)
     return _voyage_embed(texts, input_type)
 
 
@@ -173,6 +175,7 @@ def _embed(
     max_retries: int = _EMBED_MAX_RETRIES,
     backoff_base: int = _EMBED_BACKOFF_BASE,
     input_type: str = "document",
+    title: str | None = None,
 ) -> list[list[float]]:
     if MOCK_MODE:
         return _mock_embed(texts)
@@ -189,7 +192,7 @@ def _embed(
                     time.sleep(wait)
             try:
                 _last_request = time.time()
-                vectors.extend(_remote_embed(batch, input_type))
+                vectors.extend(_remote_embed(batch, input_type, title))
                 break
             except Exception as e:
                 msg = str(e)
@@ -225,6 +228,12 @@ def classify_doc(source_file: str) -> str:
     return "regulation"
 
 
+def doc_title(source_file: str) -> str:
+    """임베딩 제목용 문서 이름: '25-2 총학생회_특별감사_보고서.pdf' → '25-2 총학생회 특별감사 보고서'."""
+    name = source_file[:-4] if source_file.lower().endswith(".pdf") else source_file
+    return " ".join(name.replace("_", " ").split())
+
+
 def add_chunks(
     doc_id: str, source_file: str, chunks: list[str], embeddings: list[list[float]] | None = None
 ) -> int:
@@ -236,7 +245,7 @@ def add_chunks(
         return 0
     collection = _get_collection()
     if embeddings is None:
-        embeddings = _embed(chunks)
+        embeddings = _embed(chunks, title=doc_title(source_file))
     elif len(embeddings) != len(chunks):
         raise ValueError("청크와 임베딩 개수가 다르다")
     doc_type = classify_doc(source_file)
