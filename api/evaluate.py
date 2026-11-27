@@ -1,0 +1,421 @@
+"""답변 품질 회귀 테스트.
+
+evalset.json의 질문을 실행해 라우팅·근거 문서·핵심 키워드·개인정보 보호를 검사한다.
+프롬프트나 검색 설정을 바꾼 뒤 실행해 품질 저하를 조기에 발견하는 용도다.
+
+사용법:
+    python evaluate.py                              # 로컬 파이프라인 직접 호출
+    python evaluate.py --url https://<배포주소>      # 배포 서버 대상
+    python evaluate.py --case vat-case              # 특정 케이스만
+    python evaluate.py --retrieval                  # 검색 단계만 (LLM 미호출)
+
+주의: --retrieval을 제외하면 실제 LLM을 호출하므로 비용이 발생한다.
+검색 설정만 바꿨다면 --retrieval로 먼저 확인하는 편이 빠르고 싸다.
+"""
+
+import argparse
+import asyncio
+import json
+import re
+import sys
+import time
+import urllib.request
+from pathlib import Path
+
+EVALSET = Path(__file__).resolve().parent / "evalset.json"
+
+# 색인 문서에 등장하는 실명 — 답변에 노출되면 안 된다.
+# 목록은 저장소에 두지 않는다 (PRIVATE_NAMES 환경변수 또는 api/private_names.txt).
+from app.privacy import PRIVATE_NAMES as KNOWN_NAMES  # noqa: E402
+
+
+# 답변 문체 기준 (prompts.STYLE_RULE). 2026-11 운영 답변 100건 점검에서 실제로 나온 표현들이다.
+# "감사 결과"는 정상 표현("정기감사 결과")이라 넣지 않는다. 근거 조항의 규정 원문에 "제공된 자료"가 드물게
+# 나올 수 있으나(오탐), 운영 답변 13건은 모두 실제 노출이었다.
+_INTERNAL_TERMS = re.compile(
+    r"에이전트|두 (?:분석|판단|의견)|규정 검토 (?:측|결과)|감사 (?:측|분석)|분석에 따르면|제공된 (?:규정|문서|자료)"
+)
+_TERMINATOR = r"(?=[\s.,:)」\"'*]|$)"
+_IMPERATIVE = re.compile(r"(?:하라|[하마주]십시오|말라|마라|받으라|두라)" + _TERMINATOR, re.M)
+# 해요체는 설명 문장 어디서도 쓰지 않는다 (제목 줄은 뺀다 — 규정 원문에는 해요체가 없다)
+_POLITE_INFORMAL = re.compile(r"(?:세요|어요|아요|해요|돼요|예요|에요)[.!]?" + _TERMINATOR, re.M)
+# 결론의 한다체 문장 끝 ("~한다." "**~없다.**") — 근거 조항은 규정 원문을 옮기므로 결론만 본다.
+# 마침표·쌍점·굵게 닫기·줄 끝으로 끝나는 것만 문장 끝으로 본다: 조사 "~보다", 따옴표 인용 '"~있다"고'는 문장 끝이 아니다.
+# 결론 안에 규정 문장을 마침표까지 그대로 인용하면 오탐이 날 수 있다.
+_PLAIN_ENDING = re.compile(r"(?<!니)다(?:[.:]|\*\*\.?|$)", re.M)
+
+
+def _style_issues(answer: str) -> list[str]:
+    """규정 답변의 문체 위반을 찾는다 (결론 먼저·합니다체·내부 용어 금지)."""
+    issues: list[str] = []
+    if not answer.lstrip().startswith("### 결론"):
+        issues.append("결론 섹션으로 시작하지 않음")
+    if m := _INTERNAL_TERMS.search(answer):
+        issues.append(f"내부 용어 '{m.group(0)}'")
+    body = "\n".join(line for line in answer.splitlines() if not line.lstrip().startswith("#"))
+    if m := _IMPERATIVE.search(body):
+        issues.append(f"명령형 '{m.group(0).strip()}'")
+    if m := _POLITE_INFORMAL.search(body):
+        issues.append(f"해요체 '{m.group(0).strip()}'")
+    conclusion = answer.split("### 결론", 1)[-1].split("###", 1)[0]
+    if _PLAIN_ENDING.search(conclusion):
+        issues.append("결론에 한다체 문장")
+    return issues
+
+
+def _check(case: dict, result: dict) -> list[str]:
+    """케이스별 기대치와 실제 응답을 비교해 실패 사유 목록을 반환한다."""
+    failures: list[str] = []
+    answer = result.get("final_markdown", "") or ""
+    sources = " ".join(c["source_file"] for c in result.get("citations", []))
+    blob = json.dumps(result, ensure_ascii=False)
+
+    if (expected := case.get("expect_route")) and result.get("route") != expected:
+        failures.append(f"라우팅 {result.get('route')} (기대 {expected})")
+
+    # 기대 근거 문서는 하나라도 인용되면 통과 (질문에 따라 관련 문서가 여럿일 수 있음)
+    if wanted := case.get("expect_sources"):
+        if not any(w in sources for w in wanted):
+            failures.append(f"근거 문서 미검색 (기대 {wanted[0]} 등)")
+
+    for kw in case.get("expect_keywords", []):
+        if kw not in answer:
+            failures.append(f"키워드 '{kw}' 누락")
+
+    if result.get("route") == "regulation":
+        failures.extend(f"문체: {issue}" for issue in _style_issues(answer))
+
+    if allowed := case.get("expect_risk"):
+        if result.get("risk_level") not in allowed:
+            failures.append(f"위험도 {result.get('risk_level')} (기대 {allowed})")
+
+    if case.get("forbid_names"):
+        if not KNOWN_NAMES:
+            failures.append("실명 목록 없음 (api/private_names.txt 또는 PRIVATE_NAMES) — 실명 검사 불가")
+        if leaked := [n for n in KNOWN_NAMES if n in blob]:
+            failures.append(f"실명 노출 {leaked}")
+
+    # 범위 밖 질문은 질문 분류 한 번으로 끝나야 한다 — 분석까지 돌면 상한을 크게 넘는다
+    if (cap := case.get("max_tokens")) and (tokens := result.get("_tokens", 0)):
+        if tokens > cap:
+            failures.append(f"토큰 {tokens} > {cap} (범위 밖 질문에 과다 호출)")
+
+    return failures
+
+
+def _run_remote(url: str, query: str) -> dict:
+    body = json.dumps({"query": query}, ensure_ascii=False).encode("utf-8")
+    headers = {"Content-Type": "application/json"}
+    # 관리자 토큰을 실으면 일일 한도에서 제외된다 (평가 자체가 한도에 막히지 않도록)
+    from app.config import ADMIN_TOKEN
+
+    if ADMIN_TOKEN:
+        headers["Authorization"] = f"Bearer {ADMIN_TOKEN}"
+    req = urllib.request.Request(f"{url.rstrip('/')}/api/chat", data=body, headers=headers)
+    with urllib.request.urlopen(req, timeout=180) as res:
+        for raw in res.read().decode("utf-8").splitlines():
+            raw = raw.strip()
+            if raw.startswith("data:"):
+                event = json.loads(raw[5:])
+                if event.get("type") == "result":
+                    return event
+    return {}
+
+
+async def _run_local(query: str) -> dict:
+    from app.agents.graph import graph
+    from app.agents.schemas import overall_risk
+
+    # 각 Claude 호출이 custom 스트림으로 흘리는 사용량을 합산한다
+    claude_tokens = 0
+    state: dict = {}
+    async for mode, payload in graph.astream(
+        {"query": query, "history": [], "citations": []},
+        stream_mode=["values", "custom"],
+    ):
+        if mode == "values":
+            state = payload
+        elif isinstance(payload, dict) and (u := payload.get("usage")):
+            claude_tokens += int(u.get("input_tokens", 0)) + int(u.get("output_tokens", 0))
+    reviewer, auditor = state.get("reviewer"), state.get("auditor")
+    markdown = state.get("final_markdown", "") or ""
+    return {
+        "route": state.get("route", ""),
+        "risk_level": overall_risk(reviewer, auditor).value if (reviewer or auditor) else None,
+        "final_markdown": re.sub(r"<followups>.*?</followups>", "", markdown, flags=re.DOTALL),
+        "citations": [
+            {"source_file": c.source_file, "snippet": c.snippet}
+            for c in state.get("citations", [])
+        ],
+        "reviewer": reviewer.model_dump() if reviewer else None,
+        "auditor": auditor.model_dump() if auditor else None,
+        "_claude_tokens": claude_tokens,
+        "_tokens": claude_tokens,
+    }
+
+
+def _run_retrieval(cases: list[dict]) -> int:
+    """LLM 없이 검색 단계만 평가한다 (임베딩 비용만 발생).
+
+    답변 품질 평가는 LLM 응답이 섞여 검색 변경의 효과가 묻힌다.
+    """
+    from app.agents.graph import K_AUDIT, K_REGULATION, NEIGHBOR_TOP_N
+    from app.rag import store
+
+    scored = [c for c in cases if c.get("expect_sources")]
+    if not scored:
+        print("expect_sources가 있는 케이스가 없습니다.")
+        return 1
+
+    print(f"검색 평가 {len(scored)}건 (LLM 미호출)\n")
+    hits, top3, unique_counts, ranks = 0, 0, [], []
+    misses: list[str] = []
+
+    for i, case in enumerate(scored, 1):
+        query = case["query"]
+        # 실제 파이프라인과 같은 조합으로 검색한다
+        found = store.search(query, K_REGULATION, "regulation") + store.expand_neighbors(
+            store.search(f"{query} 감사 처분 사례", K_AUDIT, "audit"), 1, NEIGHBOR_TOP_N
+        )
+        sources = [h["source_file"] for h in found]
+        # 적중률은 후보를 넉넉히 보면 쉽게 100%가 되어 변화를 감지하지 못한다.
+        # 기대 문서가 몇 번째로 나오는지를 함께 본다.
+        rank = next(
+            (r for r, s in enumerate(sources, 1) if any(w in s for w in case["expect_sources"])),
+            None,
+        )
+        unique_counts.append(len(set(sources)))
+        if rank:
+            hits += 1
+            ranks.append(rank)
+            top3 += rank <= 3
+        else:
+            misses.append(f"{case['id']}: 기대 {case['expect_sources'][0]}")
+        label = f"{rank}위" if rank else "미검색"
+        print(f"[{i:2d}/{len(scored)}] {'HIT ' if rank else 'MISS'} {case['id']:<26} {label:>6}")
+
+    n = len(scored)
+    # MRR: 기대 문서가 상위에 올수록 1에 가깝다. 상한이 없어 포화되지 않는다.
+    mrr = sum(1 / r for r in ranks) / n if n else 0
+    print(f"\n{'=' * 52}")
+    print(f"적중률   {hits}/{n} ({hits / n * 100:.0f}%)")
+    print(f"상위 3위 {top3}/{n} ({top3 / n * 100:.0f}%)")
+    print(f"MRR      {mrr:.3f}   (기대 문서 평균 순위 {sum(ranks) / len(ranks):.2f}위)" if ranks else "")
+    print(f"평균 근거 문서 {sum(unique_counts) / n:.2f}종")
+    if misses:
+        print("\n미검색:")
+        for m in misses:
+            print(f"  - {m}")
+    return 1 if misses else 0
+
+
+def _run_multihop() -> int:
+    """multi-hop 검색 A/B: 하이브리드 단독 vs 인용 그래프 1-hop 확장 (LLM 미호출).
+
+    통과 기준은 joint evidence recall — 근거 조항과 이를 인용한 감사 판례가
+    검색 결과에 '전부' 포함돼야 한다. 평가셋은 인용 그래프에서 생성해
+    코퍼스에 실재함을 검증한 것만 담았다 (evalset_multihop.json).
+    """
+    import re as _re
+
+    from app.agents.graph import K_AUDIT, K_REGULATION, NEIGHBOR_TOP_N
+    from app.rag import citation_graph, store
+
+    cases = json.loads(
+        (Path(__file__).resolve().parent / "evalset_multihop.json").read_text(encoding="utf-8")
+    )["cases"]
+
+    def retrieve(query: str, use_graph: bool) -> list[dict]:
+        hits = store.search(query, K_REGULATION, "regulation") + store.expand_neighbors(
+            store.search(f"{query} 감사 처분 사례", K_AUDIT, "audit"), 1, NEIGHBOR_TOP_N
+        )
+        if use_graph:
+            hits = citation_graph.expand(hits)
+        return hits
+
+    def score(hits: list[dict], evidence: list[dict]) -> tuple[int, int]:
+        found = 0
+        for ev in evidence:
+            no = _re.search(r"\d+", ev["marker"]).group()
+            pat = _re.compile(rf"제\s*{no}\s*조")
+            if any(ev["doc"] == h["source_file"] and pat.search(h["text"]) for h in hits):
+                found += 1
+        return found, len(evidence)
+
+    print(f"multi-hop 검색 A/B — {len(cases)}건 (LLM 미호출)\n")
+    print(f"{'케이스':<22}{'단독':>12}{'그래프':>12}")
+    print("-" * 50)
+    totals = {"base": [0, 0, 0, 0], "graph": [0, 0, 0, 0]}  # found, total, joint, chunks
+    for case in cases:
+        row = {}
+        for arm, use_graph in (("base", False), ("graph", True)):
+            hits = retrieve(case["query"], use_graph)
+            f, n = score(hits, case["evidence"])
+            totals[arm][0] += f
+            totals[arm][1] += n
+            totals[arm][2] += f == n
+            totals[arm][3] += len(hits)
+            row[arm] = (f, n)
+        b = f"{row['base'][0]}/{row['base'][1]}"
+        gr = f"{row['graph'][0]}/{row['graph'][1]}"
+        print(f"{case['id']:<24}{b:>8}{gr:>10}")
+    print("-" * 50)
+    n = len(cases)
+    for arm, label in (("base", "하이브리드 단독"), ("graph", "+ 그래프 확장")):
+        f, tot, joint, ch = totals[arm]
+        print(
+            f"{label:<14} 근거 회수율 {f}/{tot} ({f / tot * 100:.0f}%) · "
+            f"전부 회수(joint) {joint}/{n} · 평균 {ch / n:.1f}청크"
+        )
+    return 0
+
+
+def _run_multihop_answers() -> int:
+    """multi-hop 답변층 A/B (실제 LLM 호출 — 케이스당 2회 비용 발생).
+
+    답변이 근거 조항과 판례 문서들을 실제로 담는지 잰다. 커버리지는
+    (a) citations의 문서 일치, (b) 답변 본문의 문서 언급(문서명 어간) 합집합.
+    """
+    import os as _os
+    import re as _re
+
+    cases = json.loads(
+        (Path(__file__).resolve().parent / "evalset_multihop.json").read_text(encoding="utf-8")
+    )["cases"]
+
+    def stem(doc: str) -> str:
+        s = doc.replace(".pdf", "")
+        m = _re.search(r"([가-힣]{2,}(?:대학|학생회|위원회))", s)
+        return m.group(1) if m else s[:8]
+
+    def coverage(result: dict, evidence: list[dict]) -> tuple[int, int]:
+        cited = {c["source_file"] for c in result.get("citations", [])}
+        answer = result.get("final_markdown", "")
+        found = 0
+        for ev in evidence:
+            in_cite = ev["doc"] in cited
+            in_text = stem(ev["doc"]) in answer
+            found += in_cite or in_text
+        return found, len(evidence)
+
+    print(f"multi-hop 답변 A/B — {len(cases)}건 × 2회 (실제 LLM 호출)\n")
+    totals = {"base": [0, 0, 0.0, 0], "graph": [0, 0, 0.0, 0]}  # found,total,elapsed,tokens
+    for case in cases:
+        row = {}
+        for arm, flag in (("base", "0"), ("graph", "1")):
+            _os.environ["GRAPH_EXPANSION"] = flag
+            t0 = time.time()
+            result = asyncio.run(_run_local(case["query"]))
+            el = time.time() - t0
+            f, n = coverage(result, case["evidence"])
+            totals[arm][0] += f
+            totals[arm][1] += n
+            totals[arm][2] += el
+            totals[arm][3] += result.get("_tokens", 0)
+            row[arm] = f"{f}/{n}"
+        print(f"{case['id']:<24}{row['base']:>8}{row['graph']:>10}")
+    _os.environ["GRAPH_EXPANSION"] = ""
+    n = len(cases)
+    print("-" * 50)
+    for arm, label in (("base", "하이브리드 단독"), ("graph", "+ 그래프 확장")):
+        f, tot, el, tk = totals[arm]
+        print(
+            f"{label:<14} 답변 근거 커버리지 {f}/{tot} ({f / tot * 100:.0f}%) · "
+            f"평균 {el / n:.1f}초 · 평균 {tk / n:,.0f}토큰"
+        )
+    return 0
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="답변 품질 회귀 테스트")
+    parser.add_argument("--url", help="배포 서버 주소 (생략 시 로컬 파이프라인 직접 실행)")
+    parser.add_argument("--case", help="특정 케이스만 실행 (쉼표로 여러 개)")
+    parser.add_argument(
+        "--multihop-answers", action="store_true",
+        help="multi-hop 답변층 A/B (LLM 호출, 케이스당 2회 비용)",
+    )
+    parser.add_argument(
+        "--multihop", action="store_true",
+        help="multi-hop 검색 A/B: 하이브리드 vs 인용 그래프 확장 (LLM 미호출)",
+    )
+    parser.add_argument(
+        "--retrieval", action="store_true",
+        help="LLM 없이 검색 단계만 평가 (로컬 색인 대상, 비용 거의 없음)",
+    )
+    parser.add_argument(
+        "--delay", type=float, default=0.0,
+        help="케이스 사이 대기(초). Voyage 무료 한도(분당 3요청)로 돌릴 때는 20 — 안 두면 일부가 키워드 검색으로 빠진다",
+    )
+    args = parser.parse_args()
+
+    cases = json.loads(EVALSET.read_text(encoding="utf-8"))["cases"]
+    if args.case:
+        wanted = [c.strip() for c in args.case.split(",") if c.strip()]
+        cases = [c for c in cases if c["id"] in wanted]
+        if len(cases) != len(wanted):
+            missing = set(wanted) - {c["id"] for c in cases}
+            print(f"케이스를 찾을 수 없습니다: {', '.join(sorted(missing))}")
+            sys.exit(1)
+
+    if args.multihop_answers:
+        sys.exit(_run_multihop_answers())
+
+    if args.multihop:
+        sys.exit(_run_multihop())
+
+    if args.retrieval:
+        sys.exit(_run_retrieval(cases))
+
+    from app.config import CLAUDE_MODEL
+
+    target = "원격 " + args.url if args.url else "로컬"
+    print(f"평가셋 {len(cases)}건 실행 ({target} · {CLAUDE_MODEL})\n")
+    passed, failed_cases = 0, []
+    elapsed_all, tokens_all = [], []
+    start_all = time.time()
+
+    for i, case in enumerate(cases, 1):
+        if args.delay and i > 1:
+            time.sleep(args.delay)
+        started = time.time()
+        try:
+            result = _run_remote(args.url, case["query"]) if args.url else asyncio.run(
+                _run_local(case["query"])
+            )
+        except Exception as e:  # noqa: BLE001 - 한 건 실패가 전체를 멈추지 않도록
+            print(f"[{i:2d}/{len(cases)}] ERROR {case['id']}: {type(e).__name__}: {e}")
+            failed_cases.append((case["id"], [f"실행 실패: {e}"]))
+            continue
+
+        failures = _check(case, result)
+        elapsed = time.time() - started
+        elapsed_all.append(elapsed)
+        if tokens := result.get("_tokens"):
+            tokens_all.append(tokens)
+        if failures:
+            failed_cases.append((case["id"], failures))
+            print(f"[{i:2d}/{len(cases)}] FAIL  {case['id']} ({elapsed:.1f}s)")
+            for f in failures:
+                print(f"          - {f}")
+        else:
+            passed += 1
+            print(f"[{i:2d}/{len(cases)}] PASS  {case['id']} ({elapsed:.1f}s)")
+
+    total = len(cases)
+    rate = passed / total * 100 if total else 0
+    print(f"\n{'=' * 52}")
+    print(f"통과 {passed}/{total} ({rate:.0f}%) · 소요 {time.time() - start_all:.0f}초")
+    if elapsed_all:
+        summary = f"평균 응답 {sum(elapsed_all) / len(elapsed_all):.1f}초"
+        if tokens_all:
+            summary += f" · 평균 토큰 {sum(tokens_all) / len(tokens_all):,.0f}"
+        print(summary)
+    if failed_cases:
+        print("\n실패 케이스:")
+        for cid, reasons in failed_cases:
+            print(f"  - {cid}: {'; '.join(reasons)}")
+    sys.exit(1 if failed_cases else 0)
+
+
+if __name__ == "__main__":
+    main()

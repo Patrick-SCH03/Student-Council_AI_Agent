@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  api:
+    name: Backend (lint-free import + smoke test)
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: api
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            api/requirements.txt
+            api/requirements-lock.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt -c requirements-lock.txt
+
+      # CLAUDE_API_KEY·GEMINI_API_KEY가 없으면 목업 모드로 동작하므로 비밀값 없이 검증 가능
+      - name: Smoke test (mock mode)
+        run: python smoke_test.py
+
+      # 점검에서 재현된 결함의 회귀 테스트 — 임시 DATA_DIR·더미 실명, 키 없이 돈다
+      - name: Regression tests (mock mode)
+        run: python tests/check_all.py
+
+  web:
+    name: Frontend (lint + test + build)
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      # 순수 로직(한도 입력 검증·SSE 해석)만 Node 내장 러너로 — 서버·브라우저 불필요
+      - name: Unit tests
+        run: npm test
+
+      - name: Build
+        run: npm run build

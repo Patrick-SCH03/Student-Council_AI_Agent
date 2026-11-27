@@ -1,0 +1,52 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Env / secrets
+.env
+*.env.local
+# 마스킹 대상 실명 목록 (저장소에 두지 않는다)
+api/private_names.txt
+
+# 런타임 생성물 (벡터 DB · SQLite)
+api/data/
+*.sqlite3
+
+# 실제 규정 문서 (내부 문서 보호 — README만 추적)
+documents/*.pdf
+
+# Node
+node_modules/
+.next/
+out/
+
+# 로컬 개발 도구 설정
+.claude/
+# 다른 에이전트 도구가 CLAUDE.md를 복사해 만드는 사본 — 규칙의 원본은 CLAUDE.md 하나다
+/AGENTS.md
+web/AGENTS.md
+web/CLAUDE.md
+
+# 배포 런북 (내부 참고용 — 계정·인프라 절차 포함)
+DEPLOYMENT.md
+
+# 검토·실험 기록 (로컬 전용 — 저장소에 올리지 않는다)
+docs/
+
+# 이전 버전 보관 (로컬 전용)
+legacy/
+
+# Misc
+.DS_Store
+*.log
+api/data-mock/
+# 운영 데이터 백업 (backup_remote.py) — 마스킹된 질의·IP 해시 포함
+api/backups/
+
+# 작업 메모·운영 문서는 로컬에만 둔다 (공개 저장소에 운영 세부를 올리지 않음)
+CLAUDE.md
+CONTRIBUTING.md
+# 로컬 보관용 (옛 문서 압축본 등)
+archive/

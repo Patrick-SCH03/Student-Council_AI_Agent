@@ -1,0 +1,51 @@
+name: Security audit
+
+# 의존성 취약점을 매일 검사한다. Dependabot 알림은 권고 등록이 늦으면 며칠씩 비어 있고(2026-10 certifi·pypdf),
+# 공개된 패치는 몇 분 만에 공격 코드로 바뀐다. 실패하면 GitHub가 저장소 소유자에게 메일을 보낸다.
+# push마다 돌리지 않는 이유: Railway가 CI 통과를 기다리므로, 새 권고 하나가 무관한 배포까지 막는다.
+# 잠금 파일을 바꾼 push에서는 돌린다 — 그 변경이 취약 버전을 들이는지 배포 전에 본다.
+on:
+  schedule:
+    - cron: "0 0 * * *" # 매일 09:00 KST
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - api/requirements.txt
+      - api/requirements-lock.txt
+      - web/package-lock.json
+
+jobs:
+  python:
+    name: Python 의존성 (pip-audit)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: pip install pip-audit==2.10.1
+      # 무시 목록: chromadb 서버 모드 전용 권고. 이 서비스는 HTTP 서버를 띄우지 않고 PersistentClient로
+      # 프로세스 안에서만 쓴다 (app/rag/store.py). 서버 모드를 쓰게 되면 이 목록을 지운다.
+      #   PYSEC-2026-311  (CVE-2026-45829) 컬렉션 생성 API 원격 코드 실행
+      #   PYSEC-2026-3814 (CVE-2026-45833) 컬렉션 수정 API 원격 코드 실행
+      #   PYSEC-2026-3815 (CVE-2026-45831) RBAC 테넌트 범위 미검사
+      #   PYSEC-2026-3813 (CVE-2026-45830) 테넌트 간 인가 누락
+      - run: >-
+          pip-audit -r api/requirements-lock.txt --no-deps --disable-pip --progress-spinner off
+          --ignore-vuln PYSEC-2026-311 --ignore-vuln PYSEC-2026-3814
+          --ignore-vuln PYSEC-2026-3815 --ignore-vuln PYSEC-2026-3813
+
+  node:
+    name: 프론트 의존성 (npm audit)
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+      # 배포되는 런타임 의존성만 본다 (개발 도구는 서비스에 실리지 않음)
+      - run: npm audit --omit=dev --audit-level=moderate
