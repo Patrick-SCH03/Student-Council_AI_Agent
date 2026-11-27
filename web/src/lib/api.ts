@@ -61,6 +61,8 @@ export async function adminFetch(path: string, init: RequestInit = {}): Promise<
 export type Citation = { source_file: string; snippet: string };
 
 export type ReviewerResult = {
+  // 판정 대상 분류 ("행위" | "기준·절차" | "기록 조회"). 옛 캐시 답변에는 없다.
+  question_type?: string;
   violation: string;
   risk_level: string;
   reasoning: string;

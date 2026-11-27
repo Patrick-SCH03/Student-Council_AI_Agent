@@ -22,6 +22,7 @@ from app.agents import claude_agents, prompts
 from app.agents.schemas import (
     AuditorResult,
     Citation,
+    QuestionType,
     ReviewerResult,
     RiskLevel,
     RouteDecision,
@@ -96,7 +97,8 @@ def _format_history(history: list[dict]) -> str:
         # 이력은 클라이언트가 보내는 값이다. 거절된 이전 질문의 이름이 여기 남아 있으므로
         # 마스킹해서 넣는다 — 라우터(LLM)에도 실명이 닿지 않게.
         lines.append(f"- 질문: {mask_text(item.get('question', ''))}")
-        answer = mask_text((item.get("answer") or "")[:500])
+        # 자른 뒤 마스킹하면 500자 경계에 걸친 이름·번호가 지워지지 않은 조각으로 남는다
+        answer = mask_text(item.get("answer") or "")[:500]
         lines.append(f"  답변 요약: {answer}")
     lines.append("</history>")
     return "\n".join(lines) + "\n\n"
@@ -228,6 +230,11 @@ async def retrieve_node(state: AgentState) -> AgentState:
     return {"reg_hits": reg_hits, "audit_brief": audit_brief, "audit_full": audit_full}
 
 
+def _mock_is_procedural(query: str) -> bool:
+    """목업 판정: 절차를 묻는 말투면 '기준·절차'로 본다 (화면의 질문 유형 표시를 키 없이 확인하는 용도)."""
+    return any(k in query for k in ("절차", "언제", "무엇", "뜻"))
+
+
 async def reviewer_node(state: AgentState) -> AgentState:
     query = state.get("standalone_query") or state["query"]
     # 규정 검토는 회칙·세칙이 근거이므로 규정 문서를 우선 확보하고,
@@ -236,11 +243,13 @@ async def reviewer_node(state: AgentState) -> AgentState:
 
     if MOCK_MODE:
         await asyncio.sleep(0.8)
+        procedural = _mock_is_procedural(query)
         result = ReviewerResult(
-            violation="위반 가능성 높음",
-            risk_level=RiskLevel.HIGH,
-            reasoning="(목업) 재정·회계 세칙 제10조에 따르면 학생회비는 공식 활동 목적으로만 집행할 수 있습니다.",
-            recommendation="(목업) 회식비 대신 공식 행사 운영비 항목으로 집행하십시오.",
+            question_type=QuestionType.RULE if procedural else QuestionType.ACTION,
+            violation="위반 없음" if procedural else "위반 가능성 높음",
+            risk_level=RiskLevel.LOW if procedural else RiskLevel.HIGH,
+            reasoning="(목업) 「재정·회계 세칙」 제10조에 따르면 학생회비는 공식 활동 목적으로만 집행할 수 있습니다.",
+            recommendation="(목업) 회식비 대신 공식 행사 운영비 항목으로 집행하시기 바랍니다.",
             citations=[
                 Citation(source_file=h["source_file"], snippet=h["text"][:80]) for h in hits[:2]
             ]
@@ -261,11 +270,12 @@ async def auditor_node(state: AgentState) -> AgentState:
 
     if MOCK_MODE:
         await asyncio.sleep(1.0)
+        procedural = _mock_is_procedural(query)
         result = AuditorResult(
-            compliance="위반 가능성 높음",
-            sanction_likelihood=RiskLevel.HIGH,
+            compliance="준수" if procedural else "위반 가능성 높음",
+            sanction_likelihood=RiskLevel.LOW if procedural else RiskLevel.HIGH,
             reasoning="(목업) 2024년 정기감사 보고서에서 유사 사례에 대한 경고 처분 기록이 확인됩니다.",
-            recommendation="(목업) 집행 전 감사위원회에 사전 질의하여 서면 확인을 받으십시오.",
+            recommendation="(목업) 집행 전 감사위원회에 사전 질의하여 서면 확인을 받으시기 바랍니다.",
             citations=[
                 Citation(source_file=h["source_file"], snippet=h["text"][:80])
                 for h in audit_hits[:2]
@@ -290,15 +300,26 @@ async def coordinator_node(state: AgentState) -> AgentState:
     if MOCK_MODE:
         await asyncio.sleep(0.5)
         markdown = (
-            "### 핵심 요약\n(목업 응답) 규정 검토와 감사 분석 모두 위반 가능성이 높다고 판단했습니다.\n\n"
-            "### 최종 권고\n회식비 대신 공식 활동비 항목으로 집행하고, 사전에 감사위원회 서면 확인을 받으십시오.\n\n"
+            "### 결론\n(목업 응답) 학생회비로 회식비를 집행할 수 없습니다. 공식 활동 목적에만 쓸 수 있습니다.\n\n"
+            "### 근거 조항\n- 「재정·회계 세칙」 제10조: 학생회비는 공식 활동 목적으로만 집행합니다.\n\n"
+            "### 해야 할 일\n1. 회식비 대신 공식 활동비 항목으로 집행하시기 바랍니다.\n\n"
             "> ⚠️ CLAUDE_API_KEY·GEMINI_API_KEY가 설정되지 않아 목업 모드로 동작 중입니다.\n\n"
             "<followups>\n- 공식 활동비 항목은 어떻게 인준받나요?\n- 예산 초과 시 처분 수위는 어떻게 되나요?\n- 증빙서류는 무엇을 준비해야 하나요?\n</followups>"
         )
         return {"final_markdown": markdown}
 
+    query = state.get("standalone_query") or state["query"]
+    original = mask_text(state["query"]).strip()
     user_prompt = prompts.COORDINATOR_USER.format(
-        query=state.get("standalone_query") or state["query"],
+        # 이어지는 질문("그래도 같은가요?")에 답하려면 앞 답변을 알아야 한다. 판정 에이전트는 재작성된
+        # 독립 질의만 보지만, 최종 답변은 대화의 한 턴이라 직전 대화를 함께 넘긴다 (마스킹·500자 제한).
+        history=_format_history(state.get("history") or []),
+        # 재작성은 "그래도 같은가요?" 같은 가리킴 표현을 지우기 쉬워, 사용자가 쓴 원문을 함께 준다
+        original_question=(
+            f"\n<original_question>\n{original}\n</original_question>\n" if original != query else ""
+        ),
+        question_type=reviewer.question_type.value if reviewer else "-",
+        query=query,
         violation=reviewer.violation if reviewer else "분석 실패",
         reviewer_risk=reviewer.risk_level.value if reviewer else "-",
         reviewer_reasoning=reviewer.reasoning if reviewer else "-",

@@ -178,8 +178,8 @@ def _extract_followups(markdown: str) -> tuple[str, list[str]]:
 
 
 _STAGE_LABELS = {
-    "regulation": "규정 검토·감사 에이전트 병렬 분석 중...",
-    "general": "답변 생성 중...",
+    "regulation": "관련 규정과 감사 기록을 분석하고 있어요",
+    "general": "답변을 준비하고 있어요",
 }
 
 
@@ -275,7 +275,7 @@ async def chat(
         if cached:
 
             async def cached_stream():
-                yield _sse({"type": "stage", "label": "이전 답변을 불러오는 중..."})
+                yield _sse({"type": "stage", "label": "같은 질문의 답변을 불러오고 있어요"})
                 db.record_metric(
                     route=cached.get("route"),
                     risk_level=cached.get("risk_level"),
@@ -334,7 +334,7 @@ async def chat(
             return claude_usage["cost_usd"]
 
         try:
-            yield _sse({"type": "stage", "label": "질문 분석 중..."})
+            yield _sse({"type": "stage", "label": "질문을 살펴보고 있어요"})
 
             async for mode, payload in graph.astream(
                 {"query": query, "history": history, "citations": []},
@@ -387,7 +387,7 @@ async def chat(
                             "data": mask_obj(agent_result.model_dump()) if agent_result else None,
                         })
                         if merged.get("reviewer") is not None and merged.get("auditor") is not None:
-                            yield _sse({"type": "stage", "label": "조정 에이전트가 결과를 종합 중..."})
+                            yield _sse({"type": "stage", "label": "분석 결과를 종합하고 있어요"})
 
             reviewer = merged.get("reviewer")
             auditor = merged.get("auditor")

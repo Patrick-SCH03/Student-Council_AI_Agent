@@ -14,6 +14,7 @@ import {
   type ReviewerResult,
   sendFeedback,
 } from "@/lib/api";
+import { answerLabel, questionTypeLabel } from "@/lib/answer";
 import { CARD_SHADOW } from "@/lib/ui";
 
 export { CARD_SHADOW };
@@ -137,9 +138,10 @@ export function FeedbackButtons({ analysisId, token }: { analysisId: number; tok
           disabled={status === "sending"}
           aria-label={b.label}
           title={b.label}
-          className="rounded-full border border-slate-200 p-1.5 text-slate-500 transition hover:border-indigo-300 hover:text-indigo-600 disabled:opacity-50"
+          // 손가락으로 누르는 버튼이라 36px — 28px(아이콘+여백)는 모바일에서 옆 버튼을 잘못 누르기 쉬웠다
+          className="flex h-9 w-9 items-center justify-center rounded-full border border-slate-200 text-slate-500 transition hover:border-indigo-300 hover:text-indigo-600 disabled:opacity-50"
         >
-          <Icon path={b.icon} className="h-3.5 w-3.5" />
+          <Icon path={b.icon} className="h-4 w-4" />
         </button>
       ))}
     </div>
@@ -165,7 +167,7 @@ export type Message =
   | { id: number; role: "assistant"; state: AssistantState };
 
 export const emptyAssistant = (): AssistantState => ({
-  stage: "질문 분석 중...",
+  stage: "질문을 살펴보고 있어요",
   tokens: "",
   reviewer: null,
   auditor: null,
@@ -175,29 +177,30 @@ export const emptyAssistant = (): AssistantState => ({
   route: null,
 });
 
-export function RiskBadge({ level }: { level: string | null }) {
-  if (!level) return null;
-  const styles: Record<string, string> = {
-    높음: "bg-rose-50 text-rose-700 ring-rose-200",
-    보통: "bg-amber-50 text-amber-700 ring-amber-200",
-    낮음: "bg-green-50 text-green-700 ring-green-200",
-  };
+const RISK_TONE: Record<string, string> = {
+  높음: "bg-rose-50 text-rose-700 ring-rose-200",
+  보통: "bg-amber-50 text-amber-700 ring-amber-200",
+  낮음: "bg-green-50 text-green-700 ring-green-200",
+};
+
+/** 답변 머리표: 위험도(색으로 수준 구분) 또는 위험도 대신 보여주는 질문 유형 라벨. */
+export function AnswerBadge({ riskLevel, typeLabel }: { riskLevel: string; typeLabel: string | null }) {
+  const tone = typeLabel
+    ? "bg-indigo-50 text-indigo-700 ring-indigo-200"
+    : (RISK_TONE[riskLevel] ?? "bg-slate-100 text-slate-600 ring-slate-200");
   return (
-    <span
-      className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-bold ring-1 ${
-        styles[level] ?? "bg-slate-100 text-slate-600 ring-slate-200"
-      }`}
-    >
+    <span className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-bold ring-1 ${tone}`}>
       <span className="h-1.5 w-1.5 rounded-full bg-current" aria-hidden />
-      위험도 {level}
+      {typeLabel ?? `위험도 ${riskLevel}`}
     </span>
   );
 }
 
 // 한글에는 이탤릭 자족이 없어 브라우저가 글자를 기계적으로 기울인다.
 // 획 균형이 무너져 다른 서체처럼 보이므로, 강조는 기울임 대신 옅은 색으로 준다.
+// 답변은 '### 결론' 바로 다음 문단이 질문에 대한 답이다 — 첫 제목은 위 여백을 없애고 그 문단을 진하게 둔다.
 export const MARKDOWN_STYLE =
-  "max-w-none text-[15px] leading-[1.7] text-slate-700 [&_h3]:mt-5 [&_h3]:mb-1.5 [&_h3]:text-[15px] [&_h3]:font-bold [&_h3]:text-slate-900 [&_p]:my-1.5 [&_ul]:my-1.5 [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:my-1.5 [&_ol]:list-decimal [&_ol]:pl-5 [&_blockquote]:border-l-2 [&_blockquote]:border-indigo-200 [&_blockquote]:pl-3 [&_blockquote]:text-slate-500 [&_strong]:font-bold [&_strong]:text-slate-900 [&_em]:not-italic [&_em]:text-slate-500 [overflow-wrap:anywhere] [&_a]:font-medium [&_a]:text-indigo-700 [&_a]:underline [&_a]:underline-offset-2 [&_pre]:my-2 [&_pre]:overflow-x-auto [&_pre]:rounded-lg [&_pre]:bg-slate-50 [&_pre]:p-3 [&_pre]:text-[13px] [&_table]:my-2 [&_table]:block [&_table]:max-w-full [&_table]:overflow-x-auto [&_th]:border [&_th]:border-slate-200 [&_th]:bg-slate-50 [&_th]:px-2 [&_th]:py-1 [&_td]:border [&_td]:border-slate-200 [&_td]:px-2 [&_td]:py-1";
+  "[&>h3:first-child]:mt-0 [&>h3:first-child+p]:font-medium [&>h3:first-child+p]:text-slate-900 max-w-none text-[15px] leading-[1.7] text-slate-700 [&_h3]:mt-5 [&_h3]:mb-1.5 [&_h3]:text-[15px] [&_h3]:font-bold [&_h3]:text-slate-900 [&_p]:my-1.5 [&_ul]:my-1.5 [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:my-1.5 [&_ol]:list-decimal [&_ol]:pl-5 [&_blockquote]:border-l-2 [&_blockquote]:border-indigo-200 [&_blockquote]:pl-3 [&_blockquote]:text-slate-500 [&_strong]:font-bold [&_strong]:text-slate-900 [&_em]:not-italic [&_em]:text-slate-500 [overflow-wrap:anywhere] [&_a]:font-medium [&_a]:text-indigo-700 [&_a]:underline [&_a]:underline-offset-2 [&_pre]:my-2 [&_pre]:overflow-x-auto [&_pre]:rounded-lg [&_pre]:bg-slate-50 [&_pre]:p-3 [&_pre]:text-[13px] [&_table]:my-2 [&_table]:block [&_table]:max-w-full [&_table]:overflow-x-auto [&_th]:border [&_th]:border-slate-200 [&_th]:bg-slate-50 [&_th]:px-2 [&_th]:py-1 [&_td]:border [&_td]:border-slate-200 [&_td]:px-2 [&_td]:py-1";
 
 // 입력창 타이핑·스트리밍 때 페이지 전체가 다시 그려져도, 글이 같으면 다시 파싱하지 않는다
 export const Markdown = memo(function Markdown({ text }: { text: string }) {
@@ -267,7 +270,8 @@ export function AgentDetail({
         </span>
         <span className="min-w-0 flex-1">
           <span className="block text-[13px] font-bold text-slate-800">{name}</span>
-          <span className="block truncate text-xs font-medium text-slate-500">
+          {/* 좁은 화면에서 잘리면 '처분 가능성 …'처럼 판정 자체가 안 보인다 — 모바일은 줄을 바꾼다 */}
+          <span className="block text-xs font-medium text-slate-500 [overflow-wrap:anywhere] sm:truncate">
             {verdict}
           </span>
         </span>
@@ -310,10 +314,9 @@ export function AssistantBubble({
 
   const copyAnswer = async () => {
     if (!result) return;
+    const label = answerLabel(result);
     try {
-      await navigator.clipboard.writeText(
-        `${result.risk_level ? `[위험도 ${result.risk_level}]\n\n` : ""}${result.final_markdown}`,
-      );
+      await navigator.clipboard.writeText(`${label ? `[${label}]\n\n` : ""}${result.final_markdown}`);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch {
@@ -323,7 +326,8 @@ export function AssistantBubble({
 
   return (
     <div className="flex items-start gap-2.5">
-      <span aria-hidden className="relative mt-1 h-8 w-8 shrink-0">
+      {/* 375px 폭에서 아바타 열(42px)이 답변 폭을 깎는다 — 모바일에서는 숨기고, 진행 표시는 말풍선 안 문구로 충분하다 */}
+      <span aria-hidden className="relative mt-1 hidden h-8 w-8 shrink-0 sm:block">
         {/* 분석 중에는 아이콘 둘레에 링이 돈다 — 이벤트 사이가 길어도 멈춘 게 아니라는 신호 */}
         {running && (
           <span className="absolute -inset-1 animate-spin rounded-full border-[3px] border-indigo-100 border-t-indigo-500 border-r-indigo-500 motion-reduce:animate-none" />
@@ -333,7 +337,7 @@ export function AssistantBubble({
         </span>
       </span>
       <div
-        className={`min-w-0 flex-1 rounded-2xl border border-slate-200 bg-white p-5 ${CARD_SHADOW}`}
+        className={`min-w-0 flex-1 rounded-2xl border border-slate-200 bg-white p-4 sm:p-5 ${CARD_SHADOW}`}
       >
         {error ? (
           <p
@@ -383,7 +387,10 @@ export function AssistantBubble({
 
             {result?.risk_level && (
               <div className="mb-3">
-                <RiskBadge level={result.risk_level} />
+                <AnswerBadge
+                  riskLevel={result.risk_level}
+                  typeLabel={questionTypeLabel(result.reviewer, result.risk_level)}
+                />
               </div>
             )}
 
@@ -406,7 +413,10 @@ export function AssistantBubble({
                   <AgentDetail
                     icon={<Icon path={paths.doc} className="h-4 w-4" />}
                     name="규정 검토"
-                    verdict={`${reviewer.violation} · 위험도 ${reviewer.risk_level}`}
+                    verdict={
+                      questionTypeLabel(reviewer, reviewer.risk_level) ??
+                      `${reviewer.violation} · 위험도 ${reviewer.risk_level}`
+                    }
                   >
                     <Markdown text={reviewer.reasoning} />
                     <p className="mt-2 text-slate-500">

@@ -29,6 +29,40 @@ EVALSET = Path(__file__).resolve().parent / "evalset.json"
 from app.privacy import PRIVATE_NAMES as KNOWN_NAMES  # noqa: E402
 
 
+# 답변 문체 기준 (prompts.STYLE_RULE). 2026-11 운영 답변 100건 점검에서 실제로 나온 표현들이다.
+# "감사 결과"는 정상 표현("정기감사 결과")이라 넣지 않는다. 근거 조항의 규정 원문에 "제공된 자료"가 드물게
+# 나올 수 있으나(오탐), 운영 답변 13건은 모두 실제 노출이었다.
+_INTERNAL_TERMS = re.compile(
+    r"에이전트|두 (?:분석|판단|의견)|규정 검토 (?:측|결과)|감사 (?:측|분석)|분석에 따르면|제공된 (?:규정|문서|자료)"
+)
+_TERMINATOR = r"(?=[\s.,:)」\"'*]|$)"
+_IMPERATIVE = re.compile(r"(?:하라|[하마주]십시오|말라|마라|받으라|두라)" + _TERMINATOR, re.M)
+# 해요체는 설명 문장 어디서도 쓰지 않는다 (제목 줄은 뺀다 — 규정 원문에는 해요체가 없다)
+_POLITE_INFORMAL = re.compile(r"(?:세요|어요|아요|해요|돼요|예요|에요)[.!]?" + _TERMINATOR, re.M)
+# 결론의 한다체 문장 끝 ("~한다." "**~없다.**") — 근거 조항은 규정 원문을 옮기므로 결론만 본다.
+# 마침표·쌍점·굵게 닫기·줄 끝으로 끝나는 것만 문장 끝으로 본다: 조사 "~보다", 따옴표 인용 '"~있다"고'는 문장 끝이 아니다.
+# 결론 안에 규정 문장을 마침표까지 그대로 인용하면 오탐이 날 수 있다.
+_PLAIN_ENDING = re.compile(r"(?<!니)다(?:[.:]|\*\*\.?|$)", re.M)
+
+
+def _style_issues(answer: str) -> list[str]:
+    """규정 답변의 문체 위반을 찾는다 (결론 먼저·합니다체·내부 용어 금지)."""
+    issues: list[str] = []
+    if not answer.lstrip().startswith("### 결론"):
+        issues.append("결론 섹션으로 시작하지 않음")
+    if m := _INTERNAL_TERMS.search(answer):
+        issues.append(f"내부 용어 '{m.group(0)}'")
+    body = "\n".join(line for line in answer.splitlines() if not line.lstrip().startswith("#"))
+    if m := _IMPERATIVE.search(body):
+        issues.append(f"명령형 '{m.group(0).strip()}'")
+    if m := _POLITE_INFORMAL.search(body):
+        issues.append(f"해요체 '{m.group(0).strip()}'")
+    conclusion = answer.split("### 결론", 1)[-1].split("###", 1)[0]
+    if _PLAIN_ENDING.search(conclusion):
+        issues.append("결론에 한다체 문장")
+    return issues
+
+
 def _check(case: dict, result: dict) -> list[str]:
     """케이스별 기대치와 실제 응답을 비교해 실패 사유 목록을 반환한다."""
     failures: list[str] = []
@@ -47,6 +81,9 @@ def _check(case: dict, result: dict) -> list[str]:
     for kw in case.get("expect_keywords", []):
         if kw not in answer:
             failures.append(f"키워드 '{kw}' 누락")
+
+    if result.get("route") == "regulation":
+        failures.extend(f"문체: {issue}" for issue in _style_issues(answer))
 
     if allowed := case.get("expect_risk"):
         if result.get("risk_level") not in allowed:

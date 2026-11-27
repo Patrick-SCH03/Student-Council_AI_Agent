@@ -17,6 +17,7 @@ import {
   emptyAssistant,
   paths,
 } from "@/components/chat/parts";
+import { answerLabel } from "@/lib/answer";
 
 const EXAMPLES = [
   "행사 물품 구매 시 증빙서류는 무엇을 준비해야 하나요?",
@@ -224,10 +225,9 @@ export default function ChatPage() {
           }
         } else if (event.type === "result") {
           finished = true;
+          const label = answerLabel(event);
           setAnnounce(
-            event.route === "general"
-              ? "안내를 받았어요."
-              : `답변이 도착했어요.${event.risk_level ? ` 위험도 ${event.risk_level}.` : ""}`,
+            event.route === "general" ? "안내를 받았어요." : `답변이 도착했어요.${label ? ` ${label}.` : ""}`,
           );
           updateAssistant(assistantId, { result: event, stage: null });
         } else if (event.type === "error") {

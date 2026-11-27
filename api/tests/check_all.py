@@ -374,7 +374,7 @@ def _():
     from app.agents.schemas import ReviewerResult, RiskLevel
 
     sent = []
-    rv = ReviewerResult(violation="위반 없음", risk_level=RiskLevel.LOW, reasoning="r", recommendation="c")
+    rv = ReviewerResult(question_type="행위", violation="위반 없음", risk_level=RiskLevel.LOW, reasoning="r", recommendation="c")
     with patch.object(ca, "_writer", return_value=sent.append), patch.object(
         ca, "_get_client", return_value=_fake_client(parse_result=rv, stream=_FakeStream(["가", "나"]))
     ):
@@ -429,16 +429,16 @@ def _():
     from app.agents.schemas import AuditorResult, ReviewerResult, RiskLevel
 
     async def cut(system, user):
-        raise ca.StreamStarted("cut", partial="### 핵심 요약 부분")
+        raise ca.StreamStarted("cut", partial="### 결론 부분")
 
     state = {
         "query": "q",
-        "reviewer": ReviewerResult(violation="위반 없음", risk_level=RiskLevel.LOW, reasoning="r", recommendation="c"),
+        "reviewer": ReviewerResult(question_type="행위", violation="위반 없음", risk_level=RiskLevel.LOW, reasoning="r", recommendation="c"),
         "auditor": AuditorResult(compliance="준수", sanction_likelihood=RiskLevel.LOW, reasoning="r", recommendation="c"),
     }
     with patch.object(gr, "MOCK_MODE", False), patch.object(ca, "coordinate", cut):
         out = _run(gr.coordinator_node(state))
-    assert out["final_markdown"].startswith("### 핵심 요약 부분"), out
+    assert out["final_markdown"].startswith("### 결론 부분"), out
     assert gr.PARTIAL_ANSWER_NOTICE.strip() in out["final_markdown"]
 
 
@@ -1023,6 +1023,89 @@ def _():
         scratch_dir = scratch_lines[0].split("DATA_DIR: ", 1)[1]
         assert not os.path.exists(scratch_dir), f"smoke DATA_DIR was left behind: {scratch_dir}"
         assert "ALL SMOKE TESTS PASSED" in result.stdout, result.stdout
+
+
+@case("종합 답변 단계는 직전 대화를 받는다 — '그래도 같은 답인가요?' 같은 후속 질문에 답할 수 있게 (실명은 마스킹)")
+def _():
+    import asyncio
+
+    from app.agents import claude_agents
+    from app.agents import graph as g
+    from app.agents.schemas import AuditorResult, ReviewerResult, RiskLevel
+
+    seen = {}
+
+    async def fake_coordinate(system, user):
+        seen["system"], seen["user"] = system, user
+        return "### 결론\n가능합니다."
+
+    reviewer = ReviewerResult(question_type="기준·절차", violation="위반 없음", risk_level=RiskLevel.LOW,
+                              reasoning="r", recommendation="c")
+    auditor = AuditorResult(compliance="준수", sanction_likelihood=RiskLevel.LOW, reasoning="r", recommendation="c")
+    # 실명은 질문·답변 양쪽에, 답변 쪽은 500자 경계에 걸치게 둔다 (자른 뒤 마스킹하면 조각이 남는다)
+    long_answer = "### 결론\n사퇴하면 출마할 수 있습니다." + "가" * (497 - len("### 결론\n사퇴하면 출마할 수 있습니다.")) + "홍길동 위원장"
+    history = [{"question": "홍길동 위원이 사퇴 후 출마할 수 있나요?", "answer": long_answer}]
+    state = {"query": "그래도 같은 답인가요?", "standalone_query": "사퇴한 위원도 같은 해 선거에 출마할 수 있나요?",
+             "history": history, "reviewer": reviewer, "auditor": auditor}
+    with patch.object(g, "MOCK_MODE", False), patch.object(claude_agents, "coordinate", fake_coordinate):
+        out = asyncio.run(g.coordinator_node(state))
+    assert out["final_markdown"].startswith("### 결론"), out
+    user = seen["user"]
+    assert "<history>" in user and "사퇴하면 출마할 수 있습니다" in user, user[:300]
+    assert "홍길동" not in user and "홍길" not in user, "이력의 실명(경계 조각 포함)이 마스킹되지 않았다"
+    # 재작성 질의와 함께, 가리킴 표현("그래도 같은")이 남은 원문을 받는다
+    assert "<original_question>\n그래도 같은 답인가요?" in user and "<question>\n사퇴한 위원도" in user, user[-300:]
+    assert "<question_type>기준·절차</question_type>" in user
+    assert "### 결론" in seen["system"] and "의견 조정" not in seen["system"]
+
+    with patch.object(g, "MOCK_MODE", False), patch.object(claude_agents, "coordinate", fake_coordinate):
+        asyncio.run(g.coordinator_node({**state, "history": [], "standalone_query": "그래도 같은 답인가요?"}))
+    assert "<history>" not in seen["user"], "이력이 없는데 history 블록이 들어갔다"
+    assert "<original_question>" not in seen["user"], "재작성이 원문과 같으면 원문 블록을 넣지 않는다"
+
+
+@case("규정 검토 결과의 질문 유형은 필수이고 세 갈래만 받으며, 채팅 결과 이벤트에 문자열로 실린다")
+def _():
+    from pydantic import ValidationError
+
+    from app.agents.schemas import ReviewerResult, RiskLevel
+
+    base = {"violation": "위반 없음", "risk_level": RiskLevel.LOW, "reasoning": "r", "recommendation": "c"}
+    assert ReviewerResult(**base, question_type="기준·절차").model_dump(mode="json")["question_type"] == "기준·절차"
+    for bad in ({}, {"question_type": "잡담"}):
+        try:
+            ReviewerResult(**base, **bad)
+            raise AssertionError(f"질문 유형 검증 실패: {bad}")
+        except ValidationError:
+            pass
+
+    # 목업 파이프라인: 절차를 묻는 말투는 '기준·절차'로, 결과 이벤트의 reviewer에 그대로 실린다
+    result = chat_result("학생회 예산 변경 절차는 무엇인가요?")
+    assert result["reviewer"]["question_type"] == "기준·절차", result["reviewer"]
+    assert result["final_markdown"].startswith("### 결론"), result["final_markdown"][:80]
+
+
+@case("평가 문체 검사: 내부 용어·명령형·해요체·결론 누락·결론의 한다체를 잡고, 근거 조항의 규정 원문 인용은 허용한다")
+def _():
+    from evaluate import _style_issues
+
+    good = ("### 결론\n할 수 없습니다. 다만 인준을 받으면 위반이 아닙니다.\n\n"
+            "### 근거 조항\n- 「재정·회계 세칙」 제10조: 학생회비는 공식 활동 목적으로만 집행한다.\n\n"
+            "### 해야 할 일\n1. 공식 활동비 항목으로 집행하시기 바랍니다.")
+    assert _style_issues(good) == [], _style_issues(good)
+    bad = "### 핵심 요약\n두 분석 모두 위반으로 본다. 제공된 규정에서 확인되지 않는다.\n1. 대의원회에 문의하라."
+    issues = " ".join(_style_issues(bad))
+    for expected in ("결론 섹션", "내부 용어", "명령형"):
+        assert expected in issues, issues
+    probes = {
+        "### 결론\n집행할 수 없다.": "한다체",
+        "### 결론\n**집행할 수 없다.**": "한다체",
+        "### 결론\n쓸 수 없어요. 인준을 받으세요.": "해요체",
+        "### 결론\n안 됩니다.\n1. 집행하지 마십시오.": "명령형",
+        "### 결론\n감사 분석에 따르면 안 됩니다.": "내부 용어",
+    }
+    for text, expected in probes.items():
+        assert expected in " ".join(_style_issues(text)), f"{expected} 놓침: {text!r}"
 
 
 failed = [(n, why) for n, why in _results if why]

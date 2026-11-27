@@ -18,6 +18,14 @@ class RiskLevel(str, Enum):
 _RISK_ORDER = {RiskLevel.LOW: 0, RiskLevel.MEDIUM: 1, RiskLevel.HIGH: 2}
 
 
+class QuestionType(str, Enum):
+    """판정 대상 분류 (prompts.JUDGMENT_RULE). 화면은 행위 질문에만 위험도를 보여준다."""
+
+    ACTION = "행위"
+    RULE = "기준·절차"
+    RECORD = "기록 조회"
+
+
 class RouteDecision(BaseModel):
     """질문이 학생회 규정/재정/감사 업무와 관련 있는지 판별하고 독립 질의로 재작성."""
 
@@ -40,6 +48,10 @@ class Citation(BaseModel):
 class ReviewerResult(BaseModel):
     """규정 검토 에이전트의 구조화 분석 결과."""
 
+    # 기준·절차·기록 조회 질문의 위험도는 늘 '낮음'이라 배지가 정보가 아니다 — 유형을 함께 받아 화면이 고른다.
+    # 필수로 둔다: 기본값이 있으면 모델이 빠뜨려도 조용히 '행위'가 된다. 옛 저장 결과는 dict라 다시 검증하지 않고,
+    # 화면이 필드가 없는 결과를 위험도 표시로 처리한다.
+    question_type: QuestionType = Field(description="판정 대상 분류: '행위' | '기준·절차' | '기록 조회'")
     violation: str = Field(description="규정 위반 판단: '위반 가능성 높음' | '위반 가능성 낮음' | '위반 없음'")
     risk_level: RiskLevel = Field(description="위험도")
     reasoning: str = Field(description="판단 근거. 반드시 참고한 문서명과 조항을 명시")

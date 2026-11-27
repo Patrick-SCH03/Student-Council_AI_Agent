@@ -327,6 +327,14 @@
       "expect_risk": ["낮음"]
     },
     {
+      "id": "term-yugwon",
+      "query": "유권해석이 무엇인가요?",
+      "expect_route": "regulation",
+      "expect_sources": ["인하대학교_중앙학생회칙", "총대의원회칙"],
+      "expect_keywords": ["해석"],
+      "expect_risk": ["낮음"]
+    },
+    {
       "id": "archive-refusal",
       "query": "기록물 열람 요청을 거절할 수 있는 경우가 있나요?",
       "expect_route": "regulation",
