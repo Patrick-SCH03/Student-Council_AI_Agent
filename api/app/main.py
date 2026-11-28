@@ -1,11 +1,13 @@
 """FastAPI 서버: 공개 API(헬스·SSE 채팅·피드백·방문 기록). 관리자 API는 app/admin.py."""
 
+import asyncio
 import hashlib
 import hmac
 import json
 import re
 import secrets
 import time
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -13,7 +15,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 from starlette.datastructures import MutableHeaders
 
-from app import admin, db, pricing
+from app import admin, auth, contrib, db, events, ledger, notice, pricing
 from app.agents.graph import graph
 from app.agents.schemas import overall_risk
 from app.config import (
@@ -31,11 +33,25 @@ from app.config import (
 )
 from app.privacy import StreamMasker, mask_obj, mask_text
 from app.rag import store
+from app.minutes import api as minutes_api
+from app.plan import api as plan_api
+from app.law import api as law_api
+from app.review import api as review_api
+from app.review import service as review_service
 from app.security import is_admin_request
 
 MAX_QUERY_LENGTH = 1000
 
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    # 문서 검토 스키마 예열 — 기동(헬스체크)을 막지 않게 뒤에서 돈다
+    warm = asyncio.create_task(review_service.warm_up())
+    yield
+    warm.cancel()
+
+
 app = FastAPI(
+    lifespan=_lifespan,
     title="학생회 규정 AI 어시스턴트 API",
     version=APP_VERSION,
     # 자동 문서는 관리자 API 표면을 그대로 드러내므로 목업(로컬)에서만 연다
@@ -51,6 +67,66 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+class _BodyTooLarge(BaseException):
+    """상한을 넘은 본문. Exception이 아니라 앱의 500 처리기를 지나 아래 미들웨어까지 그대로 올라온다."""
+
+
+def _body_limit(path: str) -> int:
+    """경로별 요청 본문 상한(바이트). 파일을 받는 곳만 크게, 나머지 JSON은 1MB."""
+    if path.startswith(("/api/index/", "/api/documents")):
+        return 512 * 1024 * 1024  # 관리자 토큰 전용 색인 옮기기
+    if path == "/api/review/extract":
+        return 16 * 1024 * 1024  # 문서 15MB + 여유
+    if path == "/api/settings/notice/draft":
+        return 6 * 1024 * 1024
+    return 1024 * 1024
+
+
+class _BodyLimit:
+    """요청 본문이 상한을 넘으면 413. 선언된 길이로 먼저 거르고, 청크 전송은 받은 만큼 세어 끊는다(전부 메모리에 올리기 전에)."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        limit = _body_limit(scope.get("path", ""))
+        declared = dict(scope.get("headers") or []).get(b"content-length", b"")
+        if declared.isdigit() and int(declared) > limit:
+            return await self._reject(send)
+        seen = 0
+        started = False
+
+        async def counted():
+            nonlocal seen
+            message = await receive()
+            if message["type"] == "http.request":
+                seen += len(message.get("body", b""))
+                if seen > limit:
+                    raise _BodyTooLarge()
+            return message
+
+        async def tracked(message):
+            nonlocal started
+            if message["type"] == "http.response.start":
+                started = True
+            await send(message)
+
+        try:
+            await self.app(scope, counted, tracked)
+        except _BodyTooLarge:
+            if not started:
+                await self._reject(send)
+
+    @staticmethod
+    async def _reject(send):
+        body = json.dumps({"detail": "요청이 너무 커요."}, ensure_ascii=False).encode()
+        await send({"type": "http.response.start", "status": 413,
+                    "headers": [(b"content-type", b"application/json"), (b"content-length", str(len(body)).encode())]})
+        await send({"type": "http.response.body", "body": body})
 
 
 class _SecurityHeaders:
@@ -73,13 +149,27 @@ class _SecurityHeaders:
                 headers.setdefault("X-Frame-Options", "DENY")
                 headers.setdefault("Referrer-Policy", "no-referrer")
                 headers.setdefault("Cache-Control", "no-store")
+                # API는 JSON·SSE만 낸다 — 문서로 열려도 아무것도 불러오거나 실행하지 않게 (목업의 /docs만 예외)
+                if not scope.get("path", "").startswith(("/docs", "/redoc", "/openapi")):
+                    headers.setdefault("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
+                headers.setdefault("Strict-Transport-Security", "max-age=63072000; includeSubDomains")
+                headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+                headers.setdefault("Cross-Origin-Resource-Policy", "same-site")
             await send(message)
 
         await self.app(scope, receive, send_with_headers)
 
 
 app.add_middleware(_SecurityHeaders)
+app.add_middleware(_BodyLimit)  # 가장 바깥 — 큰 본문은 앱이 읽기 전에 끊는다
 app.include_router(admin.router)
+app.include_router(auth.router)
+app.include_router(review_api.router)
+app.include_router(plan_api.router)
+app.include_router(law_api.router)
+app.include_router(minutes_api.router)
+app.include_router(ledger.router)
+app.include_router(contrib.router)
 
 
 class HistoryItem(BaseModel):
@@ -157,6 +247,18 @@ def health():
         "indexed_chunks": store.chunk_count(),
     }
 
+
+
+@app.get("/api/events")
+def get_events():
+    """홈의 다가오는 일정 (공개). 오늘(한국) 이후만, 가까운 순."""
+    return {"events": events.upcoming()}
+
+
+@app.get("/api/notice")
+def get_notice():
+    """화면 위 공지 (공개). 없거나 끝났으면 null."""
+    return {"notice": notice.current()}
 
 # ---------------------------------------------------------------- chat (SSE)
 
@@ -536,6 +638,8 @@ def track_visit(request: TrackRequest):
 db.purge_old(RETENTION_DAYS)
 # 원문 마스킹 이전에 쌓인 행을 소급해 지운다 (멱등 — 바뀔 행이 없으면 0건)
 db.mask_stored_text()
+# 만료·폐기된 로그인 세션 정리 (멱등)
+db.purge_sessions(RETENTION_DAYS)
 # 지금 쓰지 않는 임베딩 모델의 옛 색인을 지운다 (멱등)
 try:
     if dropped := store.drop_stale_collections():

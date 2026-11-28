@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # 릴리스 태그와 같이 올린다. /api/health로 배포본이 어떤 버전인지 확인한다.
-APP_VERSION = "2.18.0"
+APP_VERSION = "3.3.0"
 
 # 질문 분류·규정 검토·감사 분석·종합 조정·문서 OCR은 Claude, 검색 임베딩은 Gemini(기본) 또는 Voyage가 맡는다.
 CLAUDE_API_KEY: str | None = os.getenv("CLAUDE_API_KEY") or os.getenv("ANTHROPIC_API_KEY") or None
@@ -74,6 +74,18 @@ RETENTION_DAYS: int = int(os.getenv("RETENTION_DAYS", "365"))
 # 동시에 LLM 파이프라인을 돌리는 요청 상한. 한도는 완료된 요청만 세므로,
 # 응답이 끝나기 전에 몰려오는 요청을 여기서 막는다 (비용 폭주 방지).
 MAX_INFLIGHT_TOTAL: int = int(os.getenv("MAX_INFLIGHT_TOTAL", "5"))
+
+# ---- 로그인 (v3: 문서 검토·법령 점검표·작업함만. 규정 질문은 익명)
+# Google OAuth 웹 클라이언트 ID (공개값). 없으면 로그인 API가 503으로 닫힌다.
+GOOGLE_CLIENT_ID: str | None = os.getenv("GOOGLE_CLIENT_ID") or None
+# 이 도메인 학교 계정만 받는다 — 토큰의 hd와 이메일 끝을 함께 확인한다.
+AUTH_EMAIL_DOMAIN: str = (os.getenv("AUTH_EMAIL_DOMAIN") or "inha.edu").strip().lower()
+# 사람 관리자(쉼표 구분 이메일). 스크립트용 ADMIN_TOKEN과 별개.
+ADMIN_EMAILS: frozenset[str] = frozenset(
+    e.strip().lower() for e in os.getenv("ADMIN_EMAILS", "").split(",") if e.strip()
+)
+SESSION_TTL_DAYS: int = int(os.getenv("SESSION_TTL_DAYS", "14"))
+SESSION_COOKIE: str = "sid"
 
 CORS_ORIGINS: list[str] = [
     o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",") if o.strip()

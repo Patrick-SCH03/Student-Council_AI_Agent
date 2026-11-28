@@ -1,19 +1,13 @@
 "use client";
 
-// 운영 관측 대시보드 (숨김 URL: /stats — 네비게이션에 노출하지 않음)
+// 관리자 패널: 운영 관측 대시보드. 관리자 계정(ADMIN_EMAILS)으로 로그인하면 사이드바에 보이고 토큰 없이 열린다.
+// 문서·색인·백업 같은 위험한 관리 API는 여전히 ADMIN_TOKEN만 받는다.
 
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-import {
-  AuthError,
-  adminFetch,
-  clearAdminToken,
-  clearAnswerCache,
-  getAdminToken,
-  setAdminToken,
-} from "@/lib/api";
+import { AuthError, adminFetch, clearAdminToken, clearAnswerCache, getAdminToken, setAdminToken } from "@/lib/api";
 import { fmt, usd } from "@/lib/format";
 
 import {
@@ -29,6 +23,9 @@ import {
   TokenGate,
   fallbackTitle,
 } from "./parts";
+import EventsSettings from "./EventsSettings";
+import MembersPanel from "./MembersPanel";
+import NoticeSettings from "./NoticeSettings";
 
 export default function StatsPage() {
   const [stats, setStats] = useState<Stats | null>(null);
@@ -61,14 +58,15 @@ export default function StatsPage() {
   }, []);
 
   // 관리자 조작(CSV·캐시)의 실패 처리. 인증 실패는 지표 조회와 똑같이 로그인 화면으로 보낸다.
-  const handleAdminError = (e: unknown, fallback: string) => {
+  // 공지 설정이 마운트 때 한 번만 불러오도록 같은 함수를 유지한다 (상태 설정 함수만 써서 의존성이 없다)
+  const handleAdminError = useCallback((e: unknown, fallback: string) => {
     if (e instanceof AuthError) {
       setNeedsAuth(true);
       setAuthError(e.message);
       return;
     }
     setError(e instanceof Error ? e.message : fallback);
-  };
+  }, []);
 
   // 마운트 시 1회 + 30초 주기로 지표를 갱신한다.
   useEffect(() => {
@@ -128,9 +126,7 @@ export default function StatsPage() {
     return <p className="py-16 text-center text-sm font-medium text-rose-700">{error}</p>;
   }
   if (!stats) {
-    return (
-      <p className="py-16 text-center text-sm font-medium text-slate-500">불러오는 중...</p>
-    );
+    return <p className="py-16 text-center text-sm font-medium text-slate-500">불러오는 중...</p>;
   }
 
   const totalTokens = stats.totals.input_tokens + stats.totals.output_tokens;
@@ -139,12 +135,10 @@ export default function StatsPage() {
   const fbTotal = stats.feedback.helpful + stats.feedback.unhelpful;
 
   return (
-    <div className="py-8">
+    <div>
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-extrabold tracking-tight text-slate-900">
-            운영 대시보드
-          </h1>
+          <h1 className="text-2xl font-extrabold tracking-tight text-slate-900">운영 대시보드</h1>
           <p className="mt-1 text-sm font-medium text-slate-500">
             30초마다 자동 갱신 · 관리용 페이지
             {stats.agent && ` · 분석 모델 ${stats.agent.model}`}
@@ -158,18 +152,21 @@ export default function StatsPage() {
           >
             지표 CSV 내보내기
           </button>
-          <button
-            type="button"
-            onClick={() => {
-              sessionRef.current += 1;
-              clearAdminToken();
-              setNeedsAuth(true);
-              setStats(null);
-            }}
-            className="rounded-full border border-slate-200 bg-white px-4 py-2 text-xs font-medium text-slate-500 transition hover:border-rose-200 hover:text-rose-700"
-          >
-            로그아웃
-          </button>
+          {/* 토큰으로 들어왔을 때만 — 관리자 계정 세션은 계정 메뉴에서 로그아웃한다 */}
+          {getAdminToken() && (
+            <button
+              type="button"
+              onClick={() => {
+                sessionRef.current += 1;
+                clearAdminToken();
+                setNeedsAuth(true);
+                setStats(null);
+              }}
+              className="rounded-full border border-slate-200 bg-white px-4 py-2 text-xs font-medium text-slate-500 transition hover:border-rose-200 hover:text-rose-700"
+            >
+              토큰 로그아웃
+            </button>
+          )}
         </div>
       </div>
 
@@ -206,15 +203,8 @@ export default function StatsPage() {
             .filter(Boolean)
             .join(" · ")}
         />
-        <StatTile
-          label="토큰 사용량"
-          value={fmt(totalTokens)}
-          sub={`오늘 ${fmt(todayTokens)}`}
-        />
-        <StatTile
-          label="평균 응답 시간"
-          value={`${stats.totals.avg_elapsed.toFixed(1)}초`}
-        />
+        <StatTile label="토큰 사용량" value={fmt(totalTokens)} sub={`오늘 ${fmt(todayTokens)}`} />
+        <StatTile label="평균 응답 시간" value={`${stats.totals.avg_elapsed.toFixed(1)}초`} />
       </div>
 
       {stats.stages && stats.stages.samples > 0 && (
@@ -250,17 +240,12 @@ export default function StatsPage() {
               const style = RISK_STYLE[level];
               return (
                 <div key={level} className="flex items-center gap-2.5">
-                  <span
-                    className={`inline-flex w-14 items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-bold ring-1 ${style.chip}`}
-                  >
+                  <span className={`inline-flex w-14 items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-bold ring-1 ${style.chip}`}>
                     <span className={`h-1.5 w-1.5 rounded-full ${style.dot}`} />
                     {level}
                   </span>
                   <div className="h-2 flex-1 overflow-hidden rounded-full bg-slate-100">
-                    <div
-                      className={`h-full rounded-full ${style.dot}`}
-                      style={{ width: `${pct}%` }}
-                    />
+                    <div className={`h-full rounded-full ${style.dot}`} style={{ width: `${pct}%` }} />
                   </div>
                   <span className="w-16 text-right text-xs font-medium text-slate-500">
                     {fmt(n)}건 ({pct}%)
@@ -274,15 +259,11 @@ export default function StatsPage() {
           <div className="mt-3 flex flex-col gap-1.5 text-sm">
             <div className="flex justify-between">
               <span className="font-medium text-slate-500">규정 분석</span>
-              <span className="font-bold text-slate-800">
-                {fmt(stats.routes["regulation"] ?? 0)}건
-              </span>
+              <span className="font-bold text-slate-800">{fmt(stats.routes["regulation"] ?? 0)}건</span>
             </div>
             <div className="flex justify-between">
               <span className="font-medium text-slate-500">범위 밖 질문</span>
-              <span className="font-bold text-slate-800">
-                {fmt(stats.routes["general"] ?? 0)}건
-              </span>
+              <span className="font-bold text-slate-800">{fmt(stats.routes["general"] ?? 0)}건</span>
             </div>
           </div>
         </div>
@@ -292,58 +273,35 @@ export default function StatsPage() {
         <div className={`rounded-2xl border border-slate-200 bg-white p-5 ${CARD_SHADOW}`}>
           <p className="text-sm font-bold text-slate-800">답변 만족도</p>
           {fbTotal === 0 ? (
-            <p className="mt-4 text-sm font-medium text-slate-500">
-              아직 평가가 없어요.
-            </p>
+            <p className="mt-4 text-sm font-medium text-slate-500">아직 평가가 없어요.</p>
           ) : (
             <>
               <p className="mt-3 text-[26px] font-extrabold tracking-tight text-slate-900">
                 {Math.round((stats.feedback.helpful / fbTotal) * 100)}%
-                <span className="ml-1.5 text-sm font-medium text-slate-500">
-                  도움됨
-                </span>
+                <span className="ml-1.5 text-sm font-medium text-slate-500">도움됨</span>
               </p>
               <div className="mt-3 flex h-2 overflow-hidden rounded-full bg-slate-100">
-                <div
-                  className="bg-green-500"
-                  style={{ width: `${(stats.feedback.helpful / fbTotal) * 100}%` }}
-                />
-                <div
-                  className="bg-rose-400"
-                  style={{ width: `${(stats.feedback.unhelpful / fbTotal) * 100}%` }}
-                />
+                <div className="bg-green-500" style={{ width: `${(stats.feedback.helpful / fbTotal) * 100}%` }} />
+                <div className="bg-rose-400" style={{ width: `${(stats.feedback.unhelpful / fbTotal) * 100}%` }} />
               </div>
               <p className="mt-2 text-xs font-medium text-slate-500">
-                도움됨 {fmt(stats.feedback.helpful)}건 · 부족함{" "}
-                {fmt(stats.feedback.unhelpful)}건
+                도움됨 {fmt(stats.feedback.helpful)}건 · 부족함 {fmt(stats.feedback.unhelpful)}건
               </p>
             </>
           )}
         </div>
 
-        <div
-          className={`rounded-2xl border border-slate-200 bg-white p-5 lg:col-span-2 ${CARD_SHADOW}`}
-        >
+        <div className={`rounded-2xl border border-slate-200 bg-white p-5 lg:col-span-2 ${CARD_SHADOW}`}>
           <p className="text-sm font-bold text-slate-800">
-            개선이 필요한 답변{" "}
-            <span className="font-medium text-slate-500">
-              — &lsquo;부족함&rsquo; 평가를 받은 질문
-            </span>
+            개선이 필요한 답변 <span className="font-medium text-slate-500">— &lsquo;부족함&rsquo; 평가를 받은 질문</span>
           </p>
           {stats.feedback.recent_unhelpful.length === 0 ? (
-            <p className="mt-4 text-sm font-medium text-slate-500">
-              부족하다는 평가가 아직 없어요.
-            </p>
+            <p className="mt-4 text-sm font-medium text-slate-500">부족하다는 평가가 아직 없어요.</p>
           ) : (
             <ul className="mt-3 divide-y divide-slate-100">
               {stats.feedback.recent_unhelpful.map((f) => (
-                <li
-                  key={f.analysis_id}
-                  className="flex items-center justify-between gap-3 py-2"
-                >
-                  <span className="min-w-0 truncate text-sm font-medium text-slate-700">
-                    {f.query}
-                  </span>
+                <li key={f.analysis_id} className="flex items-center justify-between gap-3 py-2">
+                  <span className="min-w-0 truncate text-sm font-medium text-slate-700">{f.query}</span>
                   <span className="shrink-0 text-xs font-medium text-slate-500">
                     {new Date(f.ts).toLocaleDateString("ko-KR", {
                       month: "numeric",
@@ -372,6 +330,18 @@ export default function StatsPage() {
             }
           }}
         />
+      </div>
+
+      <div className="mt-4">
+        <NoticeSettings onAuthError={handleAdminError} />
+      </div>
+
+      <div className="mt-4">
+        <EventsSettings onAuthError={handleAdminError} />
+      </div>
+
+      <div className="mt-4">
+        <MembersPanel onAuthError={handleAdminError} />
       </div>
 
       <div className={`mt-4 overflow-x-auto rounded-2xl border border-slate-200 bg-white ${CARD_SHADOW}`}>
@@ -422,10 +392,7 @@ export default function StatsPage() {
                   <td className="whitespace-nowrap px-2 py-2.5">
                     {/* 'cached'는 정상 응답이므로 오류로 표시하지 않는다 */}
                     {r.status === "error" ? (
-                      <span
-                        className="cursor-help text-xs font-bold text-rose-700"
-                        title={r.error ?? "사유 미기록"}
-                      >
+                      <span className="cursor-help text-xs font-bold text-rose-700" title={r.error ?? "사유 미기록"}>
                         오류
                       </span>
                     ) : r.status === "cached" ? (
@@ -446,10 +413,7 @@ export default function StatsPage() {
                       <span className="text-xs font-medium text-slate-500">—</span>
                     )}
                     {r.fallback && (
-                      <span
-                        className="ml-1.5 cursor-help text-xs font-bold text-amber-700"
-                        title={fallbackTitle(r.fallback)}
-                      >
+                      <span className="ml-1.5 cursor-help text-xs font-bold text-amber-700" title={fallbackTitle(r.fallback)}>
                         폴백
                       </span>
                     )}
@@ -459,10 +423,7 @@ export default function StatsPage() {
                   </td>
                   <td className="whitespace-nowrap px-5 py-2.5 text-right text-xs font-medium text-slate-500">
                     {r.helpful !== null && (
-                      <span
-                        className={`mr-2 ${r.helpful ? "text-green-600" : "text-rose-500"}`}
-                        title={r.helpful ? "도움됨" : "부족함"}
-                      >
+                      <span className={`mr-2 ${r.helpful ? "text-green-600" : "text-rose-500"}`} title={r.helpful ? "도움됨" : "부족함"}>
                         {r.helpful ? "좋음" : "부족"}
                       </span>
                     )}
@@ -472,25 +433,13 @@ export default function StatsPage() {
                 {expandedId === r.id && (
                   <tr className="border-b border-slate-100">
                     <td colSpan={5} className="bg-slate-50/60 px-5 py-4">
-                      <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">
-                        전체 질문
-                      </p>
-                      <p className="mt-1 text-sm font-medium text-slate-800">
-                        {r.query_preview}
-                      </p>
+                      <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">전체 질문</p>
+                      <p className="mt-1 text-sm font-medium text-slate-800">{r.query_preview}</p>
                       {r.analysis_id ? (
                         <div className="mt-3">
-                          <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">
-                            최종 답변
-                          </p>
-                          {answers[r.analysis_id] === "loading" && (
-                            <p className="mt-1 text-sm text-slate-500">불러오는 중...</p>
-                          )}
-                          {answers[r.analysis_id] === "error" && (
-                            <p className="mt-1 text-sm text-rose-700">
-                              답변을 불러오지 못했어요.
-                            </p>
-                          )}
+                          <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">최종 답변</p>
+                          {answers[r.analysis_id] === "loading" && <p className="mt-1 text-sm text-slate-500">불러오는 중...</p>}
+                          {answers[r.analysis_id] === "error" && <p className="mt-1 text-sm text-rose-700">답변을 불러오지 못했어요.</p>}
                           {typeof answers[r.analysis_id] === "object" && (
                             <div className="mt-1 max-h-72 overflow-y-auto rounded-xl border border-slate-200 bg-white p-4 text-sm leading-relaxed text-slate-700 [&_h3]:mt-3 [&_h3]:mb-1 [&_h3]:font-bold [&_h3]:text-slate-900 [&_ol]:list-decimal [&_ol]:pl-5 [&_ul]:list-disc [&_ul]:pl-5 [&_em]:not-italic [&_em]:text-slate-500">
                               <ReactMarkdown remarkPlugins={[remarkGfm]} disallowedElements={["img"]} unwrapDisallowed>
@@ -500,9 +449,7 @@ export default function StatsPage() {
                           )}
                         </div>
                       ) : (
-                        <p className="mt-2 text-xs text-slate-500">
-                          저장된 답변이 없는 기록이에요 (범위 밖 질문 또는 오류).
-                        </p>
+                        <p className="mt-2 text-xs text-slate-500">저장된 답변이 없는 기록이에요 (범위 밖 질문 또는 오류).</p>
                       )}
                     </td>
                   </tr>

@@ -1,10 +1,13 @@
 // FastAPI 백엔드 클라이언트: 타입 정의 + SSE 스트리밍 파서
 
+import { validationText } from "./validation.ts";
+import type { Event } from "./events";
+import type { Notice } from "./notice";
+
 // 미설정이면 로컬 개발용 주소, "/" 또는 ""이면 same-origin 상대 경로.
 // 배포본은 백엔드 주소를 직접 지정한다 (프록시를 거치면 스트리밍이 타임아웃에 걸린다).
 const _raw = process.env.NEXT_PUBLIC_API_URL;
-export const API_BASE =
-  _raw === undefined ? "http://localhost:8000" : _raw.replace(/\/+$/, "");
+export const API_BASE = _raw === undefined ? "http://localhost:8000" : _raw.replace(/\/+$/, "");
 
 /* --- 익명 방문자 식별 (일일 한도 계산·트래픽 집계용) ------------------- */
 
@@ -43,14 +46,15 @@ export function clearAdminToken(): void {
 
 export class AuthError extends Error {}
 
-/** 관리자 토큰을 붙여 요청하고, 인증 실패(401·503)는 AuthError로 구분한다.
+/** 관리자 토큰(있으면)과 로그인 쿠키를 실어 요청하고, 인증 실패(401·503)는 AuthError로 구분한다.
  *  관리자 요청은 모두 이 함수를 거친다. 요청마다 토큰·인증 오류를 따로 처리하면
  *  같은 만료 토큰에 화면마다 다른 오류가 뜬다. */
 export async function adminFetch(path: string, init: RequestInit = {}): Promise<Response> {
   const token = getAdminToken();
   const headers = new Headers(init.headers);
   if (token) headers.set("Authorization", `Bearer ${token}`);
-  const res = await fetch(`${API_BASE}${path}`, { ...init, headers });
+  // 토큰이 없으면 관리자 계정 로그인 세션(쿠키)으로 인증한다
+  const res = await fetch(`${API_BASE}${path}`, { ...init, headers, credentials: "include" });
   if (res.status === 401 || res.status === 503) {
     const body = await res.json().catch(() => null);
     throw new AuthError(body?.detail ?? "관리자 인증이 필요해요.");
@@ -95,11 +99,7 @@ export type ChatResult = {
 };
 
 /** 답변 만족도 전송. 실패하면 던져서 호출 쪽이 재시도를 안내하게 한다. */
-export async function sendFeedback(
-  analysisId: number,
-  helpful: boolean,
-  token: string,
-): Promise<void> {
+export async function sendFeedback(analysisId: number, helpful: boolean, token: string): Promise<void> {
   const res = await fetch(`${API_BASE}/api/feedback`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -148,11 +148,7 @@ export class ChatBlockedError extends Error {}
 const STREAM_IDLE_TIMEOUT_MS = 90_000;
 
 /** POST /api/chat 의 SSE 응답을 이벤트 단위로 yield */
-export async function* streamChat(
-  query: string,
-  history: HistoryItem[] = [],
-  signal?: AbortSignal,
-): AsyncGenerator<ChatEvent> {
+export async function* streamChat(query: string, history: HistoryItem[] = [], signal?: AbortSignal): AsyncGenerator<ChatEvent> {
   const controller = new AbortController();
   const abort = () => controller.abort();
   if (signal?.aborted) abort(); // 이미 취소된 signal이면 요청을 시작하지 않는다
@@ -174,9 +170,7 @@ export async function* streamChat(
     });
     if (res.status === 429) {
       const body = await res.json().catch(() => null);
-      throw new ChatBlockedError(
-        body?.detail ?? "오늘 이용 한도에 도달했어요. 내일 다시 이용해 주세요.",
-      );
+      throw new ChatBlockedError(body?.detail ?? "오늘 이용 한도에 도달했어요. 내일 다시 이용해 주세요.");
     }
     if (!res.ok || !res.body) {
       throw new Error(`서버 오류 (${res.status})`);
@@ -233,13 +227,7 @@ export async function clearAnswerCache(): Promise<{ cleared: number }> {
 }
 
 export async function updateLimits(
-  values: Pick<
-    Limits,
-    | "daily_limit_total"
-    | "daily_limit_per_user"
-    | "daily_limit_per_ip"
-    | "cache_ttl_hours"
-  >,
+  values: Pick<Limits, "daily_limit_total" | "daily_limit_per_user" | "daily_limit_per_ip" | "cache_ttl_hours">,
 ): Promise<Limits> {
   const res = await adminFetch("/api/settings", {
     method: "PUT",
@@ -256,3 +244,78 @@ export async function fetchHealth(): Promise<HealthInfo> {
   return res.json();
 }
 
+/** 서버 오류 안내 문구. 422는 detail이 목록이다 — 첫 검증 오류를 한국어로 바꿔 보여 준다(영어 원문은 보이지 않는다) */
+export async function errorDetail(res: Response, fallback: string): Promise<string> {
+  const detail = await res.json().then(
+    (b) => b?.detail,
+    () => null,
+  );
+  if (typeof detail === "string") return detail || fallback;
+  return validationText(detail?.[0]) ?? fallback;
+}
+
+
+/* --- 화면 위 공지 --------------------------------------------------- */
+
+export async function fetchNotice(): Promise<Notice | null> {
+  const res = await fetch(`${API_BASE}/api/notice`);
+  if (!res.ok) return null;
+  return (await res.json()).notice ?? null;
+}
+
+/** 관리자: 저장된 공지(끝난 것 포함) */
+export async function fetchStoredNotice(): Promise<Notice | null> {
+  const res = await adminFetch("/api/settings/notice");
+  if (!res.ok) throw new Error("공지를 불러오지 못했어요.");
+  return (await res.json()).notice ?? null;
+}
+
+export async function publishNotice(body: { text: string; href: string; until: string }): Promise<Notice> {
+  const res = await adminFetch("/api/settings/notice", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text: body.text, href: body.href || null, until: body.until || null }),
+  });
+  if (!res.ok) throw new Error(await errorDetail(res, "공지를 올리지 못했어요."));
+  return (await res.json()).notice;
+}
+
+/** 관리자: 공고문 사진·PDF → 공지 초안(내용·끝나는 날). 원본은 서버에 남지 않는다 */
+export async function draftNoticeFromFile(file: Blob): Promise<{ text: string; until: string | null }> {
+  const res = await adminFetch("/api/settings/notice/draft", {
+    method: "POST",
+    headers: { "Content-Type": file.type || "application/octet-stream" },
+    body: file,
+  });
+  if (!res.ok) throw new Error(await errorDetail(res, "공고문을 읽지 못했어요."));
+  return (await res.json()).draft;
+}
+
+export async function withdrawNotice(): Promise<void> {
+  const res = await adminFetch("/api/settings/notice", { method: "DELETE" });
+  if (!res.ok) throw new Error("공지를 내리지 못했어요.");
+}
+
+/* --- 다가오는 일정 (홈) --------------------------------------------- */
+
+export async function fetchEvents(): Promise<Event[]> {
+  const res = await fetch(`${API_BASE}/api/events`);
+  if (!res.ok) return [];
+  return (await res.json()).events ?? [];
+}
+
+export async function fetchStoredEvents(): Promise<Event[]> {
+  const res = await adminFetch("/api/settings/events");
+  if (!res.ok) throw new Error("일정을 불러오지 못했어요.");
+  return (await res.json()).events ?? [];
+}
+
+export async function saveEvents(events: Event[]): Promise<Event[]> {
+  const res = await adminFetch("/api/settings/events", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ events: events.map((e) => ({ ...e, href: e.href || null })) }),
+  });
+  if (!res.ok) throw new Error(await errorDetail(res, "일정을 저장하지 못했어요."));
+  return (await res.json()).events;
+}

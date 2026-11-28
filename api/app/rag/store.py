@@ -330,6 +330,22 @@ def _invalidate_bm25() -> None:
         _bm25_cache = None
 
 
+# 임원이 쓰는 말 → 규정이 쓰는 말. 규정 키워드 검색에만 더한다 (2026-11-28 파일럿: '회장 개인 통장으로 참가비를 걷어도
+# 되나요?'에 「재정·회계 세칙」 제31조 제2항(공금전용계좌)이 8위 안에 없었다). 규정 원문의 용어만 넣는다.
+# 더한 말은 2-gram으로 쪼개지 않는다 — '증명서류'의 '서류'·'명서'가 선거 세칙을 끌어올렸다(Fable 리뷰). 감사 검색엔 쓰지 않는다
+# ('계좌'·'수입'은 감사 사례에서 흔한 말이라 엉뚱한 사례가 오른다).
+_TERM_MAP: list[tuple[re.Pattern, tuple[str, ...]]] = [
+    (re.compile(r"(?:개인|본인|회장|임원)\s*(?:의\s*)?(?:계좌|통장|명의)"), ("공금전용계좌",)),
+    (re.compile(r"영수증"), ("증명서류",)),
+]
+
+
+def _expand_terms(query: str, vocab) -> set[str]:
+    """질의에 맞는 규정 용어를, 색인에 있는 그 말로 시작하는 낱말(조사 붙은 꼴 포함) 그대로 돌려준다."""
+    words = [w for pat, terms in _TERM_MAP if pat.search(query) for w in terms]
+    return {t for t in vocab for w in words if t.startswith(w)}
+
+
 def _keyword_search(query: str, k: int, doc_type: str | None) -> list[tuple[str, dict]]:
     """BM25 점수 상위 청크를 (본문, 메타) 목록으로 반환한다.
 
@@ -345,7 +361,10 @@ def _keyword_search(query: str, k: int, doc_type: str | None) -> list[tuple[str,
 
     n = len(docs)
     scores: dict[int, float] = {}
-    for term in set(_tokenize(query)):
+    terms = set(_tokenize(query))
+    if doc_type != "audit":
+        terms |= _expand_terms(query, postings)
+    for term in terms:
         posting = postings.get(term)
         if not posting:
             continue

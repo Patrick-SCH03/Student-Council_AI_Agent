@@ -43,6 +43,12 @@ _POLITE_INFORMAL = re.compile(r"(?:세요|어요|아요|해요|돼요|예요|에
 # 마침표·쌍점·굵게 닫기·줄 끝으로 끝나는 것만 문장 끝으로 본다: 조사 "~보다", 따옴표 인용 '"~있다"고'는 문장 끝이 아니다.
 # 결론 안에 규정 문장을 마침표까지 그대로 인용하면 오탐이 날 수 있다.
 _PLAIN_ENDING = re.compile(r"(?<!니)다(?:[.:]|\*\*\.?|$)", re.M)
+# 운영 원칙상 쓰지 않는 안내 (prompts.STYLE_RULE, 2026-11-28 파일럿): 학교 부서 확인 안내, 사비 처리 권유
+_FORBIDDEN_ADVICE = re.compile(
+    r"(?:학교|대학|본부)[^.\n]{0,12}(?:부서|행정실|측)?에\s*(?:확인|문의)"
+    r"|(?<![가-힣])(?:사비|자비)로\s*(?:처리|부담|충당|결제|지출)(?:하[시면고는]|할\s*수|해)"
+    r"|개인\s*(?:돈|비용|카드)으로\s*먼저\s*(?:내|결제|지출)"
+)
 
 
 def _style_issues(answer: str) -> list[str]:
@@ -57,6 +63,8 @@ def _style_issues(answer: str) -> list[str]:
         issues.append(f"명령형 '{m.group(0).strip()}'")
     if m := _POLITE_INFORMAL.search(body):
         issues.append(f"해요체 '{m.group(0).strip()}'")
+    if m := _FORBIDDEN_ADVICE.search(body):
+        issues.append(f"금지 안내 '{m.group(0)}'")
     conclusion = answer.split("### 결론", 1)[-1].split("###", 1)[0]
     if _PLAIN_ENDING.search(conclusion):
         issues.append("결론에 한다체 문장")
@@ -139,7 +147,10 @@ async def _run_local(query: str) -> dict:
             claude_tokens += int(u.get("input_tokens", 0)) + int(u.get("output_tokens", 0))
     reviewer, auditor = state.get("reviewer"), state.get("auditor")
     markdown = state.get("final_markdown", "") or ""
-    return {
+    from app.privacy import mask_obj
+
+    # 운영 /api/chat처럼 내보내기 전에 마스킹한다 — 사용자가 받는 결과를 검사해야 한다 (내부 상태의 근거 조각은 원문 그대로다)
+    return mask_obj({
         "route": state.get("route", ""),
         "risk_level": overall_risk(reviewer, auditor).value if (reviewer or auditor) else None,
         "final_markdown": re.sub(r"<followups>.*?</followups>", "", markdown, flags=re.DOTALL),
@@ -151,7 +162,7 @@ async def _run_local(query: str) -> dict:
         "auditor": auditor.model_dump() if auditor else None,
         "_claude_tokens": claude_tokens,
         "_tokens": claude_tokens,
-    }
+    })
 
 
 def _run_retrieval(cases: list[dict]) -> int:

@@ -1,12 +1,12 @@
 <div align="center">
 
-# 학생회 규정 AI 어시스턴트
+# 학생회 업무 AI
 
-**학생회 회칙·세칙·감사보고서를 근거로 "이거 규정 위반인가요? 감사 처분 받나요?"에 답하는 멀티에이전트 RAG 챗봇**
+**회칙·세칙·감사보고서를 근거로 규정 질문에 답하고, 예산 문서 검토·기획안·공문 작성까지 돕는 학생회 업무 플랫폼**
 
 인하대학교 학생회를 대상으로 실제 운영 중인 서비스입니다.
 
-[![Live](https://img.shields.io/badge/Live_Service-000000?style=for-the-badge)](https://ai-agent-patrick-16be.vercel.app)
+[![Live](https://img.shields.io/badge/Live_Service-000000?style=for-the-badge)](https://app.inhacouncil.com)
 [![CI](https://github.com/Patrick-SCH03/Student-Council_AI_Agent/actions/workflows/ci.yml/badge.svg)](https://github.com/Patrick-SCH03/Student-Council_AI_Agent/actions/workflows/ci.yml)
 
 </div>
@@ -20,6 +20,20 @@
 
 이 서비스는 그 확인 과정을 **자연어 질문 하나**로 대체합니다. 질문을 받으면 관련 조항과 과거 감사 사례를 찾아,
 위반 여부·위험도·처분 가능성을 **조항 단위 출처와 함께** 답합니다.
+
+---
+
+## 주요 기능
+
+| 기능 | 설명 |
+|---|---|
+| **규정 질문** | 로그인 없이 익명으로 묻고, 조항·감사 사례를 근거로 답을 받습니다. |
+| **문서 검토** | 예산안·정산서(PDF·한글·워드·엑셀)를 올리면 합계·예비비·표끼리 금액·엑셀 수식을 **계산으로** 검사하고, 규정 해석이 필요한 부분은 조항과 함께 알려 줍니다. 원본 파일은 저장하지 않습니다. |
+| **기획 도우미** | 행사 개요를 넣으면 총대의원회 양식의 사업계획서·예산안 초안을 만듭니다. 금액·예비비·일정은 **코드가 계산**합니다. |
+| **문서 작성** | 지급 확인서·경위서·예산 변경 사유서·공문·사령·회의록을 Word로, 정산표를 엑셀로 만듭니다. |
+| **감사 대비·법령 점검** | 감사자료를 점검하고, 주점·상금·개인정보·저작권 등 행사별 법령 점검표를 봅니다. |
+
+문서 검토·기획 도우미·회의록 정리는 학교 Google 계정으로 로그인해 씁니다.
 
 ---
 
@@ -48,14 +62,14 @@ flowchart LR
 
 | 영역 | 사용 기술 |
 |---|---|
-| **AI** | Claude Haiku 5.5 (분류·분석·종합·문서 추출) · Gemini 임베딩 · LangGraph |
-| **백엔드** | Python · FastAPI · ChromaDB · SQLite · SSE 스트리밍 |
-| **프론트엔드** | Next.js · React · TypeScript · Tailwind CSS |
+| **AI** | Claude Haiku 5.5 (분류·분석·종합·문서 추출·초안) · Gemini 임베딩 · LangGraph |
+| **백엔드** | Python · FastAPI · ChromaDB · SQLite · SSE 스트리밍 · Google 로그인(학교 계정) |
+| **프론트엔드** | Next.js · React · TypeScript · Tailwind CSS · docx·exceljs (브라우저에서 파일 생성) |
 | **운영** | Docker · Railway · Vercel · GitHub Actions |
 
 ---
 
 ## 주의
 
-- 학생회 규정 해석을 돕는 참고 도구이며, 공식 해석이나 법적 판단을 대신하지 않습니다.
+- 학생회 업무를 돕는 참고 도구이며, 공식 해석이나 법적 판단을 대신하지 않습니다.
 - 학습·검색에 쓰는 내부 문서는 저장소에 포함하지 않습니다.

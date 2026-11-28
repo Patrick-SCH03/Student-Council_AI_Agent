@@ -71,10 +71,23 @@ class OcrTruncated(RuntimeError):
     """OCR 출력이 max_tokens에서 잘렸다. 같은 PDF로 다시 불러도 다시 잘리므로 재시도하지 않는다."""
 
 
-async def structured(system: str, user: str, schema: type[T], max_tokens: int = 16000) -> T:
-    """질문 분류·규정 검토·감사 분석: 스키마로 검증된 구조화 출력."""
-    write = _writer()
-    response = await _get_client().messages.parse(
+async def structured(
+    system: str,
+    user: str | list[dict],
+    schema: type[T],
+    max_tokens: int = 16000,
+    on_usage: Callable[[dict], None] | None = None,
+    timeout: float | None = None,
+) -> T:
+    """질문 분류·규정 검토·감사 분석·문서 검토: 스키마로 검증된 구조화 출력.
+
+    on_usage: 그래프 밖(문서 검토)에서 사용량을 받을 자리. 없으면 LangGraph custom 스트림으로 흘린다.
+    timeout: 이 호출만 다른 타임아웃(초). 긴 문서 추출은 질문 단계보다 오래 걸린다.
+    user: 글이면 그대로, 이미지·PDF를 함께 넣을 땐 내용 블록 목록.
+    """
+    write = on_usage or _writer()
+    client = _get_client() if timeout is None else _get_client().with_options(timeout=timeout, max_retries=1)
+    response = await client.messages.parse(
         model=CLAUDE_MODEL,
         max_tokens=max_tokens,
         system=system,
@@ -88,6 +101,50 @@ async def structured(system: str, user: str, schema: type[T], max_tokens: int = 
     if response.parsed_output is None:
         raise RuntimeError(f"구조화 출력 없음 (stop_reason={response.stop_reason})")
     return response.parsed_output
+
+
+async def law_mcp_answer(
+    system: str,
+    user: str,
+    server_url: str,
+    tools: tuple[str, ...],
+    on_usage: Callable[[dict], None] | None = None,
+    timeout: float = 75,
+) -> str:
+    """원격 MCP(법제처 법령)를 Claude가 직접 부르게 해 답을 받는다 (MCP 커넥터 베타).
+
+    tools에 적은 도구만 연다(허용 목록). 서버 도구 차례가 길면 pause_turn으로 끊겨 오므로 두 번까지 이어 받는다.
+    도구 결과 토큰도 입력으로 과금된다 — 사용량은 차례마다 보고한다.
+    """
+    write = on_usage or _writer()
+    client = _get_client().with_options(timeout=timeout, max_retries=0)  # 길게 묶이지 않게(최악 2차례×75초)
+    toolset = {
+        "type": "mcp_toolset",
+        "mcp_server_name": "law",
+        "default_config": {"enabled": False},
+        "configs": {name: {"enabled": True} for name in tools},
+    }
+    messages: list[dict] = [{"role": "user", "content": user}]
+    for _ in range(2):
+        response = await client.beta.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=6000,
+            system=system,
+            messages=messages,
+            betas=["mcp-client-2025-11-20"],
+            mcp_servers=[{"type": "url", "url": server_url, "name": "law"}],
+            tools=[toolset],
+            output_config={"effort": CLAUDE_EFFORT},
+        )
+        _report_usage(write, response.usage)
+        if response.stop_reason == "refusal":
+            raise ClaudeRefusal(str(response.stop_details))
+        if response.stop_reason != "pause_turn":
+            from app.law.service import _final_text
+
+            return _final_text(response.content)
+        messages = [*messages, {"role": "assistant", "content": response.content}]
+    raise RuntimeError("법령 도구 호출이 끝나지 않음 (pause_turn 반복)")
 
 
 class StreamStarted(RuntimeError):

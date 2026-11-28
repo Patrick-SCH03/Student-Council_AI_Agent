@@ -50,3 +50,8 @@ CLAUDE.md
 CONTRIBUTING.md
 # 로컬 보관용 (옛 문서 압축본 등)
 archive/
+PLATFORM_PLAN.md
+design-drafts/
+
+# v3 문서 검토 표본 (학생회 내부 문서 — 저장소 밖 유지)
+review-samples/

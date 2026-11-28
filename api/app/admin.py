@@ -8,16 +8,17 @@
 import io
 import json
 import tempfile
+import time
 import uuid
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import PlainTextResponse, Response
 from pydantic import BaseModel, Field, field_validator
 
-from app import db
+from app import db, events, notice
 from app.config import APP_VERSION, CLAUDE_MODEL, DEFAULT_LIMITS, EMBEDDING_MODEL, OCR_CACHE_DIR
 from app.privacy import PRIVATE_NAMES
 from app.rag import citation_graph, store
@@ -258,6 +259,134 @@ def get_settings():
 def update_settings(request: SettingsRequest):
     db.set_settings(request.model_dump())
     return _settings_view()
+
+
+
+@router.get("/contributions")
+def list_contributions(limit: int = 50):
+    """서비스 개선용 자료 최근 목록 (가명 처리본, 본문은 앞부분만). 전체는 /api/backup의 SQLite에 있다."""
+    return {"items": db.list_contributions(limit)}
+
+
+@router.get("/settings/events")
+def get_events_setting():
+    """지난 일정까지 그대로 (정리할 수 있게)."""
+    return {"events": events.stored()}
+
+
+@router.put("/settings/events")
+def save_events(request: events.EventsIn):
+    return {"events": events.save(request)}
+
+
+@router.get("/settings/notice")
+def get_notice_setting():
+    """끝난 공지도 그대로 보여 준다 (다시 올리거나 내릴 수 있게)."""
+    return {"notice": notice.stored()}
+
+
+@router.put("/settings/notice")
+def publish_notice(request: notice.NoticeIn):
+    return {"notice": notice.publish(request)}
+
+
+@router.post("/settings/notice/draft")
+async def draft_notice(request: Request):
+    """공고문 사진·PDF(본문 = 파일 바이트) → 공지 초안. 올리기는 화면이 PUT /settings/notice로 한다.
+
+    LLM 1회(공고 한 장 약 $0.0002). 지표 경로는 'review-' 접두어라 규정 질문 한도에서 빠진다. 원본은 저장하지 않는다.
+    """
+    from app.quota import llm_slots
+    from app.review.service import Usage
+
+    if int(request.headers.get("content-length") or 0) > notice.DRAFT_MAX_BYTES:
+        raise HTTPException(413, "파일이 너무 커요. 5MB 이하로 올려 주세요.")
+    data = await request.body()
+    try:
+        notice.sniff(data)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    usage, started, error = Usage(), time.monotonic(), None
+    try:
+        async with llm_slots:
+            return {"draft": await notice.draft_from_file(data, on_usage=usage.add)}
+    except notice.DraftError as e:
+        error = str(e)
+        raise HTTPException(422, str(e)) from e
+    except Exception as e:  # noqa: BLE001
+        error = f"{type(e).__name__}: {e}"
+        raise HTTPException(503, "공고문을 읽지 못했어요. 잠시 뒤 다시 시도해 주세요.") from e
+    except BaseException:  # 클라이언트가 끊으면(CancelledError) 성공으로 남기지 않는다
+        error = "cancelled"
+        raise
+    finally:
+        db.record_metric(
+            route="review-notice-draft", risk_level=None,
+            status="cancelled" if error == "cancelled" else "error" if error else "ok",
+            elapsed=time.monotonic() - started, input_tokens=usage.input_tokens, output_tokens=usage.output_tokens,
+            query_preview="", visitor_id="admin", is_admin=True, error=error, cost_usd=round(usage.cost_usd, 6),
+        )
+
+
+@router.delete("/settings/notice")
+def withdraw_notice():
+    notice.withdraw()
+    return {"notice": None}
+
+# ---------------------------------------------------------------- 회원 관리
+
+
+class BlockIn(BaseModel):
+    blocked: bool
+
+
+def _member(user_id: int) -> dict:
+    from app.config import ADMIN_EMAILS
+
+    detail = db.user_detail(user_id)
+    if not detail:
+        raise HTTPException(404, "없는 계정이에요.")
+    detail["user"]["role"] = "admin" if detail["user"]["email"] in ADMIN_EMAILS else "member"
+    return detail
+
+
+def _not_admin(user_id: int) -> None:
+    if _member(user_id)["user"]["role"] == "admin":
+        raise HTTPException(400, "관리자 계정은 막거나 지울 수 없어요. 관리자에서 빼려면 ADMIN_EMAILS를 고쳐요.")
+
+
+@router.get("/users")
+def list_users(q: str = ""):
+    from app.config import ADMIN_EMAILS
+
+    rows = [{**u, "role": "admin" if u["email"] in ADMIN_EMAILS else "member"} for u in db.list_users(q[:60])]
+    return {"users": rows, "counts": db.count_users()}
+
+
+@router.get("/users/{user_id}")
+def get_user(user_id: int):
+    return _member(user_id)
+
+
+@router.post("/users/{user_id}/logout")
+def logout_user(user_id: int):
+    _member(user_id)
+    return {"revoked": db.revoke_user_sessions(user_id)}
+
+
+@router.post("/users/{user_id}/block")
+def block_user(user_id: int, body: BlockIn):
+    if body.blocked:
+        _not_admin(user_id)
+    db.set_user_blocked(user_id, body.blocked)
+    return _member(user_id)
+
+
+@router.delete("/users/{user_id}")
+def remove_user(user_id: int):
+    _not_admin(user_id)
+    db.delete_user(user_id)
+    return {"deleted": True}
 
 
 @router.post("/cache/clear")

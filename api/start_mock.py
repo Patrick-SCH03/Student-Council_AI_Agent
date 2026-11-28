@@ -16,6 +16,8 @@ os.environ["DATA_DIR"] = str(API_DIR / "data-mock")
 os.environ["CORS_ORIGINS"] = "http://localhost:3000"
 # 운영 관리자 토큰(api/.env)을 로컬 화면에 입력하지 않도록 목업 전용 값으로 덮는다
 os.environ["ADMIN_TOKEN"] = "mock-admin"
+# 관리자 계정 화면(관리자 패널·오픈 예정 미리보기) 확인용 — 목업 DB의 테스트 계정
+os.environ.setdefault("ADMIN_EMAILS", "wwoo5241@inha.edu")
 
 import uvicorn  # noqa: E402  (환경 설정 후에 임포트)
 

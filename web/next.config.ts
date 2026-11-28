@@ -8,13 +8,16 @@ const isDev = process.env.NODE_ENV === "development";
 // Next 16 문서의 'Without Nonces' 형태. 페이지가 정적 생성이라 요청마다 nonce를 넣으려면
 // 모든 페이지를 동적 렌더링으로 바꿔야 해서(문서가 성능 비용을 명시) 인라인 스크립트는
 // 허용하되, 외부 스크립트 로드와 백엔드 외 주소로의 통신(유출 경로)은 막는다.
+// 예외는 Google 로그인(GIS) 한 곳 — Google 문서가 요구하는 /gsi/ 경로만 연다.
+const GSI = "https://accounts.google.com/gsi/";
 const CSP = [
   "default-src 'self'",
-  `script-src 'self' 'unsafe-inline'${isDev ? " 'unsafe-eval'" : ""}`,
-  "style-src 'self' 'unsafe-inline'",
+  `script-src 'self' 'unsafe-inline'${isDev ? " 'unsafe-eval'" : ""} ${GSI}client`,
+  `style-src 'self' 'unsafe-inline' ${GSI}style`,
+  `frame-src ${GSI}`,
   "img-src 'self' blob: data:",
   "font-src 'self'",
-  `connect-src 'self' ${API_ORIGIN}`,
+  `connect-src 'self' ${API_ORIGIN} ${GSI}`,
   "object-src 'none'",
   "base-uri 'self'",
   "form-action 'self'",

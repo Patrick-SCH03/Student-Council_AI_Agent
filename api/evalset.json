@@ -404,6 +404,20 @@
       "query": "파이썬으로 파일 읽는 코드 알려줘",
       "expect_route": "general",
       "max_tokens": 5000
+    },
+    {
+      "id": "fin-personal-account",
+      "query": "회장 개인 통장으로 참가비를 걷어도 되나요?",
+      "expect_route": "regulation",
+      "expect_sources": ["재정·회계 세칙"],
+      "expect_keywords": ["공금"]
+    },
+    {
+      "id": "fin-lost-receipt",
+      "query": "카드 영수증을 잃어버렸는데 어떻게 처리해야 하나요?",
+      "expect_route": "regulation",
+      "expect_sources": ["재정·회계 세칙"],
+      "expect_keywords": ["증명"]
     }
   ]
 }

@@ -59,6 +59,48 @@ CREATE TABLE IF NOT EXISTS feedback (
     helpful     INTEGER NOT NULL,      -- 1 = 도움됨, 0 = 부족함
     visitor_id  TEXT
 );
+
+CREATE TABLE IF NOT EXISTS users (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    google_sub    TEXT NOT NULL UNIQUE,  -- Google 계정 고유 ID (이메일은 바뀔 수 있어 식별자로 쓰지 않는다)
+    email         TEXT NOT NULL,
+    name          TEXT,
+    role          TEXT NOT NULL DEFAULT 'member',
+    created_at    TEXT NOT NULL,
+    last_login_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS ledger (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id     INTEGER NOT NULL REFERENCES users(id),
+    prefix      TEXT NOT NULL,
+    year        INTEGER NOT NULL,
+    seq         INTEGER NOT NULL,
+    issued_on   TEXT NOT NULL,
+    title       TEXT NOT NULL,
+    recipient   TEXT NOT NULL DEFAULT '',
+    created_at  TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS contributions (
+    -- 서비스 개선용 자료: 이용자가 허락한 요청만, 가명 처리한 본문·결과 (app/contrib.py)
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id     INTEGER NOT NULL REFERENCES users(id),
+    kind        TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    source      TEXT NOT NULL DEFAULT '',
+    text        TEXT NOT NULL DEFAULT '',
+    result      TEXT NOT NULL DEFAULT '{}',
+    corrected   TEXT,
+    consent     TEXT NOT NULL,
+    name_keys   TEXT NOT NULL DEFAULT '[]'  -- 처음 저장 때 찾은 이름의 해시 — 나중에 붙는 고친 값에서도 같은 이름을 가린다
+);
+CREATE INDEX IF NOT EXISTS idx_contributions_user ON contributions(user_id);
+CREATE TABLE IF NOT EXISTS sessions (
+    token_hash  TEXT PRIMARY KEY,
+    user_id     INTEGER NOT NULL REFERENCES users(id),
+    created_at  TEXT NOT NULL,
+    expires_at  TEXT NOT NULL,
+    revoked_at  TEXT
+);
 """
 
 
@@ -69,8 +111,14 @@ def _connect() -> sqlite3.Connection:
     global _initialized
     conn = sqlite3.connect(SQLITE_PATH)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout = 5000")
     if _initialized:
         return conn
+    # v3 개발 중 잠깐 쓴 이메일 기준 users 표(google_sub 없음)는 새 형태로 다시 만든다.
+    # 운영에는 배포된 적 없는 표라 지워도 잃는 데이터가 없다.
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(users)")}
+    if cols and "google_sub" not in cols:
+        conn.executescript("DROP TABLE IF EXISTS sessions; DROP TABLE IF EXISTS users;")
     conn.executescript(_SCHEMA)
     # 스키마 확장 마이그레이션 (기존 DB 호환)
     for stmt in (
@@ -89,6 +137,9 @@ def _connect() -> sqlite3.Connection:
         "ALTER TABLE metrics ADD COLUMN cost_usd REAL",
         # 낮춘 경로로 이어간 단계 (쉼표 구분: 검색 키워드만·분류 실패). 조용히 일어나 로그만으로는 놓친다.
         "ALTER TABLE metrics ADD COLUMN fallback TEXT",
+        "ALTER TABLE contributions ADD COLUMN name_keys TEXT NOT NULL DEFAULT '[]'",
+        # 관리자가 이용을 막은 계정 (막힌 동안 로그인·세션이 통하지 않는다)
+        "ALTER TABLE users ADD COLUMN blocked_at TEXT",
     ):
         try:
             conn.execute(stmt)
@@ -100,6 +151,8 @@ def _connect() -> sqlite3.Connection:
         "CREATE INDEX IF NOT EXISTS idx_metrics_visitor ON metrics(visitor_id, ts)",
         "CREATE INDEX IF NOT EXISTS idx_metrics_ip ON metrics(ip_hash, ts)",
         "CREATE INDEX IF NOT EXISTS idx_visits_ts ON visits(ts)",
+        "CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id)",
+        "CREATE INDEX IF NOT EXISTS idx_ledger_user ON ledger(user_id, prefix, year, seq)",
     ):
         conn.execute(stmt)
     conn.commit()
@@ -212,6 +265,25 @@ def set_settings(values: dict[str, int]) -> None:
         )
 
 
+def get_raw_setting(key: str) -> str | None:
+    """숫자가 아닌 설정(예: 공지 JSON)을 그대로 읽는다."""
+    with _connect() as conn:
+        row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+    return row["value"] if row else None
+
+
+def set_raw_setting(key: str, value: str | None) -> None:
+    """None이면 지운다."""
+    with _connect() as conn:
+        if value is None:
+            conn.execute("DELETE FROM settings WHERE key = ?", (key,))
+        else:
+            conn.execute(
+                "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (key, value),
+            )
+
+
 # ---------------------------------------------------------------- 답변 캐시
 
 def normalize_query(query: str) -> str:
@@ -306,6 +378,8 @@ def add_feedback(analysis_id: int, helpful: bool, visitor_id: str | None) -> Non
 # 한도 계산에서는 운영자 질의를 제외한다. 회귀 테스트를 돌리다 실사용자 몫을
 # 소진시키거나, 반대로 점검이 한도에 막히는 일을 둘 다 막는다.
 _NOT_ADMIN = "COALESCE(is_admin, 0) = 0"
+# 문서 검토 기록(route='review-…')은 규정 질문 한도에 세지 않는다 — 한도가 따로 있다
+_NOT_REVIEW = "COALESCE(route, '') NOT LIKE 'review%'"
 # '오늘'은 한국 자정 기준이다. ts는 UTC ISO 문자열이므로 KST 자정을 UTC로 옮긴
 # 경계('T' 구분자를 맞춰야 문자열 비교가 시간순이 된다)와 비교한다 — 색인을 탄다.
 _TODAY = (
@@ -320,14 +394,24 @@ def count_today(visitor_id: str | None = None) -> int:
         if visitor_id:
             row = conn.execute(
                 f"SELECT COUNT(*) AS n FROM metrics "
-                f"WHERE {_TODAY} AND {_NOT_ADMIN} AND visitor_id = ?",
+                f"WHERE {_TODAY} AND {_NOT_ADMIN} AND {_NOT_REVIEW} AND visitor_id = ?",
                 (visitor_id,),
             ).fetchone()
         else:
             row = conn.execute(
                 f"SELECT COUNT(*) AS n FROM metrics "
-                f"WHERE {_TODAY} AND {_NOT_ADMIN}"
+                f"WHERE {_TODAY} AND {_NOT_ADMIN} AND {_NOT_REVIEW}"
             ).fetchone()
+    return row["n"]
+
+
+def count_review_today(user_key: str, route: str = "review-extract") -> int:
+    """오늘 이 사용자가 문서 검토의 한 단계(추출·메모)를 부른 횟수."""
+    with _connect() as conn:
+        row = conn.execute(
+            f"SELECT COUNT(*) AS n FROM metrics WHERE {_TODAY} AND route = ? AND visitor_id = ?",
+            (route, user_key),
+        ).fetchone()
     return row["n"]
 
 
@@ -336,7 +420,7 @@ def count_today_by_ip(ip_hash: str) -> int:
     with _connect() as conn:
         row = conn.execute(
             f"SELECT COUNT(*) AS n FROM metrics "
-            f"WHERE {_TODAY} AND {_NOT_ADMIN} AND ip_hash = ?",
+            f"WHERE {_TODAY} AND {_NOT_ADMIN} AND {_NOT_REVIEW} AND ip_hash = ?",
             (ip_hash,),
         ).fetchone()
     return row["n"]
@@ -571,6 +655,9 @@ def purge_old(days: int) -> dict[str, int]:
         removed["answer_cache"] = conn.execute(
             "DELETE FROM answer_cache WHERE datetime(ts) < datetime('now', '-7 days')"
         ).rowcount
+        removed["contributions"] = conn.execute(
+            "DELETE FROM contributions WHERE datetime(created_at) < datetime('now', ?)", (cutoff,)
+        ).rowcount
     return removed
 
 
@@ -602,3 +689,262 @@ def mask_stored_text() -> dict[str, int]:
                 conn.execute("DELETE FROM answer_cache WHERE query_key = ?", (row["query_key"],))
                 changed["answer_cache"] += 1
     return changed
+
+
+# ---------------------------------------------------------------- users·sessions (v3 로그인)
+# 세션 토큰 원문은 쿠키에만 있고 DB에는 해시만 둔다 — DB가 새도 세션을 훔칠 수 없다.
+
+def upsert_user(google_sub: str, email: str, name: str | None, role: str) -> dict:
+    """로그인한 학교 계정을 Google 고유 ID로 기록한다. 이메일·이름·역할은 매 로그인마다 최신으로 맞춘다.
+
+    같은 이메일이라도 sub가 다르면 다른 사람이다 (학교가 메일 주소를 다시 배정하는 경우) — 합치지 않는다.
+    """
+    now = _now()
+    with _connect() as conn:
+        conn.execute(
+            "INSERT INTO users (google_sub, email, name, role, created_at, last_login_at) VALUES (?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(google_sub) DO UPDATE SET email = excluded.email, name = excluded.name, "
+            "role = excluded.role, last_login_at = excluded.last_login_at",
+            (google_sub, email, name, role, now, now),
+        )
+        row = conn.execute("SELECT id, email, name, role, blocked_at FROM users WHERE google_sub = ?", (google_sub,)).fetchone()
+    return dict(row)
+
+
+def create_session(token_hash: str, user_id: int, expires_at: str) -> None:
+    with _connect() as conn:
+        conn.execute(
+            "INSERT INTO sessions (token_hash, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)",
+            (token_hash, user_id, _now(), expires_at),
+        )
+
+
+def get_session_user(token_hash: str) -> dict | None:
+    """유효한(폐기·만료되지 않은) 세션의 사용자. 없으면 None."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT u.id, u.email, u.name, u.role FROM sessions s JOIN users u ON u.id = s.user_id "
+            "WHERE s.token_hash = ? AND s.revoked_at IS NULL AND s.expires_at > ? AND u.blocked_at IS NULL",
+            (token_hash, _now()),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def revoke_session(token_hash: str) -> None:
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE sessions SET revoked_at = ? WHERE token_hash = ? AND revoked_at IS NULL",
+            (_now(), token_hash),
+        )
+
+
+# ---------------------------------------------------------------- 관리자: 회원 관리 (v3)
+# 활동은 업무 도구 지표(metrics.visitor_id = 'user:<id>')만 본다 — 규정 질문은 익명이라 계정과 잇지 않는다. 내용은 저장하지 않는다.
+
+_USER_COLS = """u.id, u.email, u.name, u.created_at, u.last_login_at, u.blocked_at,
+    (SELECT COUNT(*) FROM sessions s WHERE s.user_id = u.id AND s.revoked_at IS NULL AND s.expires_at > :now) AS active_sessions,
+    (SELECT COUNT(*) FROM metrics m WHERE m.visitor_id = 'user:' || u.id AND datetime(m.ts) >= datetime('now', '-30 days')) AS uses_30d,
+    (SELECT COALESCE(SUM(m.cost_usd), 0) FROM metrics m WHERE m.visitor_id = 'user:' || u.id) AS cost_usd,
+    (SELECT MAX(m.ts) FROM metrics m WHERE m.visitor_id = 'user:' || u.id) AS last_used_at"""
+
+
+def list_users(query: str = "", limit: int = 300) -> list[dict]:
+    """최근 로그인 순. query는 이메일·이름 일부."""
+    like = f"%{query.strip()}%"
+    with _connect() as conn:
+        rows = conn.execute(
+            f"SELECT {_USER_COLS} FROM users u WHERE (:q = '' OR u.email LIKE :like OR COALESCE(u.name, '') LIKE :like) "
+            "ORDER BY u.last_login_at DESC LIMIT :limit",
+            {"now": _now(), "q": query.strip(), "like": like, "limit": limit},
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def count_users() -> dict[str, int]:
+    with _connect() as conn:
+        total, blocked, week = conn.execute(
+            "SELECT COUNT(*), COUNT(blocked_at), SUM(datetime(last_login_at) >= datetime('now', '-7 days')) FROM users"
+        ).fetchone()
+    return {"total": int(total or 0), "blocked": int(blocked or 0), "active_7d": int(week or 0)}
+
+
+def user_detail(user_id: int) -> dict | None:
+    key = f"user:{user_id}"
+    with _connect() as conn:
+        user = conn.execute(f"SELECT {_USER_COLS} FROM users u WHERE u.id = :id", {"now": _now(), "id": user_id}).fetchone()
+        if not user:
+            return None
+        by_route = conn.execute(
+            "SELECT route, COUNT(*) AS uses, SUM(status != 'ok') AS errors, COALESCE(SUM(cost_usd), 0) AS cost_usd, MAX(ts) AS last_at "
+            "FROM metrics WHERE visitor_id = ? GROUP BY route ORDER BY uses DESC",
+            (key,),
+        ).fetchall()
+        recent = conn.execute(
+            "SELECT ts, route, status, elapsed, cost_usd FROM metrics WHERE visitor_id = ? ORDER BY id DESC LIMIT 30", (key,)
+        ).fetchall()
+        sessions = conn.execute(
+            "SELECT created_at, expires_at, revoked_at FROM sessions WHERE user_id = ? ORDER BY created_at DESC LIMIT 20", (user_id,)
+        ).fetchall()
+        ledger = conn.execute("SELECT COUNT(*) FROM ledger WHERE user_id = ?", (user_id,)).fetchone()[0]
+        contrib = conn.execute("SELECT COUNT(*) FROM contributions WHERE user_id = ?", (user_id,)).fetchone()[0]
+    now = _now()
+    return {
+        "user": dict(user),
+        "by_route": [dict(r) for r in by_route],
+        "recent": [dict(r) for r in recent],
+        "sessions": [{**dict(s), "active": not s["revoked_at"] and s["expires_at"] > now} for s in sessions],
+        "ledger": int(ledger),
+        "contributions": int(contrib),
+    }
+
+
+def is_blocked(google_sub: str) -> bool:
+    with _connect() as conn:
+        row = conn.execute("SELECT blocked_at FROM users WHERE google_sub = ?", (google_sub,)).fetchone()
+    return bool(row and row[0])
+
+
+def revoke_user_sessions(user_id: int) -> int:
+    with _connect() as conn:
+        return conn.execute(
+            "UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL", (_now(), user_id)
+        ).rowcount
+
+
+def set_user_blocked(user_id: int, blocked: bool) -> bool:
+    """막으면 그 자리에서 모든 세션도 끊는다."""
+    with _connect() as conn:
+        ok = conn.execute(
+            "UPDATE users SET blocked_at = ? WHERE id = ?", (_now() if blocked else None, user_id)
+        ).rowcount > 0
+        if ok and blocked:
+            conn.execute("UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL", (_now(), user_id))
+    return ok
+
+
+def delete_user(user_id: int) -> bool:
+    """계정과 그 계정의 세션·문서 번호 대장·개선용 자료를 지운다. 지표는 남기되 계정과의 연결(visitor_id)을 끊는다."""
+    with _connect() as conn:
+        if not conn.execute("SELECT 1 FROM users WHERE id = ?", (user_id,)).fetchone():
+            return False
+        for table in ("sessions", "ledger", "contributions"):
+            conn.execute(f"DELETE FROM {table} WHERE user_id = ?", (user_id,))
+        conn.execute("UPDATE metrics SET visitor_id = NULL WHERE visitor_id = ?", (f"user:{user_id}",))
+        conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+    return True
+
+
+def purge_sessions(inactive_days: int) -> dict[str, int]:
+    """만료됐거나 폐기한 지 7일 지난 세션, 그리고 inactive_days 동안 로그인하지 않은 계정을 지운다 (기동 시).
+
+    계정 행에는 이메일·이름이 있다 — 쓰지 않는 사람의 정보를 무기한 들고 있지 않는다.
+    """
+    with _connect() as conn:
+        sessions = conn.execute(
+            "DELETE FROM sessions WHERE expires_at < ? OR datetime(revoked_at) < datetime('now', '-7 days')",
+            (_now(),),
+        ).rowcount
+        users = 0
+        if inactive_days > 0:
+            stale = "SELECT id FROM users WHERE datetime(last_login_at) < datetime('now', ?)"
+            cutoff = (f"-{inactive_days} days",)
+            conn.execute(f"DELETE FROM sessions WHERE user_id IN ({stale})", cutoff)
+            conn.execute(f"DELETE FROM ledger WHERE user_id IN ({stale})", cutoff)
+            conn.execute(f"DELETE FROM contributions WHERE user_id IN ({stale})", cutoff)
+            users = conn.execute(f"DELETE FROM users WHERE id IN ({stale})", cutoff).rowcount
+    return {"sessions": sessions, "users": users}
+
+
+# ---------------------------------------------------------------- 서비스 개선용 자료 (v3, 선택 동의)
+
+def add_contribution(user_id: int, kind: str, source: str, text: str, result: str, consent: str, name_keys: str = "[]") -> int:
+    with _connect() as conn:
+        cur = conn.execute(
+            "INSERT INTO contributions (user_id, kind, created_at, source, text, result, consent, name_keys) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (user_id, kind, _now(), source, text, result, consent, name_keys),
+        )
+        return int(cur.lastrowid)
+
+
+def contribution_name_keys(contribution_id: int, user_id: int) -> str | None:
+    """본인 자료의 이름 열쇠(JSON). 남의 자료·없는 번호면 None."""
+    with _connect() as conn:
+        row = conn.execute("SELECT name_keys FROM contributions WHERE id = ? AND user_id = ?", (contribution_id, user_id)).fetchone()
+    return row[0] if row else None
+
+
+def set_contribution_correction(contribution_id: int, user_id: int, corrected: str) -> bool:
+    with _connect() as conn:
+        return conn.execute(
+            "UPDATE contributions SET corrected = ? WHERE id = ? AND user_id = ?", (corrected, contribution_id, user_id)
+        ).rowcount > 0
+
+
+def count_contributions(user_id: int) -> int:
+    with _connect() as conn:
+        return int(conn.execute("SELECT COUNT(*) FROM contributions WHERE user_id = ?", (user_id,)).fetchone()[0])
+
+
+def delete_contributions(user_id: int) -> int:
+    with _connect() as conn:
+        return conn.execute("DELETE FROM contributions WHERE user_id = ?", (user_id,)).rowcount
+
+
+def list_contributions(limit: int = 50) -> list[dict]:
+    """관리자용: 최근 자료 (본문은 앞부분만)."""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT id, kind, created_at, source, substr(text, 1, 500) AS preview, length(text) AS chars, "
+            "corrected IS NOT NULL AS corrected FROM contributions ORDER BY id DESC LIMIT ?",
+            (max(1, min(limit, 200)),),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------- 공문 번호 대장 (v3)
+
+def list_ledger(user_id: int) -> list[dict]:
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT id, prefix, year, seq, issued_on, title, recipient FROM ledger WHERE user_id = ? "
+            "ORDER BY prefix, year, seq, id",
+            (user_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def count_ledger(user_id: int) -> int:
+    with _connect() as conn:
+        return conn.execute("SELECT COUNT(*) FROM ledger WHERE user_id = ?", (user_id,)).fetchone()[0]
+
+
+def next_ledger_seq(user_id: int, prefix: str, year: int) -> int:
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT MAX(seq) FROM ledger WHERE user_id = ? AND prefix = ? AND year = ?", (user_id, prefix, year)
+        ).fetchone()
+    return (row[0] or 0) + 1
+
+
+def add_ledger(user_id: int, prefix: str, year: int, seq: int | None, issued_on: str, title: str, recipient: str) -> None:
+    """seq가 없으면 다음 번호를 같은 쓰기 트랜잭션 안에서 정한다 — 동시에 두 건을 등록해도 번호가 겹치지 않게."""
+    with _connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        if seq is None:
+            row = conn.execute(
+                "SELECT COALESCE(MAX(seq), 0) + 1 FROM ledger WHERE user_id = ? AND prefix = ? AND year = ?",
+                (user_id, prefix, year),
+            ).fetchone()
+            seq = row[0]
+        conn.execute(
+            "INSERT INTO ledger (user_id, prefix, year, seq, issued_on, title, recipient, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (user_id, prefix, year, seq, issued_on, title, recipient, _now()),
+        )
+
+
+def delete_ledger(user_id: int, entry_id: int) -> bool:
+    """남의 기록은 지울 수 없다 — user_id를 함께 건다."""
+    with _connect() as conn:
+        return conn.execute("DELETE FROM ledger WHERE id = ? AND user_id = ?", (entry_id, user_id)).rowcount > 0

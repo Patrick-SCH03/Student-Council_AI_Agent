@@ -7,7 +7,8 @@ import { useEffect, useId, useRef, useState } from "react";
 
 const EMAIL = "wwoo5241@inha.edu";
 
-export default function ContactButton() {
+/** placement: 더보기 목록 오른쪽 끝이면 아래·왼쪽으로(기본), 데스크톱 사이드바 맨 아래면 위·오른쪽으로 연다 */
+export default function ContactButton({ placement = "below-end" }: { placement?: "below-end" | "above-start" }) {
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -71,7 +72,7 @@ export default function ContactButton() {
       </button>
 
       {open && (
-        <div id={panelId} className="absolute right-0 top-full z-20 mt-2 w-64 rounded-2xl border border-slate-200 bg-white p-4 shadow-[0px_12px_16px_-4px_rgba(16,24,40,0.12),0px_4px_6px_-2px_rgba(16,24,40,0.05)]">
+        <div id={panelId} className={`absolute z-20 rounded-2xl ${placement === "above-start" ? "bottom-full left-0 mb-2 w-56" : "right-0 top-full mt-2 w-64"} border border-slate-200 bg-white p-4 shadow-[0px_12px_16px_-4px_rgba(16,24,40,0.12),0px_4px_6px_-2px_rgba(16,24,40,0.05)]`}>
           <p className="text-xs font-bold text-slate-800">
             오류나 개선 의견을 보내주세요
           </p>

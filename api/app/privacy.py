@@ -15,7 +15,8 @@ from pathlib import Path
 
 from app.config import DATA_DIR
 
-_PHONE = re.compile(r"01[016789][-.\s]?\d{3,4}[-.\s]?\d{4}")
+# 더 긴 숫자 줄의 일부(엑셀 소수 0.0745019283…)는 전화번호가 아니다 — 앞뒤가 숫자면 뺀다
+_PHONE = re.compile(r"(?<!\d)01[016789][-.\s]?\d{3,4}[-.\s]?\d{4}(?!\d)")
 _ACCOUNT = re.compile(r"(?<!\d)\d{3,6}-\d{2,6}-\d{4,8}(?:-\d{1,4})?(?!\d)")
 # 길이를 제한한다 — 무한정이면 스트림 보류 길이보다 긴 이메일의 앞부분이 먼저 나간다
 _EMAIL = re.compile(r"[\w.+-]{1,64}@[\w-]{1,63}(?:\.[\w-]{1,63}){1,4}")
